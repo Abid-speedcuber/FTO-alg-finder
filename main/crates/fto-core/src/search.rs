@@ -1,5 +1,6 @@
 use crate::{
     moves::{Move, MOVE_COUNT},
+    pruning::PatternDatabases,
     tables::TransitionTables,
     FtoCoord,
 };
@@ -29,8 +30,19 @@ pub struct SearchResult {
 
 #[must_use]
 pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) -> SearchResult {
+    solve_with_pruning(coord, tables, None, config)
+}
+
+#[must_use]
+pub fn solve_with_pruning(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&PatternDatabases>,
+    config: &SearchConfig,
+) -> SearchResult {
     let mut ctx = SearchContext {
         tables,
+        pruning,
         config,
         solved: FtoCoord::solved(),
         solutions: Vec::new(),
@@ -53,6 +65,7 @@ pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) 
 
 struct SearchContext<'a> {
     tables: &'a TransitionTables,
+    pruning: Option<&'a PatternDatabases>,
     config: &'a SearchConfig,
     solved: FtoCoord,
     solutions: Vec<Vec<Move>>,
@@ -63,6 +76,12 @@ struct SearchContext<'a> {
 impl SearchContext<'_> {
     fn dfs(&mut self, coord: FtoCoord, depth_left: u8, last_axis: Option<u8>) {
         self.nodes += 1;
+        if self
+            .pruning
+            .is_some_and(|pruning| pruning.heuristic(coord) > depth_left)
+        {
+            return;
+        }
         if depth_left == 0 {
             if coord == self.solved {
                 self.solutions.push(self.path.clone());

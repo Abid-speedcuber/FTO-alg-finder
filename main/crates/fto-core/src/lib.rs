@@ -3,6 +3,7 @@
 pub mod coord;
 pub mod cubie;
 pub mod moves;
+pub mod pruning;
 pub mod search;
 pub mod tables;
 
