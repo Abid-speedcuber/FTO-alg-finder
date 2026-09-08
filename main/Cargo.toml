@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/fto-cli",
+    "crates/fto-core",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
