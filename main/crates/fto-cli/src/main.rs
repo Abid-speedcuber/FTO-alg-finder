@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
     };
 
     eprintln!("loading transition tables...");
-    let tables = TransitionTables::load_or_build("cache/transition-tables-v1.bin")
+    let tables = TransitionTables::load_or_build("cache/transition-tables-v2.bin")
         .map_err(|error| error.to_string())?;
     let result = search::solve(
         cubie.coord(),

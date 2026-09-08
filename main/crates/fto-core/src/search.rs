@@ -32,6 +32,7 @@ pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) 
     let mut ctx = SearchContext {
         tables,
         config,
+        solved: FtoCoord::solved(),
         solutions: Vec::new(),
         path: Vec::with_capacity(config.max_depth as usize),
         nodes: 0,
@@ -53,6 +54,7 @@ pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) 
 struct SearchContext<'a> {
     tables: &'a TransitionTables,
     config: &'a SearchConfig,
+    solved: FtoCoord,
     solutions: Vec<Vec<Move>>,
     path: Vec<Move>,
     nodes: u64,
@@ -62,7 +64,7 @@ impl SearchContext<'_> {
     fn dfs(&mut self, coord: FtoCoord, depth_left: u8, last_axis: Option<u8>) {
         self.nodes += 1;
         if depth_left == 0 {
-            if coord.is_solved() {
+            if coord == self.solved {
                 self.solutions.push(self.path.clone());
             }
             return;

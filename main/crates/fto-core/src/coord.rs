@@ -2,13 +2,24 @@ use crate::cubie::FtoCubie;
 
 pub const CORNER_COUNT: usize = 11_520;
 pub const CENTER_COUNT: usize = 369_600;
+pub const EDGE_CHOICE_COUNT: usize = 924;
+
+const EDGE_SIGNATURES: [u8; 12] = [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FtoCoord {
     pub corner: u16,
-    pub edge_pack: u64,
+    pub edge: EdgeCoord,
     pub uf_center: u32,
     pub rl_center: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EdgeCoord {
+    pub e0: u16,
+    pub e1: u16,
+    pub e2: u16,
+    pub e3: u16,
 }
 
 impl FtoCoord {
@@ -21,7 +32,7 @@ impl FtoCoord {
     pub fn from_cubie(cubie: &FtoCubie) -> Self {
         Self {
             corner: rank_corner(&cubie.cp, &cubie.co),
-            edge_pack: pack_perm12(&cubie.ep),
+            edge: EdgeCoord::from_ep(&cubie.ep),
             uf_center: rank_center_colors(&center_colors(&cubie.uf)),
             rl_center: rank_center_colors(&center_colors(&cubie.rl)),
         }
@@ -30,6 +41,51 @@ impl FtoCoord {
     #[must_use]
     pub fn is_solved(self) -> bool {
         self == Self::solved()
+    }
+}
+
+impl EdgeCoord {
+    #[must_use]
+    pub fn from_ep(ep: &[u8; 12]) -> Self {
+        let mut bitmaps = [0_u16; 4];
+        for (pos, &edge) in ep.iter().enumerate() {
+            let signature = EDGE_SIGNATURES[edge as usize];
+            for (bit, bitmap) in bitmaps.iter_mut().enumerate() {
+                if (signature >> bit) & 1 == 1 {
+                    *bitmap |= 1 << pos;
+                }
+            }
+        }
+        Self {
+            e0: rank_choice6(bitmaps[0]),
+            e1: rank_choice6(bitmaps[1]),
+            e2: rank_choice6(bitmaps[2]),
+            e3: rank_choice6(bitmaps[3]),
+        }
+    }
+
+    #[must_use]
+    pub fn to_ep(self) -> [u8; 12] {
+        let bitmaps = [
+            unrank_choice6(self.e0),
+            unrank_choice6(self.e1),
+            unrank_choice6(self.e2),
+            unrank_choice6(self.e3),
+        ];
+        let mut ep = [0; 12];
+        for (pos, edge) in ep.iter_mut().enumerate() {
+            let mut signature = 0_u8;
+            for (bit, bitmap) in bitmaps.iter().enumerate() {
+                if (bitmap >> pos) & 1 == 1 {
+                    signature |= 1 << bit;
+                }
+            }
+            *edge = EDGE_SIGNATURES
+                .iter()
+                .position(|&candidate| candidate == signature)
+                .expect("edge coloring tuple must use a valid signature") as u8;
+        }
+        ep
     }
 }
 
@@ -43,31 +99,43 @@ pub fn center_colors(centers: &[u8; 12]) -> [u8; 12] {
 }
 
 #[must_use]
-pub fn pack_perm12(perm: &[u8; 12]) -> u64 {
-    let mut packed = 0_u64;
-    for (i, &value) in perm.iter().enumerate() {
-        packed |= u64::from(value) << (i * 4);
-    }
-    packed
-}
-
-#[must_use]
-pub fn unpack_perm12(packed: u64) -> [u8; 12] {
-    let mut perm = [0; 12];
-    for (i, value) in perm.iter_mut().enumerate() {
-        *value = ((packed >> (i * 4)) & 0x0f) as u8;
-    }
-    perm
-}
-
-#[must_use]
-pub fn apply_packed_perm12(packed: u64, move_perm: &[u8; 12]) -> u64 {
-    let mut next = 0_u64;
+pub fn apply_choice6_bitmap(bitmap: u16, move_perm: &[u8; 12]) -> u16 {
+    let mut next = 0_u16;
     for (dst, &src) in move_perm.iter().enumerate() {
-        let value = (packed >> (usize::from(src) * 4)) & 0x0f;
-        next |= value << (dst * 4);
+        let bit = (bitmap >> src) & 1;
+        next |= bit << dst;
     }
     next
+}
+
+#[must_use]
+pub fn rank_choice6(bitmap: u16) -> u16 {
+    assert_eq!(bitmap.count_ones(), 6);
+    let mut rank = 0_u16;
+    for candidate in 0_u16..=0x0fff {
+        if candidate.count_ones() != 6 {
+            continue;
+        }
+        if candidate == bitmap {
+            return rank;
+        }
+        rank += 1;
+    }
+    panic!("choice bitmap is not rankable");
+}
+
+#[must_use]
+pub fn unrank_choice6(mut rank: u16) -> u16 {
+    for candidate in 0_u16..=0x0fff {
+        if candidate.count_ones() != 6 {
+            continue;
+        }
+        if rank == 0 {
+            return candidate;
+        }
+        rank -= 1;
+    }
+    panic!("invalid choice rank");
 }
 
 #[must_use]
@@ -221,8 +289,8 @@ fn perm_parity(perm: &[u8]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        rank_center_colors, rank_corner, unrank_center_colors, unrank_corner, CENTER_COUNT,
-        CORNER_COUNT,
+        rank_center_colors, rank_choice6, rank_corner, unrank_center_colors, unrank_choice6,
+        unrank_corner, EdgeCoord, CENTER_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT,
     };
 
     #[test]
@@ -248,6 +316,20 @@ mod tests {
             let colors = unrank_center_colors(rank as u32);
             assert_eq!(rank_center_colors(&colors), rank as u32);
         }
+    }
+
+    #[test]
+    fn edge_choice_rank_round_trips_all_states() {
+        for rank in 0..EDGE_CHOICE_COUNT {
+            let bitmap = unrank_choice6(rank as u16);
+            assert_eq!(usize::from(rank_choice6(bitmap)), rank);
+        }
+    }
+
+    #[test]
+    fn edge_coloring_round_trips_solved_edges() {
+        let ep = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        assert_eq!(EdgeCoord::from_ep(&ep).to_ep(), ep);
     }
 
     #[test]
