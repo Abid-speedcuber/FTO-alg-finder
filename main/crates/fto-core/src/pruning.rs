@@ -107,18 +107,30 @@ impl SolverPruning {
         out_dir: &Path,
         progress_interval: usize,
     ) -> Result<Self, String> {
+        Self::load_or_build_with_moves(tables, out_dir, progress_interval, &Move::ALL)
+    }
+
+    pub fn load_or_build_with_moves(
+        tables: &TransitionTables,
+        out_dir: &Path,
+        progress_interval: usize,
+        moves: &[Move],
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
+        let suffix = move_set_suffix(moves);
         let edge3_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             tables,
             progress_interval,
-            out_dir.join("edge3__uf3.pdb"),
+            out_dir.join(format!("edge3__uf3__{suffix}.pdb")),
+            moves,
         )?;
         let corner_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
             tables,
             progress_interval,
-            out_dir.join("corner__uf3.pdb"),
+            out_dir.join(format!("corner__uf3__{suffix}.pdb")),
+            moves,
         )?;
         Ok(Self {
             edge3_uf3,
@@ -131,17 +143,28 @@ impl SolverPruning {
         tables: &TransitionTables,
         progress_interval: usize,
     ) -> Result<Self, String> {
+        Self::build_from_coord_with_moves(root, tables, progress_interval, &Move::ALL)
+    }
+
+    pub fn build_from_coord_with_moves(
+        root: FtoCoord,
+        tables: &TransitionTables,
+        progress_interval: usize,
+        moves: &[Move],
+    ) -> Result<Self, String> {
         let edge3_uf3 = build_solver_table_from_root(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             root,
             tables,
             progress_interval,
+            moves,
         )?;
         let corner_uf3 = build_solver_table_from_root(
             CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
             root,
             tables,
             progress_interval,
+            moves,
         )?;
         Ok(Self {
             edge3_uf3,
@@ -191,6 +214,7 @@ fn load_or_build_solver_table(
     tables: &TransitionTables,
     progress_interval: usize,
     path: impl AsRef<Path>,
+    moves: &[Move],
 ) -> Result<Vec<u8>, String> {
     let path = path.as_ref();
     eprintln!(
@@ -201,7 +225,8 @@ fn load_or_build_solver_table(
     match read_table(path, spec.size().unwrap_or(0)) {
         Ok(table) => Ok(table),
         Err(_) => {
-            let (_, table) = build_pruning_table(&spec, tables, usize::MAX, progress_interval)?;
+            let (_, table) =
+                build_pruning_table_with_moves(&spec, tables, usize::MAX, progress_interval, moves)?;
             write_table(path, &table).map_err(|error| error.to_string())?;
             Ok(table)
         }
@@ -213,10 +238,32 @@ fn build_solver_table_from_root(
     root: FtoCoord,
     tables: &TransitionTables,
     progress_interval: usize,
+    moves: &[Move],
 ) -> Result<Vec<u8>, String> {
     let root_index = spec.index_of_coord(root);
-    let (_, table) = build_pruning_table_from_index(&spec, tables, usize::MAX, progress_interval, root_index)?;
+    let (_, table) =
+        build_pruning_table_from_index(&spec, tables, usize::MAX, progress_interval, root_index, moves)?;
     Ok(table)
+}
+
+fn move_set_suffix(moves: &[Move]) -> String {
+    if moves == Move::ALL.as_slice() {
+        return "all".to_owned();
+    }
+    let mut out = String::new();
+    for &mv in moves {
+        if !out.is_empty() {
+            out.push('_');
+        }
+        out.push_str(
+            &mv.name()
+                .replace('\'', "p")
+                .replace(' ', "")
+                .replace("BR", "br")
+                .replace("BL", "bl"),
+        );
+    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -475,8 +522,18 @@ fn build_pruning_table(
     max_entries: usize,
     progress_interval: usize,
 ) -> Result<(PruningStats, Vec<u8>), String> {
+    build_pruning_table_with_moves(spec, tables, max_entries, progress_interval, &Move::ALL)
+}
+
+fn build_pruning_table_with_moves(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    moves: &[Move],
+) -> Result<(PruningStats, Vec<u8>), String> {
     let solved = spec.solved_index();
-    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved)
+    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved, moves)
 }
 
 fn build_pruning_table_from_index(
@@ -485,6 +542,7 @@ fn build_pruning_table_from_index(
     max_entries: usize,
     progress_interval: usize,
     root_index: usize,
+    moves: &[Move],
 ) -> Result<(PruningStats, Vec<u8>), String> {
     let size = spec
         .size()
@@ -525,7 +583,7 @@ fn build_pruning_table_from_index(
                 );
                 next_progress = next_progress.saturating_add(progress_interval);
             }
-            for mv in Move::ALL {
+            for &mv in moves {
                 let next = spec.next_index(idx, mv, tables, &mut values, &mut next_values);
                 if table[next] == UNVISITED {
                     let next_depth = depth + 1;

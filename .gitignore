@@ -1,4 +1,7 @@
 trivials/
 main/cache/
 main/target/
+main/node_modules/
+main/dist/
+main/*.tsbuildinfo
 ideas/

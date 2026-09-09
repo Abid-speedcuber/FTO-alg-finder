@@ -9,6 +9,7 @@ use std::{
 };
 
 use fto_core::{
+    moves::Move,
     pruning::{self, SolverPruning, PruningStats},
     search::{self, BidirectionalConfig, SearchConfig},
     tables::TransitionTables,
@@ -37,6 +38,8 @@ fn run() -> Result<(), String> {
     let mut bidirectional_threshold = 19_u8;
     let mut bidirectional_max_mib = 3072_usize;
     let mut bidirectional_start_pruning = false;
+    let mut restricted_pruning = false;
+    let mut allowed_moves = Move::ALL.to_vec();
     let mut use_solver_pruning = true;
     let mut keep_all_pruning_pdbs = false;
     let mut max_pruning_mib = 1024_usize;
@@ -45,7 +48,7 @@ fn run() -> Result<(), String> {
     let mut max_combo_size = 5_usize;
     let mut sample_count = 100_000_usize;
     let mut sample_walk_len = 40_usize;
-    let mut pruning_out_dir = PathBuf::from("cache/pruning");
+    let mut pruning_out_dir = PathBuf::from("cache/pruning-v4");
     let mut progress_million = 5_usize;
     let mut pruning_candidate = None;
     let mut json_path = None;
@@ -70,6 +73,7 @@ fn run() -> Result<(), String> {
             "--bidirectional" => force_bidirectional = true,
             "--no-bidirectional" => disable_bidirectional = true,
             "--bidir-start-pruning" => bidirectional_start_pruning = true,
+            "--restricted-pruning" => restricted_pruning = true,
             "--no-pruning" => use_solver_pruning = false,
             "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
             "--benchmark-iters" => {
@@ -106,6 +110,18 @@ fn run() -> Result<(), String> {
                     .ok_or("--bidir-max-mib needs a value")?
                     .parse()
                     .map_err(|_| "--bidir-max-mib must be an integer")?;
+            }
+            "--moves" => {
+                i += 1;
+                allowed_moves = parse_move_list(args.get(i).ok_or("--moves needs a move list")?)?;
+            }
+            "--ban" => {
+                i += 1;
+                let banned = parse_move_list(args.get(i).ok_or("--ban needs a move list")?)?;
+                allowed_moves.retain(|mv| !banned.contains(mv));
+                if allowed_moves.is_empty() {
+                    return Err("--ban removed every move".to_owned());
+                }
             }
             "--max-pruning-mib" => {
                 i += 1;
@@ -192,7 +208,7 @@ fn run() -> Result<(), String> {
     }
 
     eprintln!("loading transition tables...");
-    let tables = TransitionTables::load_or_build("cache/transition-tables-v3.bin")
+    let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
         .map_err(|error| error.to_string())?;
 
     if auto_pruning {
@@ -303,6 +319,11 @@ fn run() -> Result<(), String> {
             &tables,
             &pruning_out_dir,
             progress_million * 1_000_000,
+            if restricted_pruning {
+                &allowed_moves
+            } else {
+                &Move::ALL
+            },
         )?)
     } else {
         None
@@ -322,6 +343,7 @@ fn run() -> Result<(), String> {
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
+            allowed_moves.clone(),
         )?;
         return Ok(());
     }
@@ -338,6 +360,7 @@ fn run() -> Result<(), String> {
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
+            allowed_moves.clone(),
         )
     } else {
         solve_incrementally(
@@ -350,6 +373,7 @@ fn run() -> Result<(), String> {
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
+            allowed_moves,
         )
     }?;
 
@@ -373,6 +397,7 @@ fn solve_once(
     bidirectional_max_mib: usize,
     bidirectional_start_pruning: bool,
     progress_interval: usize,
+    allowed_moves: Vec<Move>,
 ) -> Result<search::SearchResult, String> {
     if exact_depth
         && bidirectional_threshold.is_some_and(|threshold| max_depth >= threshold)
@@ -389,6 +414,7 @@ fn solve_once(
                 threads,
                 use_start_pruning: bidirectional_start_pruning,
                 progress_interval,
+                allowed_moves: allowed_moves.clone(),
             },
         );
     }
@@ -401,6 +427,8 @@ fn solve_once(
             min_depth: if exact_depth { max_depth } else { 0 },
             max_depth,
             find_all,
+            allowed_moves,
+            cancel: None,
         },
         threads,
     ))
@@ -433,6 +461,7 @@ fn run_solve_benchmark(
     bidirectional_max_mib: usize,
     bidirectional_start_pruning: bool,
     progress_interval: usize,
+    allowed_moves: Vec<Move>,
 ) -> Result<(), String> {
     let iterations = iterations.max(1);
     let warmups = 2;
@@ -449,6 +478,7 @@ fn run_solve_benchmark(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves.clone(),
         )?;
         std::hint::black_box(result.nodes);
         std::hint::black_box(result.solutions.len());
@@ -470,6 +500,7 @@ fn run_solve_benchmark(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves.clone(),
         )?;
         let elapsed = start.elapsed();
         std::hint::black_box(result.nodes);
@@ -517,6 +548,7 @@ fn benchmark_solve_once(
     bidirectional_max_mib: usize,
     bidirectional_start_pruning: bool,
     progress_interval: usize,
+    allowed_moves: Vec<Move>,
 ) -> Result<search::SearchResult, String> {
     if let Some(max_depth) = max_depth {
         solve_once(
@@ -531,6 +563,7 @@ fn benchmark_solve_once(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves,
         )
     } else {
         solve_incrementally_quiet(
@@ -543,6 +576,7 @@ fn benchmark_solve_once(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves,
         )
     }
 }
@@ -551,8 +585,9 @@ fn load_solver_pruning(
     tables: &TransitionTables,
     out_dir: &Path,
     progress_interval: usize,
+    moves: &[Move],
 ) -> Result<SolverPruning, String> {
-    let pruning = SolverPruning::load_or_build(tables, out_dir, progress_interval)?;
+    let pruning = SolverPruning::load_or_build_with_moves(tables, out_dir, progress_interval, moves)?;
     eprintln!(
         "using 2 pruning tables: edge3+uf3 / corner+uf3 ({:.1} MiB)",
         pruning.total_bytes() as f64 / (1024.0 * 1024.0)
@@ -570,6 +605,7 @@ fn solve_incrementally(
     bidirectional_max_mib: usize,
     bidirectional_start_pruning: bool,
     progress_interval: usize,
+    allowed_moves: Vec<Move>,
 ) -> Result<search::SearchResult, String> {
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
@@ -589,6 +625,7 @@ fn solve_incrementally(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves.clone(),
         )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
@@ -610,6 +647,7 @@ fn solve_incrementally_quiet(
     bidirectional_max_mib: usize,
     bidirectional_start_pruning: bool,
     progress_interval: usize,
+    allowed_moves: Vec<Move>,
 ) -> Result<search::SearchResult, String> {
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
@@ -628,6 +666,7 @@ fn solve_incrementally_quiet(
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_interval,
+            allowed_moves.clone(),
         )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
@@ -837,7 +876,7 @@ fn sample_states(
         let mut last_axis = None;
         for _ in 0..depth {
             let mv = loop {
-                let candidate = fto_core::moves::Move::ALL[rng.next_usize(10)];
+                let candidate = fto_core::moves::Move::ALL[rng.next_usize(fto_core::moves::MOVE_COUNT)];
                 if last_axis != Some(candidate.axis()) {
                     break candidate;
                 }
@@ -1005,6 +1044,8 @@ fn print_help() {
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-max-mib 3072
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-start-pruning
   fto-cli --json state.json --depth 17 --exact --threads 2
+  fto-cli --scramble \"R U R'\" --depth 10 --ban \"D D' F Fw\"
+  fto-cli --scramble \"R U R'\" --depth 10 --moves \"R R' U U'\" --restricted-pruning
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
@@ -1020,6 +1061,8 @@ fn print_help() {
 If no depth is provided, search starts at the pruning lower bound and increases until a solution is found.
 Exact searches at depth 19+ use bidirectional search unless --no-bidirectional is used.
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
+--ban removes moves from search. --moves replaces the search move set.
+By default restricted searches still use the all-move base pruning table; --restricted-pruning builds PDBs for the allowed set.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.
 If no state is provided, the solved state is used."
     );
@@ -1087,19 +1130,50 @@ fn apply_sequence(mut cubie: FtoCubie, sequence: &str) -> Result<FtoCubie, Strin
 }
 
 fn parse_move(token: &str) -> Result<fto_core::moves::Move, String> {
-    use fto_core::moves::Move;
-
     match token {
         "U" => Ok(Move::U),
         "U'" | "Ui" => Ok(Move::Up),
+        "F" => Ok(Move::F),
+        "F'" | "Fi" => Ok(Move::Fp),
+        "BR" | "r" => Ok(Move::Br),
+        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::Brp),
+        "BL" | "l" => Ok(Move::Bl),
+        "BL'" | "BLi" | "l'" | "li" => Ok(Move::Blp),
+        "D" => Ok(Move::D),
+        "D'" | "Di" => Ok(Move::Dp),
         "B" => Ok(Move::B),
         "B'" | "Bi" => Ok(Move::Bp),
         "R" => Ok(Move::R),
         "R'" | "Ri" => Ok(Move::Rp),
         "L" => Ok(Move::L),
         "L'" | "Li" => Ok(Move::Lp),
+        "Uw" => Ok(Move::Uw),
+        "Uw'" | "Uwi" => Ok(Move::Uwp),
+        "Fw" => Ok(Move::Fw),
+        "Fw'" | "Fwi" => Ok(Move::Fwp),
         "Rw" => Ok(Move::Rw),
         "Rw'" | "Rwi" => Ok(Move::Rwp),
+        "Lw" => Ok(Move::Lw),
+        "Lw'" | "Lwi" => Ok(Move::Lwp),
+        "M" => Ok(Move::M),
+        "M'" | "Mi" => Ok(Move::Mp),
         _ => Err(format!("unknown move: {token}")),
     }
+}
+
+fn parse_move_list(input: &str) -> Result<Vec<Move>, String> {
+    let mut moves = Vec::new();
+    for token in input
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
+        .filter(|token| !token.is_empty())
+    {
+        let mv = parse_move(token)?;
+        if !moves.contains(&mv) {
+            moves.push(mv);
+        }
+    }
+    if moves.is_empty() {
+        return Err("move list cannot be empty".to_owned());
+    }
+    Ok(moves)
 }

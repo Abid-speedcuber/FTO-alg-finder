@@ -5,13 +5,22 @@ use crate::{
     tables::TransitionTables,
     FtoCoord,
 };
-use std::{collections::HashMap, thread};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SearchConfig {
     pub min_depth: u8,
     pub max_depth: u8,
     pub find_all: bool,
+    pub allowed_moves: Vec<Move>,
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for SearchConfig {
@@ -20,6 +29,8 @@ impl Default for SearchConfig {
             min_depth: 0,
             max_depth: 6,
             find_all: true,
+            allowed_moves: Move::ALL.to_vec(),
+            cancel: None,
         }
     }
 }
@@ -38,6 +49,7 @@ pub struct BidirectionalConfig {
     pub threads: usize,
     pub use_start_pruning: bool,
     pub progress_interval: usize,
+    pub allowed_moves: Vec<Move>,
 }
 
 #[must_use]
@@ -76,6 +88,9 @@ pub fn solve_with_pruning_threads(
     };
 
     for depth in config.min_depth..=config.max_depth {
+        if is_cancelled(config) {
+            break;
+        }
         if depth == 0 {
             total.nodes += 1;
             if root == solved {
@@ -89,7 +104,7 @@ pub fn solve_with_pruning_threads(
 
         let child_depth = depth - 1;
         let mut roots = Vec::new();
-        for mv in Move::ALL {
+        for &mv in &config.allowed_moves {
             let pruning_child = root.apply_pruning(tables, mv);
             let pruning_value = pruning
                 .map(|pdb| pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx))
@@ -127,6 +142,9 @@ pub fn solve_with_pruning_threads(
                         nodes: 0,
                     };
                     for &(mv, state) in chunk {
+                        if is_cancelled(config) {
+                            break;
+                        }
                         ctx.path.push(mv);
                         ctx.dfs(state, child_depth, Some(mv), true);
                         ctx.path.pop();
@@ -169,12 +187,14 @@ pub fn solve_bidirectional(
     let commute = move_commutation();
     let solved = SearchState::from_coord(FtoCoord::solved());
     let start = SearchState::from_coord(coord);
+    let allowed_moves = config.allowed_moves.as_slice();
     let start_pruning = if config.use_start_pruning {
         eprintln!("building temporary start-centered bidirectional pruning tables...");
-        Some(SolverPruning::build_from_coord(
+        Some(SolverPruning::build_from_coord_with_moves(
             coord,
             tables,
             config.progress_interval,
+            allowed_moves,
         )?)
     } else {
         None
@@ -184,6 +204,7 @@ pub fn solve_bidirectional(
         tables,
         pruning: start_pruning.as_ref(),
         commute,
+        allowed_moves,
         goal_slack: fwd_depth,
         max_stored_paths: config.max_stored_paths,
         stored_paths: 0,
@@ -204,6 +225,7 @@ pub fn solve_bidirectional(
             back.nodes,
             commute,
             config.threads,
+            allowed_moves,
         ));
     }
 
@@ -211,6 +233,7 @@ pub fn solve_bidirectional(
         tables,
         pruning,
         commute,
+        allowed_moves,
         goal_slack: back_depth,
         back_paths: &back.paths,
         find_all: config.find_all,
@@ -237,10 +260,11 @@ fn match_bidirectional_parallel(
     initial_nodes: u64,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     threads: usize,
+    allowed_moves: &[Move],
 ) -> SearchResult {
     let child_depth = fwd_depth - 1;
     let mut roots = Vec::new();
-    for mv in Move::ALL {
+    for &mv in allowed_moves {
         let pruning_child = start.apply_pruning(tables, mv);
         roots.push((mv, start.apply_with_pruning_child(tables, mv, pruning_child)));
     }
@@ -265,6 +289,7 @@ fn match_bidirectional_parallel(
                     tables,
                     pruning,
                     commute,
+                    allowed_moves,
                     goal_slack: back_depth,
                     back_paths,
                     find_all,
@@ -315,6 +340,9 @@ fn solve_with_pruning_single(
     let state = SearchState::from_coord(coord);
 
     for depth in config.min_depth..=config.max_depth {
+        if is_cancelled(config) {
+            break;
+        }
         ctx.dfs(state, depth, None, false);
         if !config.find_all && !ctx.solutions.is_empty() {
             break;
@@ -346,6 +374,9 @@ impl SearchContext<'_> {
         last_move: Option<Move>,
         pruning_checked: bool,
     ) {
+        if is_cancelled(self.config) {
+            return;
+        }
         self.nodes += 1;
         if !pruning_checked && self.pruning_value(state) > depth_left {
             return;
@@ -360,7 +391,7 @@ impl SearchContext<'_> {
         let child_depth = depth_left - 1;
         let mut children = [(0_u8, Move::U, state); MOVE_COUNT];
         let mut child_count = 0;
-        for mv in Move::ALL {
+        for &mv in &self.config.allowed_moves {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
@@ -378,6 +409,9 @@ impl SearchContext<'_> {
         }
 
         for &(_, mv, next) in &children[..child_count] {
+            if is_cancelled(self.config) {
+                return;
+            }
             self.path.push(mv);
             self.dfs(next, child_depth, Some(mv), true);
             self.path.pop();
@@ -405,10 +439,18 @@ impl SearchContext<'_> {
     }
 }
 
+fn is_cancelled(config: &SearchConfig) -> bool {
+    config
+        .cancel
+        .as_ref()
+        .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+}
+
 struct BackwardBuilder<'a> {
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    allowed_moves: &'a [Move],
     goal_slack: u8,
     max_stored_paths: usize,
     stored_paths: usize,
@@ -440,7 +482,7 @@ impl BackwardBuilder<'_> {
             return Ok(());
         }
 
-        for mv in Move::ALL {
+        for &mv in self.allowed_moves {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
@@ -476,6 +518,7 @@ struct ForwardMatcher<'a> {
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    allowed_moves: &'a [Move],
     goal_slack: u8,
     back_paths: &'a HashMap<SearchState, Vec<u64>>,
     find_all: bool,
@@ -510,7 +553,7 @@ impl ForwardMatcher<'_> {
             return;
         }
 
-        for mv in Move::ALL {
+        for &mv in self.allowed_moves {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
@@ -663,6 +706,8 @@ mod tests {
                 min_depth: 0,
                 max_depth: 2,
                 find_all: false,
+                allowed_moves: Move::ALL.to_vec(),
+                cancel: None,
             },
         );
 

@@ -1,0 +1,292 @@
+:root {
+  color: #20242a;
+  background: #f5f7f8;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+main {
+  min-height: 100vh;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.1fr) minmax(360px, 0.9fr);
+  min-height: 100vh;
+}
+
+.input-pane,
+.control-pane {
+  padding: 24px;
+}
+
+.input-pane {
+  background: #ffffff;
+  border-right: 1px solid #d9dee4;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+h1,
+h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 28px;
+}
+
+h2 {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+
+.status,
+.metrics span {
+  border: 1px solid #ccd3da;
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: #f8fafb;
+  font-size: 13px;
+}
+
+button {
+  border: 1px solid #c9d1d9;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #20242a;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #6e879f;
+}
+
+button.selected,
+button.primary {
+  background: #1f6f78;
+  color: #ffffff;
+  border-color: #1f6f78;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.setup-row {
+  display: grid;
+  grid-template-columns: 1fr 108px;
+  gap: 8px;
+  align-items: end;
+}
+
+.setup-row button {
+  min-height: 42px;
+  margin-bottom: 0;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: #55616d;
+}
+
+textarea {
+  min-height: 132px;
+  resize: vertical;
+  border: 1px solid #c9d1d9;
+  border-radius: 6px;
+  padding: 10px;
+  color: #20242a;
+  background: #fbfcfd;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+}
+
+.fto-viewer-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.fto-canvas-host {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 460px;
+  border: 1px solid #c9d1d9;
+  border-radius: 8px;
+  background: #1f2328;
+  overflow: hidden;
+}
+
+.fto-canvas-host canvas {
+  display: block;
+}
+
+.viewer-controls {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(34px, 1fr));
+  gap: 8px;
+}
+
+.viewer-controls .swatch {
+  position: relative;
+  min-width: 34px;
+  padding: 0;
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.42), rgb(0 0 0 / 0.08)),
+    var(--swatch);
+}
+
+.viewer-controls .swatch.selected {
+  outline: 3px solid #1f6f78;
+  outline-offset: 1px;
+  border-color: #ffffff;
+}
+
+.move-log {
+  min-height: 34px;
+  border: 1px solid #d8dee5;
+  border-radius: 6px;
+  padding: 8px;
+  background: #fbfcfd;
+  color: #66717c;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.control-pane {
+  display: grid;
+  align-content: start;
+  gap: 22px;
+}
+
+.move-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(64px, 1fr));
+  gap: 8px;
+}
+
+.move-grid .banned {
+  background: #f1d7da;
+  color: #8a2530;
+  border-color: #d49aa1;
+}
+
+.solve-options {
+  display: grid;
+  gap: 10px;
+}
+
+.solve-options label {
+  display: grid;
+  gap: 5px;
+  font-size: 13px;
+  color: #55616d;
+}
+
+.solve-options input[type="text"],
+.solve-options input:not([type]) {
+  width: 100%;
+}
+
+input {
+  border: 1px solid #c9d1d9;
+  border-radius: 6px;
+  min-height: 34px;
+  padding: 6px 8px;
+  background: #ffffff;
+}
+
+.check {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  color: #20242a;
+}
+
+.check input {
+  min-height: 0;
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.state-ok,
+.state-error {
+  margin-bottom: 12px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.state-ok {
+  border: 1px solid #9ec6a6;
+  background: #eef8f0;
+  color: #1d6a2f;
+}
+
+.state-error {
+  border: 1px solid #d49aa1;
+  background: #f8e9eb;
+  color: #8a2530;
+}
+
+.solutions {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 22px;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 13px;
+}
+
+@media (max-width: 860px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .input-pane {
+    border-right: 0;
+    border-bottom: 1px solid #d9dee4;
+  }
+
+  .fto-canvas-host {
+    min-height: min(420px, 90vw);
+  }
+
+  .setup-row {
+    grid-template-columns: 1fr;
+  }
+
+  .viewer-controls {
+    grid-template-columns: repeat(5, minmax(34px, 1fr));
+  }
+}

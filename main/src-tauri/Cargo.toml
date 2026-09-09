@@ -1,0 +1,16 @@
+[package]
+name = "optimal-fto-solver-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "optimal_fto_solver_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+fto-core = { path = "../crates/fto-core" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }

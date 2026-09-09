@@ -5,28 +5,60 @@ use crate::cubie::FtoCubie;
 pub enum Move {
     U = 0,
     Up = 1,
-    B = 2,
-    Bp = 3,
-    R = 4,
-    Rp = 5,
-    L = 6,
-    Lp = 7,
-    Rw = 8,
-    Rwp = 9,
+    F = 2,
+    Fp = 3,
+    Br = 4,
+    Brp = 5,
+    Bl = 6,
+    Blp = 7,
+    D = 8,
+    Dp = 9,
+    B = 10,
+    Bp = 11,
+    R = 12,
+    Rp = 13,
+    L = 14,
+    Lp = 15,
+    Uw = 16,
+    Uwp = 17,
+    Fw = 18,
+    Fwp = 19,
+    Rw = 20,
+    Rwp = 21,
+    Lw = 22,
+    Lwp = 23,
+    M = 24,
+    Mp = 25,
 }
 
 impl Move {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; MOVE_COUNT] = [
         Self::U,
         Self::Up,
+        Self::F,
+        Self::Fp,
+        Self::Br,
+        Self::Brp,
+        Self::Bl,
+        Self::Blp,
+        Self::D,
+        Self::Dp,
         Self::B,
         Self::Bp,
         Self::R,
         Self::Rp,
         Self::L,
         Self::Lp,
+        Self::Uw,
+        Self::Uwp,
+        Self::Fw,
+        Self::Fwp,
         Self::Rw,
         Self::Rwp,
+        Self::Lw,
+        Self::Lwp,
+        Self::M,
+        Self::Mp,
     ];
 
     #[must_use]
@@ -34,14 +66,30 @@ impl Move {
         match self {
             Self::U => "U",
             Self::Up => "U'",
+            Self::F => "F",
+            Self::Fp => "F'",
+            Self::Br => "BR",
+            Self::Brp => "BR'",
+            Self::Bl => "BL",
+            Self::Blp => "BL'",
+            Self::D => "D",
+            Self::Dp => "D'",
             Self::B => "B",
             Self::Bp => "B'",
             Self::R => "R",
             Self::Rp => "R'",
             Self::L => "L",
             Self::Lp => "L'",
+            Self::Uw => "Uw",
+            Self::Uwp => "Uw'",
+            Self::Fw => "Fw",
+            Self::Fwp => "Fw'",
             Self::Rw => "Rw",
             Self::Rwp => "Rw'",
+            Self::Lw => "Lw",
+            Self::Lwp => "Lw'",
+            Self::M => "M",
+            Self::Mp => "M'",
         }
     }
 
@@ -66,14 +114,16 @@ impl Move {
     }
 }
 
-pub const MOVE_COUNT: usize = 10;
+pub const MOVE_COUNT: usize = 26;
 
 #[must_use]
 pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
     let all = cstimer_move_cubies();
-    [
-        all[0], all[1], all[10], all[11], all[12], all[13], all[14], all[15], all[20], all[21],
-    ]
+    let mut moves = [FtoCubie::solved(); MOVE_COUNT];
+    moves[..24].copy_from_slice(&all);
+    moves[Move::M.idx()] = all[Move::Rwp.idx()].compose(&all[Move::R.idx()]);
+    moves[Move::Mp.idx()] = all[Move::Rw.idx()].compose(&all[Move::Rp.idx()]);
+    moves
 }
 
 fn cstimer_move_cubies() -> [FtoCubie; 24] {

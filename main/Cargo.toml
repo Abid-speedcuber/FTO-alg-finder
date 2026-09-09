@@ -2,6 +2,7 @@
 members = [
     "crates/fto-cli",
     "crates/fto-core",
+    "src-tauri",
 ]
 resolver = "3"
 

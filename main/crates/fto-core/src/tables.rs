@@ -15,7 +15,7 @@ use std::{
     path::Path,
 };
 
-const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V3\0\0\0\0";
+const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V4\0\0\0\0";
 
 #[derive(Debug)]
 pub struct TransitionTables {
