@@ -2,6 +2,28 @@
   "use strict";
 
   var faceColors = [0xffff00, 0x0000ff, 0xff0000, 0x800080, 0xffffff, 0x00a050, 0x808080, 0xff8800];
+  var ignoredColor = 8;
+  var ignoredColorHex = 0x050505;
+  var pieceFacelets = [
+    [0, 54, 9, 63],
+    [4, 53, 22, 62],
+    [8, 67, 35, 49],
+    [27, 36, 18, 45],
+    [13, 44, 31, 71],
+    [26, 40, 17, 58],
+    [1, 57],
+    [3, 64],
+    [6, 51],
+    [28, 39],
+    [21, 37],
+    [15, 42],
+    [12, 55],
+    [10, 66],
+    [33, 69],
+    [30, 46],
+    [19, 48],
+    [24, 60],
+  ];
   var polyFaceToFaceletFace = [0, 6, 7, 1, 4, 3, 2, 5];
   var polyStickerToFaceletSlot = [
     [0, 3, 8, 1, 6, 4, 2, 7, 5],
@@ -25,6 +47,7 @@
     var cubeObject;
     var cubePieces = [];
     var stickerMeshes = [];
+    var faceletToSticker = [];
     var faceletColors = [];
     var puzzle;
     var defaultOrbitX = 0.5;
@@ -89,6 +112,7 @@
         sticker.update();
 
         cubePieces[idx] = [m, sticker, logicalFace, faceletIndex, mesh];
+        faceletToSticker[faceletIndex] = idx;
         stickerMeshes.push(mesh);
         faceletColors[faceletIndex] = logicalFace;
         cubeObject.addChild(sticker);
@@ -104,7 +128,7 @@
         return;
       }
       var material = sticker[4].materials[0];
-      material.color.setHex(faceColors[color]);
+      material.color.setHex(color === ignoredColor ? ignoredColorHex : faceColors[color]);
       sticker[2] = color;
       faceletColors[sticker[3]] = color;
     }
@@ -360,6 +384,10 @@
       var onMouseUp = function(e) {
         pointerUp(e.clientX, e.clientY);
       };
+      var onContextMenu = function(e) {
+        e.preventDefault();
+        ignorePieceAt(e.clientX, e.clientY);
+      };
       var onWheel = function(e) {
         if (!isDragging || activeDragMode !== "pan") {
           return;
@@ -392,6 +420,8 @@
 
       container.addEventListener("mousedown", onMouseDown);
       onCleanup(function() { container.removeEventListener("mousedown", onMouseDown); });
+      container.addEventListener("contextmenu", onContextMenu);
+      onCleanup(function() { container.removeEventListener("contextmenu", onContextMenu); });
       window.addEventListener("mousemove", onMouseMove);
       onCleanup(function() { window.removeEventListener("mousemove", onMouseMove); });
       window.addEventListener("mouseup", onMouseUp);
@@ -418,6 +448,28 @@
         return;
       }
       setStickerColor(stickerIndex, selectedColor);
+      render();
+      notifyState();
+    }
+
+    function ignorePieceAt(x, y) {
+      var stickerIndex = pickSticker(x, y);
+      if (stickerIndex == null || !cubePieces[stickerIndex]) {
+        return;
+      }
+      var faceletIndex = cubePieces[stickerIndex][3];
+      var group = pieceFacelets.find(function(facelets) {
+        return facelets.indexOf(faceletIndex) !== -1;
+      });
+      if (!group) {
+        group = [faceletIndex];
+      }
+      for (var i = 0; i < group.length; i++) {
+        var groupedSticker = faceletToSticker[group[i]];
+        if (groupedSticker != null) {
+          setStickerColor(groupedSticker, ignoredColor);
+        }
+      }
       render();
       notifyState();
     }

@@ -10,6 +10,7 @@ use std::{
 
 use fto_core::{
     moves::Move,
+    partial::{self, PartialMask, PartialProblem},
     pruning::{self, SolverPruning, PruningStats},
     search::{self, BidirectionalConfig, SearchConfig},
     tables::TransitionTables,
@@ -295,8 +296,8 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let cubie = if let Some(sequence) = scramble {
-        apply_sequence(FtoCubie::solved(), &sequence)?
+    let input_state = if let Some(sequence) = scramble {
+        InputState::Exact(apply_sequence(FtoCubie::solved(), &sequence)?)
     } else {
         let input = if let Some(path) = json_path {
             fs::read_to_string(path).map_err(|error| error.to_string())?
@@ -308,10 +309,30 @@ fn run() -> Result<(), String> {
             input
         };
         if input.trim().is_empty() {
-            FtoCubie::solved()
+            InputState::Exact(FtoCubie::solved())
         } else {
-            parse_cubie_json(&input)?
+            parse_input_json(&input)?
         }
+    };
+
+    if let InputState::Partial(problem) = input_state {
+        let result = solve_partial_input(
+            &problem,
+            max_depth,
+            exact_depth,
+            find_all,
+            allowed_moves,
+        );
+        println!("nodes: {}", result.nodes);
+        println!("solutions: {}", result.solutions.len());
+        for solution in result.solutions {
+            println!("{}", search::format_solution(&solution));
+        }
+        return Ok(());
+    }
+
+    let InputState::Exact(cubie) = input_state else {
+        unreachable!();
     };
 
     let pruning_tables = if use_solver_pruning {
@@ -383,6 +404,27 @@ fn run() -> Result<(), String> {
         println!("{}", search::format_solution(&solution));
     }
     Ok(())
+}
+
+fn solve_partial_input(
+    problem: &PartialProblem,
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+    allowed_moves: Vec<Move>,
+) -> search::SearchResult {
+    let config = SearchConfig {
+        min_depth: if exact_depth {
+            max_depth.unwrap_or(0)
+        } else {
+            0
+        },
+        max_depth: max_depth.unwrap_or(u8::MAX),
+        find_all,
+        allowed_moves,
+        cancel: None,
+    };
+    partial::solve_partial(problem, &config)
 }
 
 fn solve_once(
@@ -1068,6 +1110,23 @@ If no state is provided, the solved state is used."
     );
 }
 
+enum InputState {
+    Exact(FtoCubie),
+    Partial(PartialProblem),
+}
+
+fn parse_input_json(input: &str) -> Result<InputState, String> {
+    let cubie = parse_cubie_json(input)?;
+    if input.contains("\"partialMask\"") {
+        Ok(InputState::Partial(PartialProblem {
+            cubie,
+            mask: parse_partial_mask(input)?,
+        }))
+    } else {
+        Ok(InputState::Exact(cubie))
+    }
+}
+
 fn parse_cubie_json(input: &str) -> Result<FtoCubie, String> {
     Ok(FtoCubie::new(
         parse_array::<6>(input, "cp", 0, 5)?,
@@ -1076,6 +1135,71 @@ fn parse_cubie_json(input: &str) -> Result<FtoCubie, String> {
         parse_array::<12>(input, "uf", 0, 11)?,
         parse_array::<12>(input, "rl", 0, 11)?,
     ))
+}
+
+fn parse_partial_mask(input: &str) -> Result<PartialMask, String> {
+    let mask = object_body(input, "partialMask")?;
+    Ok(PartialMask {
+        corners: parse_bool_array::<6>(mask, "corners")?,
+        edges: parse_bool_array::<12>(mask, "edges")?,
+        uf_centers: parse_bool_array::<12>(mask, "ufCenters")?,
+        rl_centers: parse_bool_array::<12>(mask, "rlCenters")?,
+    })
+}
+
+fn object_body<'a>(input: &'a str, key: &str) -> Result<&'a str, String> {
+    let needle = format!("\"{key}\"");
+    let key_start = input
+        .find(&needle)
+        .ok_or_else(|| format!("missing JSON key: {key}"))?;
+    let after_key = &input[key_start + needle.len()..];
+    let open = after_key
+        .find('{')
+        .ok_or_else(|| format!("{key} must be a JSON object"))?;
+    let body_start = key_start + needle.len() + open + 1;
+    let mut depth = 1_i32;
+    for (offset, ch) in input[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&input[body_start..body_start + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(format!("{key} object is missing closing brace"))
+}
+
+fn parse_bool_array<const N: usize>(input: &str, key: &str) -> Result<[bool; N], String> {
+    let needle = format!("\"{key}\"");
+    let key_start = input
+        .find(&needle)
+        .ok_or_else(|| format!("missing JSON key: {key}"))?;
+    let after_key = &input[key_start + needle.len()..];
+    let open = after_key
+        .find('[')
+        .ok_or_else(|| format!("{key} must be a JSON array"))?;
+    let after_open = &after_key[open + 1..];
+    let close = after_open
+        .find(']')
+        .ok_or_else(|| format!("{key} array is missing closing bracket"))?;
+    let values = after_open[..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| match value {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(format!("{key} contains non-boolean value: {value}")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    values
+        .try_into()
+        .map_err(|values: Vec<bool>| format!("{key} must contain {N} values, got {}", values.len()))
 }
 
 fn parse_array<const N: usize>(
