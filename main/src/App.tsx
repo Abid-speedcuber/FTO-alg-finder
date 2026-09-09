@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import FtoViewer from "./FtoViewer";
 
 type CubieState = {
@@ -10,9 +11,20 @@ type CubieState = {
   rl: number[];
 };
 
-type SolveResponse = {
+type SolveResult = {
   nodes: number;
   solutions: string[];
+};
+
+type SolveLine = {
+  kind: string;
+  text: string;
+};
+
+type TerminalLine = {
+  id: number;
+  kind: string;
+  text: string;
 };
 
 const moves = [
@@ -41,14 +53,29 @@ function App() {
   const [restrictedPruning, setRestrictedPruning] = useState(false);
   const [threads, setThreads] = useState("1");
   const [status, setStatus] = useState("Idle");
-  const [result, setResult] = useState<SolveResponse | null>(null);
+  const [result, setResult] = useState<SolveResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [terminal, setTerminal] = useState<TerminalLine[]>([]);
   const validationRun = useRef(0);
+  const lineId = useRef(0);
+  const terminalRef = useRef<HTMLDivElement | null>(null);
 
   const allowedMoves = useMemo(() => moves.filter((move) => !banned.has(move)), [banned]);
 
   const handleFacelets = useCallback((nextFacelets: number[]) => {
     setFacelets(nextFacelets);
+  }, []);
+
+  const appendLine = useCallback((kind: string, text: string) => {
+    const id = ++lineId.current;
+    setTerminal((lines) => {
+      const next = [...lines, { id, kind, text }];
+      return next.length > 500 ? next.slice(next.length - 500) : next;
+    });
+  }, []);
+
+  const clearTerminal = useCallback(() => {
+    setTerminal([]);
   }, []);
 
   useEffect(() => {
@@ -73,6 +100,48 @@ function App() {
       });
   }, [facelets]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisteners: (() => void)[] = [];
+    (async () => {
+      const fns = await Promise.all([
+        listen<SolveLine>("solve-line", (event) => {
+          appendLine(event.payload.kind, event.payload.text);
+        }),
+        listen<SolveResult>("solve-result", (event) => {
+          setResult(event.payload);
+          setRunning(false);
+          setStatus(event.payload.solutions.length ? "Done" : "No solution");
+        }),
+        listen<string>("solve-error", (event) => {
+          appendLine("error", `error: ${event.payload}`);
+          setRunning(false);
+          setStatus(String(event.payload));
+        }),
+        listen("solve-cancelled", () => {
+          appendLine("cancel", "solve cancelled");
+          setRunning(false);
+          setStatus("Stopped");
+        }),
+      ]);
+      if (disposed) {
+        fns.forEach((fn) => fn());
+      } else {
+        unlisteners = fns;
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, [appendLine]);
+
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [terminal]);
+
   function toggleMove(move: string) {
     setBanned((current) => {
       const next = new Set(current);
@@ -92,8 +161,13 @@ function App() {
     setRunning(true);
     setStatus("Solving");
     setResult(null);
+    clearTerminal();
+    appendLine(
+      "info",
+      `solve (depth=${depth} exact=${exact ? "on" : "off"} all=${all ? "on" : "off"} threads=${threads})`,
+    );
     try {
-      const response = await invoke<SolveResponse>("solve_fto", {
+      await invoke("solve_fto", {
         request: {
           scramble: null,
           state: null,
@@ -106,11 +180,9 @@ function App() {
           threads: Number(threads),
         },
       });
-      setResult(response);
-      setStatus(response.solutions.length ? "Done" : "No solution");
     } catch (error) {
+      appendLine("error", `error: ${String(error)}`);
       setStatus(String(error));
-    } finally {
       setRunning(false);
     }
   }
@@ -132,12 +204,30 @@ function App() {
           <div className="setup-row">
             <label className="field">
               <span>Setup moves</span>
-              <textarea value={setup} onChange={(event) => setSetup(event.target.value)} spellCheck={false} />
+              <input
+                value={setup}
+                onChange={(event) => setSetup(event.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
             </label>
             <button onClick={() => setApplySignal((current) => current + 1)}>Apply</button>
           </div>
 
-          <FtoViewer setup={setup} applySignal={applySignal} onFacelets={handleFacelets} />
+          <FtoViewer
+            setup={setup}
+            applySignal={applySignal}
+            onFacelets={handleFacelets}
+            footer={
+              <div className="terminal" ref={terminalRef}>
+                {terminal.map((line) => (
+                  <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
+                    {line.text}
+                  </div>
+                ))}
+              </div>
+            }
+          />
         </div>
 
         <div className="control-pane">
@@ -189,19 +279,7 @@ function App() {
             >
               {running ? "Stop" : "Solve"}
             </button>
-          </section>
-
-          <section>
-            <h2>Output</h2>
-            <div className="metrics">
-              <span>{allowedMoves.length} moves</span>
-              <span>{result ? `${result.nodes} nodes` : "0 nodes"}</span>
-              <span>{result ? `${result.solutions.length} solutions` : "0 solutions"}</span>
-            </div>
             {stateError ? <div className="state-error">{stateError}</div> : <div className="state-ok">valid FTO state</div>}
-            <ol className="solutions">
-              {result?.solutions.map((solution, index) => <li key={`${solution}-${index}`}>{solution || "Solved"}</li>)}
-            </ol>
           </section>
         </div>
       </section>

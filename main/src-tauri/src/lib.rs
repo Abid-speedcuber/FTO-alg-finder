@@ -1,6 +1,6 @@
 use fto_core::{
     moves::Move,
-    pruning::SolverPruning,
+    pruning::{PruningProgress, SolverPruning},
     search::{self, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex,
     },
 };
+use tauri::{AppHandle, Emitter};
 
 const U: usize = 0;
 const F: usize = 9;
@@ -106,13 +107,23 @@ struct SolveResponse {
     solutions: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct SolveLine {
+    kind: String,
+    text: String,
+}
+
 #[derive(Default)]
 struct SolverState {
-    current_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    current_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 #[tauri::command]
-fn solve_fto(request: SolveRequest, solver_state: tauri::State<'_, SolverState>) -> Result<SolveResponse, String> {
+async fn solve_fto(
+    request: SolveRequest,
+    solver_state: tauri::State<'_, SolverState>,
+    app: AppHandle,
+) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut current = solver_state
@@ -125,13 +136,13 @@ fn solve_fto(request: SolveRequest, solver_state: tauri::State<'_, SolverState>)
         *current = Some(cancel.clone());
     }
 
-    let result = solve_fto_inner(request, cancel);
+    let cancels = solver_state.current_cancel.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let response = run_solve_blocking(&request, &cancel, &app, &cancels);
+        let _ = response;
+    });
 
-    if let Ok(mut current) = solver_state.current_cancel.lock() {
-        *current = None;
-    }
-
-    result
+    Ok(())
 }
 
 #[tauri::command]
@@ -151,19 +162,80 @@ fn validate_facelets(facelets: Vec<u8>) -> Result<CubieState, String> {
     cubie_from_facelets(&facelets).map(cubie_to_state)
 }
 
-fn solve_fto_inner(request: SolveRequest, cancel: Arc<AtomicBool>) -> Result<SolveResponse, String> {
-    let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
+fn run_solve_blocking(
+    request: &SolveRequest,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+    cancels: &Mutex<Option<Arc<AtomicBool>>>,
+) -> () {
+    let result = solve_fto_inner(request, cancel, app);
+
+    if let Ok(mut current) = cancels.lock() {
+        *current = None;
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        emit_line(app, "cancel", "solve cancelled");
+        let _ = app.emit("solve-cancelled", ());
+        return;
+    }
+
+    match result {
+        Ok(response) => {
+            emit_line(
+                app,
+                "done",
+                &format!(
+                    "nodes: {}  solutions: {}",
+                    response.nodes,
+                    response.solutions.len()
+                ),
+            );
+            for solution in &response.solutions {
+                emit_line(app, "solution", solution);
+            }
+            let _ = app.emit("solve-result", response);
+        }
+        Err(error) => {
+            emit_line(app, "error", &format!("error: {error}"));
+            let _ = app.emit("solve-error", error);
+        }
+    }
+}
+
+fn emit_line(app: &AppHandle, kind: &str, text: &str) {
+    let _ = app.emit(
+        "solve-line",
+        SolveLine {
+            kind: kind.to_owned(),
+            text: text.to_owned(),
+        },
+    );
+}
+
+fn solve_fto_inner(
+    request: &SolveRequest,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<SolveResponse, String> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
+
+    emit_line(app, "info", "loading transition tables...");
+    let tables = TransitionTables::load_or_build(workspace_root.join("cache/transition-tables-v4.bin"))
         .map_err(|error| error.to_string())?;
+
     let allowed_moves = parse_move_names(&request.allowed_moves)?;
     if allowed_moves.is_empty() {
         return Err("at least one move must be allowed".to_owned());
     }
 
-    let cubie = if let Some(state) = request.state {
+    let cubie = if let Some(state) = request.state.clone() {
         FtoCubie::new(state.cp, state.co, state.ep, state.uf, state.rl)
-    } else if let Some(facelets) = request.facelets {
+    } else if let Some(facelets) = request.facelets.clone() {
         cubie_from_facelets(&facelets)?
-    } else if let Some(scramble) = request.scramble {
+    } else if let Some(scramble) = request.scramble.clone() {
         apply_sequence(FtoCubie::solved(), &scramble)?
     } else {
         FtoCubie::solved()
@@ -174,9 +246,29 @@ fn solve_fto_inner(request: SolveRequest, cancel: Arc<AtomicBool>) -> Result<Sol
     } else {
         Move::ALL.as_slice()
     };
-    let pruning =
-        SolverPruning::load_or_build_with_moves(&tables, Path::new("cache/pruning-v4"), 5_000_000, pruning_moves)?;
-    let result = search::solve_with_pruning_threads(
+    let progress = |progress: PruningProgress| {
+        emit_line(
+            app,
+            "progress",
+            &format!(
+                "{}: depth {}  expanded {}  reached {}",
+                progress.name, progress.depth, progress.expanded, progress.reached
+            ),
+        );
+    };
+    let pruning = SolverPruning::load_or_build_with_moves_reporting(
+        &tables,
+        &workspace_root.join("cache/pruning-v4"),
+        1_000_000,
+        pruning_moves,
+        Some(cancel),
+        Some(&progress),
+    )?;
+    emit_line(app, "info", "pruning tables ready");
+    let search_progress = |depth: u8| {
+        emit_line(app, "search", &format!("searching depth {depth}..."));
+    };
+    let result = search::solve_with_pruning_threads_reporting(
         cubie.coord(),
         &tables,
         Some(&pruning),
@@ -185,9 +277,10 @@ fn solve_fto_inner(request: SolveRequest, cancel: Arc<AtomicBool>) -> Result<Sol
             max_depth: request.max_depth,
             find_all: request.find_all,
             allowed_moves,
-            cancel: Some(cancel),
+            cancel: Some(cancel.clone()),
         },
         request.threads.max(1),
+        search_progress,
     );
 
     Ok(SolveResponse {

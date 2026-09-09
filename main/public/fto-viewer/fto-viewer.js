@@ -27,8 +27,11 @@
     var stickerMeshes = [];
     var faceletColors = [];
     var puzzle;
-    var orbitX = options.orbitX || -0.25;
-    var orbitY = options.orbitY || 0.2;
+    var defaultOrbit = new THREE.Quaternion().multiply(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.25),
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.2)
+    );
+    var orbit = new THREE.Quaternion().copy(defaultOrbit);
     var isDragging = false;
     var didDrag = false;
     var lastX = 0;
@@ -263,13 +266,24 @@
       if (!cubeObject) {
         return;
       }
-      cubeObject.rotation.x = orbitX;
-      cubeObject.rotation.y = orbitY;
-      cubeObject.rotation.z = 0;
+      cubeObject.quaternion.copy(orbit);
+      cubeObject.useQuaternion = true;
       cubeObject.updateMatrix();
     }
 
     function setupMouseControls(canvasEl) {
+      var cleanup = [];
+      function onCleanup(fn) {
+        cleanup.push(fn);
+      }
+      function endDrag() {
+        if (!isDragging) {
+          return;
+        }
+        isDragging = false;
+        didDrag = false;
+        canvasEl.style.cursor = mode === "pan" ? "grab" : "crosshair";
+      }
       function pointerDown(x, y) {
         isDragging = true;
         didDrag = false;
@@ -286,15 +300,18 @@
         if (Math.abs(dx) + Math.abs(dy) > 2) {
           didDrag = true;
         }
-        if (mode !== "pan") {
-          lastX = x;
-          lastY = y;
-          return;
-        }
-        orbitY += dx * 0.008;
-        orbitX += dy * 0.008;
         lastX = x;
         lastY = y;
+        if (mode !== "pan") {
+          return;
+        }
+        var len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 0.01) {
+          return;
+        }
+        var axis = new THREE.Vector3(dy / len, dx / len, 0);
+        var delta = new THREE.Quaternion().setFromAxisAngle(axis, len * 0.008);
+        orbit.copy(new THREE.Quaternion().multiply(delta, orbit)).normalize();
         updateOrbit();
         render();
       }
@@ -302,23 +319,67 @@
         if (mode !== "pan" && !didDrag && x != null && y != null) {
           paintAt(x, y);
         }
-        isDragging = false;
-        canvasEl.style.cursor = mode === "pan" ? "grab" : "crosshair";
+        endDrag();
       }
 
-      canvasEl.addEventListener("mousedown", function(e) { pointerDown(e.clientX, e.clientY); });
-      window.addEventListener("mousemove", function(e) { pointerMove(e.clientX, e.clientY); });
-      window.addEventListener("mouseup", function(e) { pointerUp(e.clientX, e.clientY); });
-      canvasEl.addEventListener("touchstart", function(e) {
+      var onMouseDown = function(e) {
+        if (e.button !== 0) {
+          return;
+        }
+        e.preventDefault();
+        pointerDown(e.clientX, e.clientY);
+      };
+      var onMouseMove = function(e) {
+        if (e.buttons === 0) {
+          endDrag();
+          return;
+        }
+        pointerMove(e.clientX, e.clientY);
+      };
+      var onMouseUp = function(e) {
+        pointerUp(e.clientX, e.clientY);
+      };
+      var onBlur = function() {
+        endDrag();
+      };
+      var onTouchStart = function(e) {
+        if (e.touches.length !== 1) {
+          return;
+        }
         pointerDown(e.touches[0].clientX, e.touches[0].clientY);
-      }, { passive: true });
-      canvasEl.addEventListener("touchmove", function(e) {
+      };
+      var onTouchMove = function(e) {
+        if (e.touches.length !== 1) {
+          return;
+        }
         pointerMove(e.touches[0].clientX, e.touches[0].clientY);
-      }, { passive: true });
-      canvasEl.addEventListener("touchend", function(e) {
+      };
+      var onTouchEnd = function(e) {
+        if (e.touches.length > 0) {
+          return;
+        }
         var touch = e.changedTouches[0];
         pointerUp(touch && touch.clientX, touch && touch.clientY);
+      };
+
+      canvasEl.addEventListener("mousedown", onMouseDown);
+      onCleanup(function() { canvasEl.removeEventListener("mousedown", onMouseDown); });
+      window.addEventListener("mousemove", onMouseMove);
+      onCleanup(function() { window.removeEventListener("mousemove", onMouseMove); });
+      window.addEventListener("mouseup", onMouseUp);
+      onCleanup(function() { window.removeEventListener("mouseup", onMouseUp); });
+      window.addEventListener("blur", onBlur);
+      onCleanup(function() { window.removeEventListener("blur", onBlur); });
+      canvasEl.addEventListener("touchstart", onTouchStart, { passive: true });
+      canvasEl.addEventListener("touchmove", onTouchMove, { passive: true });
+      canvasEl.addEventListener("touchend", onTouchEnd);
+      onCleanup(function() {
+        canvasEl.removeEventListener("touchstart", onTouchStart);
+        canvasEl.removeEventListener("touchmove", onTouchMove);
+        canvasEl.removeEventListener("touchend", onTouchEnd);
       });
+
+      return cleanup;
     }
 
     function paintAt(x, y) {
@@ -405,9 +466,11 @@
     canvas = renderer.domElement;
     canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
     canvas.style.touchAction = "none";
+    canvas.style.userSelect = "none";
+    canvas.draggable = false;
     container.innerHTML = "";
     container.appendChild(canvas);
-    setupMouseControls(canvas);
+    var mouseCleanup = setupMouseControls(canvas);
     var unbindKeyboard = options.keyboard === false ? function() {} : bindKeyboard();
     window.addEventListener("resize", resize);
     resize();
@@ -445,13 +508,17 @@
         notifyState();
       },
       resetView: function() {
-        orbitX = -0.25;
-        orbitY = 0.2;
+        orbit.copy(defaultOrbit);
         updateOrbit();
         render();
       },
       dispose: function() {
         disposed = true;
+        isDragging = false;
+        didDrag = false;
+        for (var i = 0; i < mouseCleanup.length; i++) {
+          mouseCleanup[i]();
+        }
         unbindKeyboard();
         window.removeEventListener("resize", resize);
         if (canvas && canvas.parentElement) {

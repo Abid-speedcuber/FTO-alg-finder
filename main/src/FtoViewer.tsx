@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
 type FtoViewerApi = {
@@ -28,11 +29,12 @@ type Props = {
   setup: string;
   applySignal: number;
   onFacelets: (facelets: number[]) => void;
+  footer?: ReactNode;
 };
 
 const colorHex = ["#ffffff", "#ff8800", "#ffff00", "#00ff00", "#0000ff", "#ff0000", "#800080", "#00ffff"];
 
-function FtoViewer({ setup, applySignal, onFacelets }: Props) {
+function FtoViewer({ setup, applySignal, onFacelets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -101,6 +103,7 @@ function FtoViewer({ setup, applySignal, onFacelets }: Props) {
         <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
         <button onClick={resetPuzzle}>Reset</button>
       </div>
+      {footer}
       <div className="move-log">{history.slice(-40).join(" ")}</div>
     </div>
   );

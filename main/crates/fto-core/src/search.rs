@@ -23,6 +23,8 @@ pub struct SearchConfig {
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
+pub type DepthReporter<'a> = dyn Fn(u8) + Send + Sync + 'a;
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -75,8 +77,31 @@ pub fn solve_with_pruning_threads(
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
+    solve_with_pruning_threads_impl(coord, tables, pruning, config, threads, None)
+}
+
+#[must_use]
+pub fn solve_with_pruning_threads_reporting(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+    threads: usize,
+    report: impl Fn(u8) + Send + Sync,
+) -> SearchResult {
+    solve_with_pruning_threads_impl(coord, tables, pruning, config, threads, Some(&report))
+}
+
+fn solve_with_pruning_threads_impl(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+    threads: usize,
+    report: Option<&DepthReporter<'_>>,
+) -> SearchResult {
     if threads <= 1 || config.max_depth <= 1 {
-        return solve_with_pruning_single(coord, tables, pruning, config);
+        return solve_with_pruning_single(coord, tables, pruning, config, report);
     }
 
     let root = SearchState::from_coord(coord);
@@ -90,6 +115,9 @@ pub fn solve_with_pruning_threads(
     for depth in config.min_depth..=config.max_depth {
         if is_cancelled(config) {
             break;
+        }
+        if let Some(report) = report {
+            report(depth);
         }
         if depth == 0 {
             total.nodes += 1;
@@ -326,6 +354,7 @@ fn solve_with_pruning_single(
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     config: &SearchConfig,
+    report: Option<&DepthReporter<'_>>,
 ) -> SearchResult {
     let mut ctx = SearchContext {
         tables,
@@ -342,6 +371,9 @@ fn solve_with_pruning_single(
     for depth in config.min_depth..=config.max_depth {
         if is_cancelled(config) {
             break;
+        }
+        if let Some(report) = report {
+            report(depth);
         }
         ctx.dfs(state, depth, None, false);
         if !config.find_all && !ctx.solutions.is_empty() {

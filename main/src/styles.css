@@ -61,8 +61,7 @@ h2 {
   margin-bottom: 10px;
 }
 
-.status,
-.metrics span {
+.status {
   border: 1px solid #ccd3da;
   border-radius: 6px;
   padding: 6px 9px;
@@ -114,14 +113,7 @@ button:disabled {
   color: #55616d;
 }
 
-textarea {
-  min-height: 132px;
-  resize: vertical;
-  border: 1px solid #c9d1d9;
-  border-radius: 6px;
-  padding: 10px;
-  color: #20242a;
-  background: #fbfcfd;
+.setup-row input {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
 }
 
@@ -179,6 +171,54 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.terminal {
+  background: #15171c;
+  border: 1px solid #0a0c0f;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 96px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.terminal-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal-line.terminal-info {
+  color: #9fa8b3;
+}
+
+.terminal-line.terminal-progress {
+  color: #7db6ff;
+}
+
+.terminal-line.terminal-search {
+  color: #ffd97a;
+}
+
+.terminal-line.terminal-solution {
+  color: #7ce38b;
+}
+
+.terminal-line.terminal-done {
+  color: #7ce38b;
+  font-weight: 600;
+}
+
+.terminal-line.terminal-error {
+  color: #ff9296;
+}
+
+.terminal-line.terminal-cancel {
+  color: #ffb07c;
+}
+
 .control-pane {
   display: grid;
   align-content: start;
@@ -232,13 +272,6 @@ input {
   min-height: 0;
 }
 
-.metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
 .state-ok,
 .state-error {
   margin-bottom: 12px;
@@ -257,15 +290,6 @@ input {
   border: 1px solid #d49aa1;
   background: #f8e9eb;
   color: #8a2530;
-}
-
-.solutions {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding-left: 22px;
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 13px;
 }
 
 @media (max-width: 860px) {

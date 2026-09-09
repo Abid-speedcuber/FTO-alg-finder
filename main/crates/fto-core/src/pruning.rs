@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{self, BufReader, BufWriter, Read, Write},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
@@ -12,6 +13,18 @@ use crate::{
 };
 
 const UNVISITED: u8 = u8::MAX;
+
+pub const CANCELLED: &str = "solve cancelled";
+
+#[derive(Clone, Debug)]
+pub struct PruningProgress {
+    pub name: String,
+    pub depth: usize,
+    pub expanded: usize,
+    pub reached: usize,
+}
+
+pub type PruningReporter<'a> = dyn Fn(PruningProgress) + Send + Sync + 'a;
 
 #[derive(Clone, Debug)]
 pub struct PatternDatabase {
@@ -116,6 +129,24 @@ impl SolverPruning {
         progress_interval: usize,
         moves: &[Move],
     ) -> Result<Self, String> {
+        Self::load_or_build_with_moves_reporting(
+            tables,
+            out_dir,
+            progress_interval,
+            moves,
+            None,
+            None,
+        )
+    }
+
+    pub fn load_or_build_with_moves_reporting(
+        tables: &TransitionTables,
+        out_dir: &Path,
+        progress_interval: usize,
+        moves: &[Move],
+        cancel: Option<&AtomicBool>,
+        report: Option<&PruningReporter<'_>>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
         let suffix = move_set_suffix(moves);
         let edge3_uf3 = load_or_build_solver_table(
@@ -124,6 +155,8 @@ impl SolverPruning {
             progress_interval,
             out_dir.join(format!("edge3__uf3__{suffix}.pdb")),
             moves,
+            cancel,
+            report,
         )?;
         let corner_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
@@ -131,6 +164,8 @@ impl SolverPruning {
             progress_interval,
             out_dir.join(format!("corner__uf3__{suffix}.pdb")),
             moves,
+            cancel,
+            report,
         )?;
         Ok(Self {
             edge3_uf3,
@@ -215,6 +250,8 @@ fn load_or_build_solver_table(
     progress_interval: usize,
     path: impl AsRef<Path>,
     moves: &[Move],
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
 ) -> Result<Vec<u8>, String> {
     let path = path.as_ref();
     eprintln!(
@@ -225,8 +262,15 @@ fn load_or_build_solver_table(
     match read_table(path, spec.size().unwrap_or(0)) {
         Ok(table) => Ok(table),
         Err(_) => {
-            let (_, table) =
-                build_pruning_table_with_moves(&spec, tables, usize::MAX, progress_interval, moves)?;
+            let (_, table) = build_pruning_table_with_moves(
+                &spec,
+                tables,
+                usize::MAX,
+                progress_interval,
+                moves,
+                cancel,
+                report,
+            )?;
             write_table(path, &table).map_err(|error| error.to_string())?;
             Ok(table)
         }
@@ -241,8 +285,16 @@ fn build_solver_table_from_root(
     moves: &[Move],
 ) -> Result<Vec<u8>, String> {
     let root_index = spec.index_of_coord(root);
-    let (_, table) =
-        build_pruning_table_from_index(&spec, tables, usize::MAX, progress_interval, root_index, moves)?;
+    let (_, table) = build_pruning_table_from_index(
+        &spec,
+        tables,
+        usize::MAX,
+        progress_interval,
+        root_index,
+        moves,
+        None,
+        None,
+    )?;
     Ok(table)
 }
 
@@ -522,7 +574,7 @@ fn build_pruning_table(
     max_entries: usize,
     progress_interval: usize,
 ) -> Result<(PruningStats, Vec<u8>), String> {
-    build_pruning_table_with_moves(spec, tables, max_entries, progress_interval, &Move::ALL)
+    build_pruning_table_with_moves(spec, tables, max_entries, progress_interval, &Move::ALL, None, None)
 }
 
 fn build_pruning_table_with_moves(
@@ -531,9 +583,11 @@ fn build_pruning_table_with_moves(
     max_entries: usize,
     progress_interval: usize,
     moves: &[Move],
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
     let solved = spec.solved_index();
-    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved, moves)
+    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved, moves, cancel, report)
 }
 
 fn build_pruning_table_from_index(
@@ -543,6 +597,8 @@ fn build_pruning_table_from_index(
     progress_interval: usize,
     root_index: usize,
     moves: &[Move],
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
     let size = spec
         .size()
@@ -565,8 +621,12 @@ fn build_pruning_table_from_index(
     let mut max_depth = 0_u8;
     let mut expanded = 0_usize;
     let mut next_progress = progress_interval;
+    let cancel_check_mask: usize = 8191;
 
     for depth in 0..u8::MAX {
+        if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+            return Err(CANCELLED.to_owned());
+        }
         let mut next_frontier = 0_usize;
         for idx in 0..size {
             if table[idx] != depth {
@@ -581,7 +641,21 @@ fn build_pruning_table_from_index(
                     reached,
                     depth
                 );
+                if let Some(report) = report {
+                    report(PruningProgress {
+                        name: spec.name(),
+                        depth: depth.into(),
+                        expanded,
+                        reached,
+                    });
+                }
                 next_progress = next_progress.saturating_add(progress_interval);
+                if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+                    return Err(CANCELLED.to_owned());
+                }
+            }
+            if expanded & cancel_check_mask == 0 && cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+                return Err(CANCELLED.to_owned());
             }
             for &mv in moves {
                 let next = spec.next_index(idx, mv, tables, &mut values, &mut next_values);
