@@ -126,6 +126,29 @@ impl SolverPruning {
         })
     }
 
+    pub fn build_from_coord(
+        root: FtoCoord,
+        tables: &TransitionTables,
+        progress_interval: usize,
+    ) -> Result<Self, String> {
+        let edge3_uf3 = build_solver_table_from_root(
+            CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
+            root,
+            tables,
+            progress_interval,
+        )?;
+        let corner_uf3 = build_solver_table_from_root(
+            CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
+            root,
+            tables,
+            progress_interval,
+        )?;
+        Ok(Self {
+            edge3_uf3,
+            corner_uf3,
+        })
+    }
+
     #[must_use]
     pub fn heuristic(&self, edge3_uf3_idx: usize, corner_uf3_idx: usize) -> u8 {
         live_depth(self.edge3_uf3[edge3_uf3_idx]).max(live_depth(self.corner_uf3[corner_uf3_idx]))
@@ -183,6 +206,17 @@ fn load_or_build_solver_table(
             Ok(table)
         }
     }
+}
+
+fn build_solver_table_from_root(
+    spec: CandidateSpec,
+    root: FtoCoord,
+    tables: &TransitionTables,
+    progress_interval: usize,
+) -> Result<Vec<u8>, String> {
+    let root_index = spec.index_of_coord(root);
+    let (_, table) = build_pruning_table_from_index(&spec, tables, usize::MAX, progress_interval, root_index)?;
+    Ok(table)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -441,6 +475,17 @@ fn build_pruning_table(
     max_entries: usize,
     progress_interval: usize,
 ) -> Result<(PruningStats, Vec<u8>), String> {
+    let solved = spec.solved_index();
+    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved)
+}
+
+fn build_pruning_table_from_index(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    root_index: usize,
+) -> Result<(PruningStats, Vec<u8>), String> {
     let size = spec
         .size()
         .ok_or_else(|| format!("{} size overflows usize", spec.name()))?;
@@ -452,8 +497,7 @@ fn build_pruning_table(
     }
 
     let mut table = vec![UNVISITED; size];
-    let solved = spec.solved_index();
-    table[solved] = 0;
+    table[root_index] = 0;
 
     let mut values = vec![0; spec.components.len()];
     let mut next_values = vec![0; spec.components.len()];

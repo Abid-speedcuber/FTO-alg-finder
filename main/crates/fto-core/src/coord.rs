@@ -30,7 +30,7 @@ pub struct FtoCoord {
     pub rl_center3: u16,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct EdgeCoord {
     pub e0: u16,
     pub e1: u16,

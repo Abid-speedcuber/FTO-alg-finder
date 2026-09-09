@@ -54,6 +54,16 @@ impl Move {
     pub const fn idx(self) -> usize {
         self as usize
     }
+
+    #[must_use]
+    pub const fn inverse(self) -> Self {
+        Self::ALL[self.idx() ^ 1]
+    }
+
+    #[must_use]
+    pub const fn from_idx(idx: usize) -> Self {
+        Self::ALL[idx]
+    }
 }
 
 pub const MOVE_COUNT: usize = 10;

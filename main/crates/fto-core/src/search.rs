@@ -5,6 +5,7 @@ use crate::{
     tables::TransitionTables,
     FtoCoord,
 };
+use std::{collections::HashMap, thread};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchConfig {
@@ -29,6 +30,16 @@ pub struct SearchResult {
     pub nodes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BidirectionalConfig {
+    pub depth: u8,
+    pub find_all: bool,
+    pub max_stored_paths: usize,
+    pub threads: usize,
+    pub use_start_pruning: bool,
+    pub progress_interval: usize,
+}
+
 #[must_use]
 pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) -> SearchResult {
     solve_with_pruning(coord, tables, None, config)
@@ -36,6 +47,256 @@ pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) 
 
 #[must_use]
 pub fn solve_with_pruning(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+) -> SearchResult {
+    solve_with_pruning_threads(coord, tables, pruning, config, 1)
+}
+
+#[must_use]
+pub fn solve_with_pruning_threads(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
+    if threads <= 1 || config.max_depth <= 1 {
+        return solve_with_pruning_single(coord, tables, pruning, config);
+    }
+
+    let root = SearchState::from_coord(coord);
+    let solved = SearchState::from_coord(FtoCoord::solved());
+    let commute = move_commutation();
+    let mut total = SearchResult {
+        solutions: Vec::new(),
+        nodes: 0,
+    };
+
+    for depth in config.min_depth..=config.max_depth {
+        if depth == 0 {
+            total.nodes += 1;
+            if root == solved {
+                total.solutions.push(Vec::new());
+                if !config.find_all {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let child_depth = depth - 1;
+        let mut roots = Vec::new();
+        for mv in Move::ALL {
+            let pruning_child = root.apply_pruning(tables, mv);
+            let pruning_value = pruning
+                .map(|pdb| pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx))
+                .unwrap_or(0);
+            if pruning_value > child_depth {
+                continue;
+            }
+            let state = root.apply_with_pruning_child(tables, mv, pruning_child);
+            roots.push((mv, state));
+        }
+        if roots.is_empty() {
+            total.nodes += 1;
+            continue;
+        }
+
+        let worker_count = threads.min(roots.len());
+        let chunk_size = roots.len().div_ceil(worker_count);
+        let mut depth_result = SearchResult {
+            solutions: Vec::new(),
+            nodes: 1,
+        };
+
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in roots.chunks(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    let mut ctx = SearchContext {
+                        tables,
+                        pruning,
+                        commute,
+                        config,
+                        solved,
+                        solutions: Vec::new(),
+                        path: Vec::with_capacity(config.max_depth as usize),
+                        nodes: 0,
+                    };
+                    for &(mv, state) in chunk {
+                        ctx.path.push(mv);
+                        ctx.dfs(state, child_depth, Some(mv), true);
+                        ctx.path.pop();
+                        if !config.find_all && !ctx.solutions.is_empty() {
+                            break;
+                        }
+                    }
+                    SearchResult {
+                        solutions: ctx.solutions,
+                        nodes: ctx.nodes,
+                    }
+                }));
+            }
+
+            for handle in handles {
+                let result = handle.join().expect("search worker panicked");
+                depth_result.nodes += result.nodes;
+                depth_result.solutions.extend(result.solutions);
+            }
+        });
+
+        total.nodes += depth_result.nodes;
+        total.solutions.extend(depth_result.solutions);
+        if !config.find_all && !total.solutions.is_empty() {
+            break;
+        }
+    }
+
+    total
+}
+
+pub fn solve_bidirectional(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &BidirectionalConfig,
+) -> Result<SearchResult, String> {
+    let fwd_depth = config.depth / 2;
+    let back_depth = config.depth - fwd_depth;
+    let commute = move_commutation();
+    let solved = SearchState::from_coord(FtoCoord::solved());
+    let start = SearchState::from_coord(coord);
+    let start_pruning = if config.use_start_pruning {
+        eprintln!("building temporary start-centered bidirectional pruning tables...");
+        Some(SolverPruning::build_from_coord(
+            coord,
+            tables,
+            config.progress_interval,
+        )?)
+    } else {
+        None
+    };
+
+    let mut back = BackwardBuilder {
+        tables,
+        pruning: start_pruning.as_ref(),
+        commute,
+        goal_slack: fwd_depth,
+        max_stored_paths: config.max_stored_paths,
+        stored_paths: 0,
+        nodes: 0,
+        paths: HashMap::new(),
+    };
+    back.build(solved, back_depth, None, 0)?;
+
+    if config.threads > 1 && fwd_depth > 1 {
+        return Ok(match_bidirectional_parallel(
+            start,
+            fwd_depth,
+            back_depth,
+            tables,
+            pruning,
+            &back.paths,
+            config.find_all,
+            back.nodes,
+            commute,
+            config.threads,
+        ));
+    }
+
+    let mut matcher = ForwardMatcher {
+        tables,
+        pruning,
+        commute,
+        goal_slack: back_depth,
+        back_paths: &back.paths,
+        find_all: config.find_all,
+        solutions: Vec::new(),
+        nodes: back.nodes,
+        path: Vec::with_capacity(config.depth as usize),
+    };
+    matcher.search(start, fwd_depth, None);
+
+    Ok(SearchResult {
+        solutions: matcher.solutions,
+        nodes: matcher.nodes,
+    })
+}
+
+fn match_bidirectional_parallel(
+    start: SearchState,
+    fwd_depth: u8,
+    back_depth: u8,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    back_paths: &HashMap<SearchState, Vec<u64>>,
+    find_all: bool,
+    initial_nodes: u64,
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    threads: usize,
+) -> SearchResult {
+    let child_depth = fwd_depth - 1;
+    let mut roots = Vec::new();
+    for mv in Move::ALL {
+        let pruning_child = start.apply_pruning(tables, mv);
+        roots.push((mv, start.apply_with_pruning_child(tables, mv, pruning_child)));
+    }
+    if roots.is_empty() {
+        return SearchResult {
+            solutions: Vec::new(),
+            nodes: initial_nodes + 1,
+        };
+    }
+
+    let worker_count = threads.min(roots.len());
+    let chunk_size = roots.len().div_ceil(worker_count);
+    let mut total = SearchResult {
+        solutions: Vec::new(),
+        nodes: initial_nodes + 1,
+    };
+    thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in roots.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let mut matcher = ForwardMatcher {
+                    tables,
+                    pruning,
+                    commute,
+                    goal_slack: back_depth,
+                    back_paths,
+                    find_all,
+                    solutions: Vec::new(),
+                    nodes: 0,
+                    path: Vec::with_capacity(fwd_depth as usize),
+                };
+                for &(mv, state) in chunk {
+                    matcher.path.push(mv);
+                    matcher.search(state, child_depth, Some(mv));
+                    matcher.path.pop();
+                    if !find_all && !matcher.solutions.is_empty() {
+                        break;
+                    }
+                }
+                SearchResult {
+                    solutions: matcher.solutions,
+                    nodes: matcher.nodes,
+                }
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.join().expect("bidirectional worker panicked");
+            total.nodes += result.nodes;
+            total.solutions.extend(result.solutions);
+        }
+    });
+    total
+}
+
+fn solve_with_pruning_single(
     coord: FtoCoord,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
@@ -140,9 +401,158 @@ impl SearchContext<'_> {
     }
 
     fn should_skip_after(&self, last: Move, current: Move) -> bool {
-        last.axis() == current.axis()
-            || (self.commute[last.idx()][current.idx()] && current.idx() < last.idx())
+        should_skip_after(&self.commute, last, current)
     }
+}
+
+struct BackwardBuilder<'a> {
+    tables: &'a TransitionTables,
+    pruning: Option<&'a SolverPruning>,
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    goal_slack: u8,
+    max_stored_paths: usize,
+    stored_paths: usize,
+    nodes: u64,
+    paths: HashMap<SearchState, Vec<u64>>,
+}
+
+impl BackwardBuilder<'_> {
+    fn build(
+        &mut self,
+        state: SearchState,
+        depth_left: u8,
+        last_move: Option<Move>,
+        encoded_path: u64,
+    ) -> Result<(), String> {
+        self.nodes += 1;
+        if self.pruning_value(state) > self.goal_slack + depth_left {
+            return Ok(());
+        }
+        if depth_left == 0 {
+            self.paths.entry(state).or_default().push(encoded_path);
+            self.stored_paths += 1;
+            if self.stored_paths > self.max_stored_paths {
+                return Err(format!(
+                    "bidirectional table exceeded cap of {} stored paths",
+                    self.max_stored_paths
+                ));
+            }
+            return Ok(());
+        }
+
+        for mv in Move::ALL {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let pruning_child = state.apply_pruning(self.tables, mv);
+            if self.pruning_value_for_child(pruning_child) > self.goal_slack + depth_left - 1 {
+                continue;
+            }
+            let next = state.apply_with_pruning_child(self.tables, mv, pruning_child);
+            self.build(
+                next,
+                depth_left - 1,
+                Some(mv),
+                encoded_path * MOVE_COUNT as u64 + mv.idx() as u64 + 1,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn pruning_value(&self, state: SearchState) -> u8 {
+        self.pruning
+            .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+            .unwrap_or(0)
+    }
+
+    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+        self.pruning
+            .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+            .unwrap_or(0)
+    }
+}
+
+struct ForwardMatcher<'a> {
+    tables: &'a TransitionTables,
+    pruning: Option<&'a SolverPruning>,
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    goal_slack: u8,
+    back_paths: &'a HashMap<SearchState, Vec<u64>>,
+    find_all: bool,
+    solutions: Vec<Vec<Move>>,
+    nodes: u64,
+    path: Vec<Move>,
+}
+
+impl ForwardMatcher<'_> {
+    fn search(&mut self, state: SearchState, depth_left: u8, last_move: Option<Move>) {
+        self.nodes += 1;
+        if self.pruning_value(state) > self.goal_slack + depth_left {
+            return;
+        }
+        if depth_left == 0 {
+            if let Some(back_paths) = self.back_paths.get(&state) {
+                for &encoded_back in back_paths {
+                    let suffix = decode_inverse_path(encoded_back);
+                    if let (Some(&last), Some(&first)) = (self.path.last(), suffix.first()) {
+                        if should_skip_after(&self.commute, last, first) {
+                            continue;
+                        }
+                    }
+                    let mut solution = self.path.clone();
+                    solution.extend(suffix);
+                    self.solutions.push(solution);
+                    if !self.find_all {
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+
+        for mv in Move::ALL {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let pruning_child = state.apply_pruning(self.tables, mv);
+            if self.pruning_value_for_child(pruning_child) > self.goal_slack + depth_left - 1 {
+                continue;
+            }
+            let next = state.apply_with_pruning_child(self.tables, mv, pruning_child);
+            self.path.push(mv);
+            self.search(next, depth_left - 1, Some(mv));
+            self.path.pop();
+            if !self.find_all && !self.solutions.is_empty() {
+                return;
+            }
+        }
+    }
+
+    fn pruning_value(&self, state: SearchState) -> u8 {
+        self.pruning
+            .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+            .unwrap_or(0)
+    }
+
+    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+        self.pruning
+            .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+            .unwrap_or(0)
+    }
+}
+
+fn decode_inverse_path(mut encoded: u64) -> Vec<Move> {
+    let mut moves = Vec::new();
+    while encoded > 0 {
+        let stored = ((encoded - 1) % MOVE_COUNT as u64) as usize;
+        moves.push(Move::from_idx(stored).inverse());
+        encoded = (encoded - 1) / MOVE_COUNT as u64;
+    }
+    moves
+}
+
+fn should_skip_after(commute: &[[bool; MOVE_COUNT]; MOVE_COUNT], last: Move, current: Move) -> bool {
+    last.axis() == current.axis() || (commute[last.idx()][current.idx()] && current.idx() < last.idx())
 }
 
 fn move_commutation() -> [[bool; MOVE_COUNT]; MOVE_COUNT] {
@@ -156,7 +566,7 @@ fn move_commutation() -> [[bool; MOVE_COUNT]; MOVE_COUNT] {
     commute
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SearchState {
     corner: u16,
     edge: EdgeCoord,

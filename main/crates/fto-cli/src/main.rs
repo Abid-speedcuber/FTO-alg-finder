@@ -10,7 +10,7 @@ use std::{
 
 use fto_core::{
     pruning::{self, SolverPruning, PruningStats},
-    search::{self, SearchConfig},
+    search::{self, BidirectionalConfig, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
 };
@@ -31,6 +31,12 @@ fn run() -> Result<(), String> {
     let mut auto_pruning = false;
     let mut benchmark = false;
     let mut benchmark_iters = 7_usize;
+    let mut threads = 1_usize;
+    let mut force_bidirectional = false;
+    let mut disable_bidirectional = false;
+    let mut bidirectional_threshold = 19_u8;
+    let mut bidirectional_max_mib = 3072_usize;
+    let mut bidirectional_start_pruning = false;
     let mut use_solver_pruning = true;
     let mut keep_all_pruning_pdbs = false;
     let mut max_pruning_mib = 1024_usize;
@@ -61,6 +67,9 @@ fn run() -> Result<(), String> {
             "--eval-pruning" => eval_pruning = true,
             "--auto-pruning" => auto_pruning = true,
             "--benchmark" => benchmark = true,
+            "--bidirectional" => force_bidirectional = true,
+            "--no-bidirectional" => disable_bidirectional = true,
+            "--bidir-start-pruning" => bidirectional_start_pruning = true,
             "--no-pruning" => use_solver_pruning = false,
             "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
             "--benchmark-iters" => {
@@ -70,6 +79,33 @@ fn run() -> Result<(), String> {
                     .ok_or("--benchmark-iters needs a value")?
                     .parse()
                     .map_err(|_| "--benchmark-iters must be an integer")?;
+            }
+            "--threads" => {
+                i += 1;
+                threads = args
+                    .get(i)
+                    .ok_or("--threads needs a value")?
+                    .parse()
+                    .map_err(|_| "--threads must be an integer")?;
+                if threads == 0 {
+                    return Err("--threads must be at least 1".to_owned());
+                }
+            }
+            "--bidir-threshold" => {
+                i += 1;
+                bidirectional_threshold = args
+                    .get(i)
+                    .ok_or("--bidir-threshold needs a value")?
+                    .parse()
+                    .map_err(|_| "--bidir-threshold must be an integer from 0 to 255")?;
+            }
+            "--bidir-max-mib" => {
+                i += 1;
+                bidirectional_max_mib = args
+                    .get(i)
+                    .ok_or("--bidir-max-mib needs a value")?
+                    .parse()
+                    .map_err(|_| "--bidir-max-mib must be an integer")?;
             }
             "--max-pruning-mib" => {
                 i += 1;
@@ -281,6 +317,11 @@ fn run() -> Result<(), String> {
             exact_depth,
             find_all,
             benchmark_iters,
+            threads,
+            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_million * 1_000_000,
         )?;
         return Ok(());
     }
@@ -292,10 +333,25 @@ fn run() -> Result<(), String> {
             max_depth,
             exact_depth,
             find_all,
+            threads,
+            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_million * 1_000_000,
         )
     } else {
-        solve_incrementally(coord, &tables, pruning_tables.as_ref(), find_all)?
-    };
+        solve_incrementally(
+            coord,
+            &tables,
+            pruning_tables.as_ref(),
+            find_all,
+            threads,
+            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_million * 1_000_000,
+        )
+    }?;
 
     println!("nodes: {}", result.nodes);
     println!("solutions: {}", result.solutions.len());
@@ -312,8 +368,32 @@ fn solve_once(
     max_depth: u8,
     exact_depth: bool,
     find_all: bool,
-) -> search::SearchResult {
-    search::solve_with_pruning(
+    threads: usize,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
+    bidirectional_start_pruning: bool,
+    progress_interval: usize,
+) -> Result<search::SearchResult, String> {
+    if exact_depth
+        && bidirectional_threshold.is_some_and(|threshold| max_depth >= threshold)
+    {
+        eprintln!("using bidirectional exact-depth search");
+        return search::solve_bidirectional(
+            coord,
+            tables,
+            pruning,
+            &BidirectionalConfig {
+                depth: max_depth,
+                find_all,
+                max_stored_paths: bidirectional_max_paths(bidirectional_max_mib),
+                threads,
+                use_start_pruning: bidirectional_start_pruning,
+                progress_interval,
+            },
+        );
+    }
+
+    Ok(search::solve_with_pruning_threads(
         coord,
         tables,
         pruning,
@@ -322,7 +402,22 @@ fn solve_once(
             max_depth,
             find_all,
         },
-    )
+        threads,
+    ))
+}
+
+fn bidirectional_policy(force: bool, disable: bool, threshold: u8) -> Option<u8> {
+    if disable {
+        None
+    } else if force {
+        Some(0)
+    } else {
+        Some(threshold)
+    }
+}
+
+fn bidirectional_max_paths(max_mib: usize) -> usize {
+    max_mib.saturating_mul(1024 * 1024) / 96
 }
 
 fn run_solve_benchmark(
@@ -333,11 +428,28 @@ fn run_solve_benchmark(
     exact_depth: bool,
     find_all: bool,
     iterations: usize,
+    threads: usize,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
+    bidirectional_start_pruning: bool,
+    progress_interval: usize,
 ) -> Result<(), String> {
     let iterations = iterations.max(1);
     let warmups = 2;
     for _ in 0..warmups {
-        let result = benchmark_solve_once(coord, tables, pruning, max_depth, exact_depth, find_all)?;
+        let result = benchmark_solve_once(
+            coord,
+            tables,
+            pruning,
+            max_depth,
+            exact_depth,
+            find_all,
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )?;
         std::hint::black_box(result.nodes);
         std::hint::black_box(result.solutions.len());
     }
@@ -346,7 +458,19 @@ fn run_solve_benchmark(
     let mut last_result = None;
     for _ in 0..iterations {
         let start = Instant::now();
-        let result = benchmark_solve_once(coord, tables, pruning, max_depth, exact_depth, find_all)?;
+        let result = benchmark_solve_once(
+            coord,
+            tables,
+            pruning,
+            max_depth,
+            exact_depth,
+            find_all,
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )?;
         let elapsed = start.elapsed();
         std::hint::black_box(result.nodes);
         std::hint::black_box(result.solutions.len());
@@ -388,18 +512,38 @@ fn benchmark_solve_once(
     max_depth: Option<u8>,
     exact_depth: bool,
     find_all: bool,
+    threads: usize,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
+    bidirectional_start_pruning: bool,
+    progress_interval: usize,
 ) -> Result<search::SearchResult, String> {
     if let Some(max_depth) = max_depth {
-        Ok(solve_once(
+        solve_once(
             coord,
             tables,
             pruning,
             max_depth,
             exact_depth,
             find_all,
-        ))
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )
     } else {
-        solve_incrementally_quiet(coord, tables, pruning, find_all)
+        solve_incrementally_quiet(
+            coord,
+            tables,
+            pruning,
+            find_all,
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )
     }
 }
 
@@ -421,6 +565,11 @@ fn solve_incrementally(
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     find_all: bool,
+    threads: usize,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
+    bidirectional_start_pruning: bool,
+    progress_interval: usize,
 ) -> Result<search::SearchResult, String> {
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
@@ -428,16 +577,19 @@ fn solve_incrementally(
     let mut total_nodes = 0_u64;
     for depth in start_depth..=u8::MAX {
         eprintln!("searching depth {depth}...");
-        let mut result = search::solve_with_pruning(
+        let mut result = solve_once(
             coord,
             tables,
             pruning,
-            &SearchConfig {
-                min_depth: depth,
-                max_depth: depth,
-                find_all,
-            },
-        );
+            depth,
+            true,
+            find_all,
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
             result.nodes = total_nodes;
@@ -453,22 +605,30 @@ fn solve_incrementally_quiet(
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     find_all: bool,
+    threads: usize,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
+    bidirectional_start_pruning: bool,
+    progress_interval: usize,
 ) -> Result<search::SearchResult, String> {
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
         .unwrap_or(0);
     let mut total_nodes = 0_u64;
     for depth in start_depth..=u8::MAX {
-        let mut result = search::solve_with_pruning(
+        let mut result = solve_once(
             coord,
             tables,
             pruning,
-            &SearchConfig {
-                min_depth: depth,
-                max_depth: depth,
-                find_all,
-            },
-        );
+            depth,
+            true,
+            find_all,
+            threads,
+            bidirectional_threshold,
+            bidirectional_max_mib,
+            bidirectional_start_pruning,
+            progress_interval,
+        )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
             result.nodes = total_nodes;
@@ -842,6 +1002,9 @@ fn print_help() {
         "Usage:
   fto-cli --scramble \"R U R'\"
   fto-cli --json state.json --benchmark --benchmark-iters 9
+  fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-max-mib 3072
+  fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-start-pruning
+  fto-cli --json state.json --depth 17 --exact --threads 2
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
@@ -855,6 +1018,8 @@ fn print_help() {
   fto-cli --auto-pruning --max-pruning-mib 1024 --keep-all-pruning-pdbs
 
 If no depth is provided, search starts at the pruning lower bound and increases until a solution is found.
+Exact searches at depth 19+ use bidirectional search unless --no-bidirectional is used.
+--bidir-start-pruning builds temporary start-centered tables for the backward half.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.
 If no state is provided, the solved state is used."
     );
