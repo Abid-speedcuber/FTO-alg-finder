@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
@@ -22,12 +23,13 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    let mut max_depth = 6_u8;
+    let mut max_depth = None;
     let mut exact_depth = false;
     let mut find_all = false;
     let mut eval_pruning = false;
     let mut auto_pruning = false;
     let mut use_solver_pruning = true;
+    let mut keep_all_pruning_pdbs = false;
     let mut max_pruning_mib = 1024_usize;
     let mut max_pruning_components = 3_usize;
     let mut top_pruning_candidates = 12_usize;
@@ -45,17 +47,18 @@ fn run() -> Result<(), String> {
         match args[i].as_str() {
             "--depth" => {
                 i += 1;
-                max_depth = args
+                max_depth = Some(args
                     .get(i)
                     .ok_or("--depth needs a value")?
                     .parse()
-                    .map_err(|_| "--depth must be an integer from 0 to 255")?;
+                    .map_err(|_| "--depth must be an integer from 0 to 255")?);
             }
             "--all" => find_all = true,
             "--exact" => exact_depth = true,
             "--eval-pruning" => eval_pruning = true,
             "--auto-pruning" => auto_pruning = true,
             "--no-pruning" => use_solver_pruning = false,
+            "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
             "--max-pruning-mib" => {
                 i += 1;
                 max_pruning_mib = args
@@ -158,6 +161,7 @@ fn run() -> Result<(), String> {
             sample_walk_len,
             top_pruning_candidates,
             max_combo_size,
+            keep_all_pruning_pdbs,
         )?;
         return Ok(());
     }
@@ -246,11 +250,6 @@ fn run() -> Result<(), String> {
         }
     };
 
-    let config = SearchConfig {
-        min_depth: if exact_depth { max_depth } else { 0 },
-        max_depth,
-        find_all,
-    };
     let pruning_tables = if use_solver_pruning {
         Some(load_solver_pruning(
             &tables,
@@ -260,8 +259,17 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
-    let result =
-        search::solve_with_pruning(cubie.coord(), &tables, pruning_tables.as_ref(), &config);
+    let coord = cubie.coord();
+    let result = if let Some(max_depth) = max_depth {
+        let config = SearchConfig {
+            min_depth: if exact_depth { max_depth } else { 0 },
+            max_depth,
+            find_all,
+        };
+        search::solve_with_pruning(coord, &tables, pruning_tables.as_ref(), &config)
+    } else {
+        solve_incrementally(coord, &tables, pruning_tables.as_ref(), find_all)?
+    };
 
     println!("nodes: {}", result.nodes);
     println!("solutions: {}", result.solutions.len());
@@ -308,6 +316,38 @@ fn load_solver_pruning(
     Ok(pruning)
 }
 
+fn solve_incrementally(
+    coord: fto_core::FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&PatternDatabases>,
+    find_all: bool,
+) -> Result<search::SearchResult, String> {
+    let start_depth = pruning
+        .map(|tables| tables.heuristic(coord))
+        .unwrap_or(0);
+    let mut total_nodes = 0_u64;
+    for depth in start_depth..=u8::MAX {
+        eprintln!("searching depth {depth}...");
+        let mut result = search::solve_with_pruning(
+            coord,
+            tables,
+            pruning,
+            &SearchConfig {
+                min_depth: depth,
+                max_depth: depth,
+                find_all,
+            },
+        );
+        total_nodes += result.nodes;
+        if !result.solutions.is_empty() {
+            result.nodes = total_nodes;
+            eprintln!("found solution at depth {depth}");
+            return Ok(result);
+        }
+    }
+    Err("no solution found up to depth 255".to_owned())
+}
+
 fn print_stats(stats: &PruningStats) {
     println!(
         "{},{},{},{},{},{:.3},{}",
@@ -337,6 +377,7 @@ fn run_auto_pruning(
     sample_walk_len: usize,
     top_candidates: usize,
     max_combo_size: usize,
+    keep_all_pdbs: bool,
 ) -> Result<(), String> {
     fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
     let mut stats_file =
@@ -403,6 +444,10 @@ fn run_auto_pruning(
         .into_iter()
         .take(top_candidates)
         .collect::<Vec<_>>();
+    let selected_paths = selected
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect::<HashSet<_>>();
     eprintln!("sampling {sample_count} states with walks up to {sample_walk_len} moves");
     let samples = sample_states(tables, sample_count, sample_walk_len);
     eprintln!("loading sampled values for {} top candidates", selected.len());
@@ -430,6 +475,7 @@ fn run_auto_pruning(
             &mut summaries,
         )?;
     }
+    combo_file.flush().map_err(|error| error.to_string())?;
 
     summaries.sort_by(|a, b| {
         b.avg_max_milli
@@ -446,7 +492,27 @@ fn run_auto_pruning(
             summary.total_bytes as f64 / (1024.0 * 1024.0)
         );
     }
+    if keep_all_pdbs {
+        eprintln!("keeping all generated pruning tables");
+    } else {
+        let removed = cleanup_unselected_pdbs(out_dir, &selected_paths)?;
+        eprintln!("removed {removed} unselected pruning tables from {}", out_dir.display());
+    }
     Ok(())
+}
+
+fn cleanup_unselected_pdbs(out_dir: &Path, keep_paths: &HashSet<PathBuf>) -> Result<usize, String> {
+    let mut removed = 0;
+    for entry in fs::read_dir(out_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "pdb") && !keep_paths.contains(&path)
+        {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 struct GeneratedCandidate {
@@ -644,6 +710,7 @@ fn parse_candidate(input: &str) -> Result<pruning::CandidateSpec, String> {
 fn print_help() {
     println!(
         "Usage:
+  fto-cli --scramble \"R U R'\"
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
@@ -654,7 +721,10 @@ fn print_help() {
   fto-cli --eval-pruning --candidate edge3+uf3 --max-pruning-mib 1536
   fto-cli --eval-pruning --candidate edge4+uf2 --max-pruning-mib 512
   fto-cli --auto-pruning --max-pruning-mib 1024 --max-pruning-components 3
+  fto-cli --auto-pruning --max-pruning-mib 1024 --keep-all-pruning-pdbs
 
+If no depth is provided, search starts at the pruning lower bound and increases until a solution is found.
+Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.
 If no state is provided, the solved state is used."
     );
 }
