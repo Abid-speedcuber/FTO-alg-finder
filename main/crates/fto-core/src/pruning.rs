@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    coord::{CENTER_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT},
+    coord::{CENTER3_COUNT, CENTER_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT},
     moves::Move,
     tables::TransitionTables,
     FtoCoord,
@@ -92,6 +92,96 @@ impl PatternDatabases {
     #[must_use]
     pub fn names(&self) -> Vec<String> {
         self.tables.iter().map(PatternDatabase::name).collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SolverPruning {
+    edge3_uf3: Vec<u8>,
+    corner_uf3: Vec<u8>,
+}
+
+impl SolverPruning {
+    pub fn load_or_build(
+        tables: &TransitionTables,
+        out_dir: &Path,
+        progress_interval: usize,
+    ) -> Result<Self, String> {
+        std::fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
+        let edge3_uf3 = load_or_build_solver_table(
+            CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
+            tables,
+            progress_interval,
+            out_dir.join("edge3__uf3.pdb"),
+        )?;
+        let corner_uf3 = load_or_build_solver_table(
+            CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
+            tables,
+            progress_interval,
+            out_dir.join("corner__uf3.pdb"),
+        )?;
+        Ok(Self {
+            edge3_uf3,
+            corner_uf3,
+        })
+    }
+
+    #[must_use]
+    pub fn heuristic(&self, edge3_uf3_idx: usize, corner_uf3_idx: usize) -> u8 {
+        live_depth(self.edge3_uf3[edge3_uf3_idx]).max(live_depth(self.corner_uf3[corner_uf3_idx]))
+    }
+
+    #[must_use]
+    pub fn heuristic_for_coord(&self, coord: FtoCoord) -> u8 {
+        self.heuristic(
+            Self::edge3_uf3_index(coord.edge3, coord.uf_center3),
+            Self::corner_uf3_index(coord.corner, coord.uf_center3),
+        )
+    }
+
+    #[must_use]
+    pub fn edge3_uf3_index(edge3: u16, uf3: u16) -> usize {
+        usize::from(edge3) * CENTER3_COUNT + usize::from(uf3)
+    }
+
+    #[must_use]
+    pub fn corner_uf3_index(corner: u16, uf3: u16) -> usize {
+        usize::from(corner) * CENTER3_COUNT + usize::from(uf3)
+    }
+
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        self.edge3_uf3.len() + self.corner_uf3.len()
+    }
+}
+
+const fn live_depth(value: u8) -> u8 {
+    if value == UNVISITED {
+        0
+    } else {
+        value
+    }
+}
+
+fn load_or_build_solver_table(
+    spec: CandidateSpec,
+    tables: &TransitionTables,
+    progress_interval: usize,
+    path: impl AsRef<Path>,
+) -> Result<Vec<u8>, String> {
+    let path = path.as_ref();
+    eprintln!(
+        "loading pruning table {} ({:.1} MiB)",
+        spec.name(),
+        spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+    );
+    match read_table(path, spec.size().unwrap_or(0)) {
+        Ok(table) => Ok(table),
+        Err(_) => {
+            let (_, table) = build_pruning_table(&spec, tables, usize::MAX, progress_interval)?;
+            write_table(path, &table).map_err(|error| error.to_string())?;
+            Ok(table)
+        }
     }
 }
 

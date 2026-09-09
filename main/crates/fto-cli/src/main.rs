@@ -5,10 +5,11 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process,
+    time::Instant,
 };
 
 use fto_core::{
-    pruning::{self, PatternDatabase, PatternDatabases, PruningStats},
+    pruning::{self, SolverPruning, PruningStats},
     search::{self, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
@@ -28,6 +29,8 @@ fn run() -> Result<(), String> {
     let mut find_all = false;
     let mut eval_pruning = false;
     let mut auto_pruning = false;
+    let mut benchmark = false;
+    let mut benchmark_iters = 7_usize;
     let mut use_solver_pruning = true;
     let mut keep_all_pruning_pdbs = false;
     let mut max_pruning_mib = 1024_usize;
@@ -57,8 +60,17 @@ fn run() -> Result<(), String> {
             "--exact" => exact_depth = true,
             "--eval-pruning" => eval_pruning = true,
             "--auto-pruning" => auto_pruning = true,
+            "--benchmark" => benchmark = true,
             "--no-pruning" => use_solver_pruning = false,
             "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
+            "--benchmark-iters" => {
+                i += 1;
+                benchmark_iters = args
+                    .get(i)
+                    .ok_or("--benchmark-iters needs a value")?
+                    .parse()
+                    .map_err(|_| "--benchmark-iters must be an integer")?;
+            }
             "--max-pruning-mib" => {
                 i += 1;
                 max_pruning_mib = args
@@ -260,13 +272,27 @@ fn run() -> Result<(), String> {
         None
     };
     let coord = cubie.coord();
-    let result = if let Some(max_depth) = max_depth {
-        let config = SearchConfig {
-            min_depth: if exact_depth { max_depth } else { 0 },
+    if benchmark {
+        run_solve_benchmark(
+            coord,
+            &tables,
+            pruning_tables.as_ref(),
             max_depth,
+            exact_depth,
             find_all,
-        };
-        search::solve_with_pruning(coord, &tables, pruning_tables.as_ref(), &config)
+            benchmark_iters,
+        )?;
+        return Ok(());
+    }
+    let result = if let Some(max_depth) = max_depth {
+        solve_once(
+            coord,
+            &tables,
+            pruning_tables.as_ref(),
+            max_depth,
+            exact_depth,
+            find_all,
+        )
     } else {
         solve_incrementally(coord, &tables, pruning_tables.as_ref(), find_all)?
     };
@@ -279,38 +305,112 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn solve_once(
+    coord: fto_core::FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    max_depth: u8,
+    exact_depth: bool,
+    find_all: bool,
+) -> search::SearchResult {
+    search::solve_with_pruning(
+        coord,
+        tables,
+        pruning,
+        &SearchConfig {
+            min_depth: if exact_depth { max_depth } else { 0 },
+            max_depth,
+            find_all,
+        },
+    )
+}
+
+fn run_solve_benchmark(
+    coord: fto_core::FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+    iterations: usize,
+) -> Result<(), String> {
+    let iterations = iterations.max(1);
+    let warmups = 2;
+    for _ in 0..warmups {
+        let result = benchmark_solve_once(coord, tables, pruning, max_depth, exact_depth, find_all)?;
+        std::hint::black_box(result.nodes);
+        std::hint::black_box(result.solutions.len());
+    }
+
+    let mut samples = Vec::with_capacity(iterations);
+    let mut last_result = None;
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let result = benchmark_solve_once(coord, tables, pruning, max_depth, exact_depth, find_all)?;
+        let elapsed = start.elapsed();
+        std::hint::black_box(result.nodes);
+        std::hint::black_box(result.solutions.len());
+        samples.push(elapsed.as_nanos() as u64);
+        last_result = Some(result);
+    }
+    samples.sort_unstable();
+    let median_ns = samples[samples.len() / 2];
+    let mean_ns = samples.iter().sum::<u64>() / samples.len() as u64;
+    let result = last_result.expect("at least one benchmark iteration");
+    let median_nodes_per_sec = if median_ns == 0 {
+        0
+    } else {
+        result.nodes.saturating_mul(1_000_000_000) / median_ns
+    };
+    let median_ns_per_node = if result.nodes == 0 {
+        0.0
+    } else {
+        median_ns as f64 / result.nodes as f64
+    };
+
+    println!("benchmark_iterations: {iterations}");
+    println!("nodes: {}", result.nodes);
+    println!("solutions: {}", result.solutions.len());
+    println!("median_ms: {:.3}", median_ns as f64 / 1_000_000.0);
+    println!("mean_ms: {:.3}", mean_ns as f64 / 1_000_000.0);
+    println!("median_nodes_per_sec: {median_nodes_per_sec}");
+    println!("median_ns_per_node: {:.1}", median_ns_per_node);
+    if let Some(solution) = result.solutions.first() {
+        println!("first_solution: {}", search::format_solution(solution));
+    }
+    Ok(())
+}
+
+fn benchmark_solve_once(
+    coord: fto_core::FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+) -> Result<search::SearchResult, String> {
+    if let Some(max_depth) = max_depth {
+        Ok(solve_once(
+            coord,
+            tables,
+            pruning,
+            max_depth,
+            exact_depth,
+            find_all,
+        ))
+    } else {
+        solve_incrementally_quiet(coord, tables, pruning, find_all)
+    }
+}
+
 fn load_solver_pruning(
     tables: &TransitionTables,
     out_dir: &Path,
     progress_interval: usize,
-) -> Result<PatternDatabases, String> {
-    fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
-    let specs = [
-        parse_candidate("edge3+uf3")?,
-        parse_candidate("corner+uf3")?,
-    ];
-    let mut loaded = Vec::new();
-    for spec in specs {
-        let name = spec.name();
-        let path = out_dir.join(format!("{}.pdb", file_safe_name(&name)));
-        eprintln!(
-            "loading pruning table {} ({:.1} MiB)",
-            name,
-            spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
-        );
-        loaded.push(PatternDatabase::load_or_build(
-            spec,
-            tables,
-            usize::MAX,
-            progress_interval,
-            path,
-        )?);
-    }
-    let pruning = PatternDatabases::new(loaded);
+) -> Result<SolverPruning, String> {
+    let pruning = SolverPruning::load_or_build(tables, out_dir, progress_interval)?;
     eprintln!(
-        "using {} pruning tables: {} ({:.1} MiB)",
-        pruning.len(),
-        pruning.names().join(" / "),
+        "using 2 pruning tables: edge3+uf3 / corner+uf3 ({:.1} MiB)",
         pruning.total_bytes() as f64 / (1024.0 * 1024.0)
     );
     Ok(pruning)
@@ -319,11 +419,11 @@ fn load_solver_pruning(
 fn solve_incrementally(
     coord: fto_core::FtoCoord,
     tables: &TransitionTables,
-    pruning: Option<&PatternDatabases>,
+    pruning: Option<&SolverPruning>,
     find_all: bool,
 ) -> Result<search::SearchResult, String> {
     let start_depth = pruning
-        .map(|tables| tables.heuristic(coord))
+        .map(|tables| tables.heuristic_for_coord(coord))
         .unwrap_or(0);
     let mut total_nodes = 0_u64;
     for depth in start_depth..=u8::MAX {
@@ -342,6 +442,36 @@ fn solve_incrementally(
         if !result.solutions.is_empty() {
             result.nodes = total_nodes;
             eprintln!("found solution at depth {depth}");
+            return Ok(result);
+        }
+    }
+    Err("no solution found up to depth 255".to_owned())
+}
+
+fn solve_incrementally_quiet(
+    coord: fto_core::FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    find_all: bool,
+) -> Result<search::SearchResult, String> {
+    let start_depth = pruning
+        .map(|tables| tables.heuristic_for_coord(coord))
+        .unwrap_or(0);
+    let mut total_nodes = 0_u64;
+    for depth in start_depth..=u8::MAX {
+        let mut result = search::solve_with_pruning(
+            coord,
+            tables,
+            pruning,
+            &SearchConfig {
+                min_depth: depth,
+                max_depth: depth,
+                find_all,
+            },
+        );
+        total_nodes += result.nodes;
+        if !result.solutions.is_empty() {
+            result.nodes = total_nodes;
             return Ok(result);
         }
     }
@@ -711,6 +841,7 @@ fn print_help() {
     println!(
         "Usage:
   fto-cli --scramble \"R U R'\"
+  fto-cli --json state.json --benchmark --benchmark-iters 9
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
