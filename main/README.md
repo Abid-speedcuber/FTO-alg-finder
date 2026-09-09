@@ -1,4 +1,4 @@
-# Optimal FTO Solver
+# FTO Alg Finder
 
 Rust workspace for building an optimal Face-Turning Octahedron solver.
 

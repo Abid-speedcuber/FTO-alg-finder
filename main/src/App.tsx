@@ -209,7 +209,7 @@ function App() {
     <main>
       <header className="app-header">
         <div>
-          <h1>Optimal FTO Solver</h1>
+          <h1>FTO Alg Finder</h1>
           <p>By Abid Ibn Ashraf</p>
         </div>
         <div className="status-strip">

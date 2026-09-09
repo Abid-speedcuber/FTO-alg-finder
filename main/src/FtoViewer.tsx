@@ -83,6 +83,10 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
     viewerRef.current?.resetPuzzle();
   }
 
+  function resetView() {
+    viewerRef.current?.resetView();
+  }
+
   return (
     <div className="fto-viewer-panel">
       <div className="fto-stage">
@@ -114,6 +118,7 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
             );
           })}
           <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
+          <button onClick={resetView}>View</button>
           <button onClick={resetPuzzle}>Reset</button>
         </div>
       </div>

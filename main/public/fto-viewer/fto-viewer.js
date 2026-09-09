@@ -56,27 +56,31 @@
       cubeObject = new THREE.Object3D();
       scene.addObject(cubeObject);
 
-      var borderMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, wireframeLinewidth: 1 });
+      var borderMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
 
       puzzle.enumFacesPolys(function(face, p, poly, idx) {
         if (poly.area < 0.001) {
           return;
         }
-        var trimmed = poly.trim(0.03);
-        if (trimmed) {
-          poly = trimmed;
-        }
-        var cords = poly.projection(puzzle.faceUVs[face]);
+        var borderPoly = poly.trim(0.012) || poly;
+        var colorPoly = poly.trim(0.055) || borderPoly;
+        var borderCords = borderPoly.projection(puzzle.faceUVs[face]);
+        var cords = colorPoly.projection(puzzle.faceUVs[face]);
         var logicalFace = polyFaceToFaceletFace[face];
         var faceletIndex = logicalFace * 9 + polyStickerToFaceletSlot[face][p];
+        var borderMesh = new THREE.Mesh(new THREE.Ploy(borderCords), [borderMat]);
         var ownMat = new THREE.MeshBasicMaterial({ color: faceColors[logicalFace] });
-        var mesh = new THREE.Mesh(new THREE.Ploy(cords), [ownMat, borderMat]);
+        var mesh = new THREE.Mesh(new THREE.Ploy(cords), [ownMat]);
+        borderMesh.doubleSided = true;
+        borderMesh.overdraw = true;
         mesh.doubleSided = true;
         mesh.overdraw = true;
+        mesh.position = new THREE.Vector3(0, 0, 0.002);
         mesh.ftoStickerIndex = idx;
         mesh.ftoFaceletIndex = faceletIndex;
 
         var sticker = new THREE.Object3D();
+        sticker.addChild(borderMesh);
         sticker.addChild(mesh);
         var m = twistyjs.axify(puzzle.faceUVs[face][0], puzzle.faceUVs[face][1], puzzle.facePlanes[face].norm)
           .multiplySelf(new THREE.Matrix4().setTranslation(0, 0, 1));
@@ -84,7 +88,7 @@
         sticker.matrixAutoUpdate = false;
         sticker.update();
 
-        cubePieces[idx] = [m, sticker, logicalFace, faceletIndex];
+        cubePieces[idx] = [m, sticker, logicalFace, faceletIndex, mesh];
         stickerMeshes.push(mesh);
         faceletColors[faceletIndex] = logicalFace;
         cubeObject.addChild(sticker);
@@ -99,7 +103,7 @@
       if (!sticker) {
         return;
       }
-      var material = sticker[1].children[0].materials[0];
+      var material = sticker[4].materials[0];
       material.color.setHex(faceColors[color]);
       sticker[2] = color;
       faceletColors[sticker[3]] = color;
@@ -361,7 +365,7 @@
           return;
         }
         e.preventDefault();
-        rotateZ(-e.deltaY * 0.004);
+        rotateZ(-Math.sign(e.deltaY) * Math.PI / 90);
       };
       var onBlur = function() {
         endDrag();
