@@ -33,7 +33,7 @@ type Props = {
   footer?: ReactNode;
 };
 
-const colorHex = ["#ffffff", "#ff8800", "#ffff00", "#00ff00", "#0000ff", "#ff0000", "#800080", "#00ffff"];
+const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
 function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);

@@ -343,10 +343,13 @@ h2 {
 }
 
 .fto-canvas-host {
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
-  width: calc(100% - 140px);
-  min-height: 430px;
+  width: 100%;
+  min-height: 100%;
+  z-index: 1;
 }
 
 .fto-canvas-host canvas {

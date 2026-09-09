@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var faceColors = [0xffffff, 0xff8800, 0xffff00, 0x00ff00, 0x0000ff, 0xff0000, 0x800080, 0x00ffff];
+  var faceColors = [0xffff00, 0x0000ff, 0xff0000, 0x800080, 0xffffff, 0x00a050, 0x808080, 0xff8800];
   var polyFaceToFaceletFace = [0, 6, 7, 1, 4, 3, 2, 5];
   var polyStickerToFaceletSlot = [
     [0, 3, 8, 1, 6, 4, 2, 7, 5],
@@ -36,6 +36,7 @@
     var didDrag = false;
     var lastX = 0;
     var lastY = 0;
+    var activeDragMode = "pan";
     var mode = options.mode || "pan";
     var selectedColor = options.color == null ? 0 : options.color;
     var moveQueue = [];
@@ -146,8 +147,8 @@
       }
       var plane = puzzle.twistyPlanes[puzzle.twistyDetails[idx][2]];
       var fullAngle = Math.PI * 2 * moveName.pow / puzzle.twistyDetails[idx][1];
-      var speedup = Math.min(6, 1 + moveQueue.length);
-      var steps = Math.max(2, Math.round(12 / speedup));
+      var speedup = Math.min(3, 1 + moveQueue.length);
+      var steps = Math.max(1, Math.round(4 / speedup));
       var step = 0;
       var affected = [];
       puzzle.enumFacesPolys(function(face, p, poly, i) {
@@ -276,20 +277,26 @@
       function onCleanup(fn) {
         cleanup.push(fn);
       }
+      function setCursor(cursor) {
+        canvasEl.style.cursor = cursor;
+        container.style.cursor = cursor;
+      }
       function endDrag() {
         if (!isDragging) {
           return;
         }
         isDragging = false;
         didDrag = false;
-        canvasEl.style.cursor = mode === "pan" ? "grab" : "crosshair";
+        setCursor(mode === "pan" ? "grab" : "crosshair");
       }
       function pointerDown(x, y) {
+        var picked = pickSticker(x, y);
+        activeDragMode = mode === "paint" && picked != null ? "paint" : "pan";
         isDragging = true;
         didDrag = false;
         lastX = x;
         lastY = y;
-        canvasEl.style.cursor = mode === "pan" ? "grabbing" : "crosshair";
+        setCursor(activeDragMode === "pan" ? "grabbing" : "crosshair");
       }
       function pointerMove(x, y) {
         if (!isDragging) {
@@ -302,7 +309,7 @@
         }
         lastX = x;
         lastY = y;
-        if (mode !== "pan") {
+        if (activeDragMode !== "pan") {
           return;
         }
         var len = Math.sqrt(dx * dx + dy * dy);
@@ -316,7 +323,7 @@
         render();
       }
       function pointerUp(x, y) {
-        if (mode !== "pan" && !didDrag && x != null && y != null) {
+        if (activeDragMode === "paint" && !didDrag && x != null && y != null) {
           paintAt(x, y);
         }
         endDrag();
@@ -362,21 +369,21 @@
         pointerUp(touch && touch.clientX, touch && touch.clientY);
       };
 
-      canvasEl.addEventListener("mousedown", onMouseDown);
-      onCleanup(function() { canvasEl.removeEventListener("mousedown", onMouseDown); });
+      container.addEventListener("mousedown", onMouseDown);
+      onCleanup(function() { container.removeEventListener("mousedown", onMouseDown); });
       window.addEventListener("mousemove", onMouseMove);
       onCleanup(function() { window.removeEventListener("mousemove", onMouseMove); });
       window.addEventListener("mouseup", onMouseUp);
       onCleanup(function() { window.removeEventListener("mouseup", onMouseUp); });
       window.addEventListener("blur", onBlur);
       onCleanup(function() { window.removeEventListener("blur", onBlur); });
-      canvasEl.addEventListener("touchstart", onTouchStart, { passive: true });
-      canvasEl.addEventListener("touchmove", onTouchMove, { passive: true });
-      canvasEl.addEventListener("touchend", onTouchEnd);
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: true });
+      container.addEventListener("touchend", onTouchEnd);
       onCleanup(function() {
-        canvasEl.removeEventListener("touchstart", onTouchStart);
-        canvasEl.removeEventListener("touchmove", onTouchMove);
-        canvasEl.removeEventListener("touchend", onTouchEnd);
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
       });
 
       return cleanup;
@@ -430,6 +437,9 @@
         }
       });
       var onKeyDown = function(e) {
+        if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
+          return;
+        }
         if (e.altKey || e.ctrlKey || e.metaKey) {
           return;
         }
@@ -443,6 +453,14 @@
       return function() {
         document.removeEventListener("keydown", onKeyDown);
       };
+    }
+
+    function isTypingTarget(target) {
+      if (!target) {
+        return false;
+      }
+      var tag = target.tagName ? target.tagName.toLowerCase() : "";
+      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
     }
 
     function render() {
@@ -469,6 +487,9 @@
     canvas.style.userSelect = "none";
     canvas.draggable = false;
     container.innerHTML = "";
+    container.style.cursor = mode === "pan" ? "grab" : "crosshair";
+    container.style.touchAction = "none";
+    container.style.userSelect = "none";
     container.appendChild(canvas);
     var mouseCleanup = setupMouseControls(canvas);
     var unbindKeyboard = options.keyboard === false ? function() {} : bindKeyboard();
@@ -485,6 +506,7 @@
         mode = nextMode;
         if (canvas) {
           canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
+          container.style.cursor = mode === "pan" ? "grab" : "crosshair";
         }
       },
       setColor: function(color) {
