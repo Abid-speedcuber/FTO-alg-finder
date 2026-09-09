@@ -3,12 +3,20 @@ use crate::{
     search::{format_solution, SearchConfig, SearchResult},
     FtoCubie,
 };
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 const UNVISITED: u8 = u8::MAX;
+const INVALID_TRANSITION: u32 = u32::MAX;
 const EDGE_TABLE_PIECES: usize = 5;
 const CORNER_TABLE_PIECES: usize = 5;
 const MAX_DYNAMIC_TABLES: usize = 6;
+const MAX_DYNAMIC_TRANSITION_BYTES: usize = 96 * 1024 * 1024;
+const INDEX_AFTER_DEPTH: u8 = 8;
+const INDEX_AFTER_DEPTH_TIME: Duration = Duration::from_millis(250);
+const INDEX_AFTER_DEPTH_NODES: u64 = 100_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PartialMask {
@@ -46,7 +54,7 @@ pub struct PartialProblem {
 
 #[must_use]
 pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchResult {
-    let pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
+    let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
     eprintln!(
         "using {} dynamic partial pruning tables ({:.1} MiB)",
         pruning.tables.len(),
@@ -63,27 +71,83 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
     let start_depth = config
         .min_depth
         .max(pruning.heuristic(&problem.cubie));
+    let mut indexed = false;
     for depth in start_depth..=config.max_depth {
         eprintln!("searching depth {depth}...");
-        let mut ctx = PartialSearchContext {
-            problem,
-            pruning: &pruning,
-            config,
-            moves: move_cubies(),
-            commute: move_commutation(),
-            path: Vec::with_capacity(depth as usize),
-            solutions: Vec::new(),
-            nodes: 0,
+        let started = Instant::now();
+        let depth_result = if indexed {
+            search_indexed(problem, &pruning, config, depth)
+        } else {
+            search_cubie(problem, &pruning, config, depth)
         };
-        ctx.dfs(problem.cubie, depth, None);
-        total.nodes += ctx.nodes;
-        total.solutions.extend(ctx.solutions);
+        let elapsed = started.elapsed();
+        let depth_nodes = depth_result.nodes;
+        total.nodes += depth_nodes;
+        total.solutions.extend(depth_result.solutions);
         if !total.solutions.is_empty() {
             eprintln!("found solution at depth {depth}");
             break;
         }
+        if !indexed && should_enable_indexing(depth, depth_nodes, elapsed) {
+            pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
+            indexed = pruning.has_transitions();
+        }
     }
     total
+}
+
+fn should_enable_indexing(depth: u8, nodes: u64, elapsed: Duration) -> bool {
+    depth >= INDEX_AFTER_DEPTH || elapsed >= INDEX_AFTER_DEPTH_TIME || nodes >= INDEX_AFTER_DEPTH_NODES
+}
+
+fn search_cubie(
+    problem: &PartialProblem,
+    pruning: &DynamicPruning,
+    config: &SearchConfig,
+    depth: u8,
+) -> SearchResult {
+    let mut ctx = PartialSearchContext {
+        problem,
+        pruning,
+        config,
+        moves: move_cubies(),
+        commute: move_commutation(),
+        path: Vec::with_capacity(depth as usize),
+        solutions: Vec::new(),
+        nodes: 0,
+    };
+    ctx.dfs(problem.cubie, depth, None);
+    SearchResult {
+        solutions: ctx.solutions,
+        nodes: ctx.nodes,
+    }
+}
+
+fn search_indexed(
+    problem: &PartialProblem,
+    pruning: &DynamicPruning,
+    config: &SearchConfig,
+    depth: u8,
+) -> SearchResult {
+    let root = IndexedPartialState {
+        cubie: problem.cubie,
+        indices: pruning.indices_of_state(&problem.cubie),
+    };
+    let mut ctx = IndexedPartialSearchContext {
+        problem,
+        pruning,
+        config,
+        moves: move_cubies(),
+        commute: move_commutation(),
+        path: Vec::with_capacity(depth as usize),
+        solutions: Vec::new(),
+        nodes: 0,
+    };
+    ctx.dfs(root, depth, None);
+    SearchResult {
+        solutions: ctx.solutions,
+        nodes: ctx.nodes,
+    }
 }
 
 struct PartialSearchContext<'a> {
@@ -95,6 +159,74 @@ struct PartialSearchContext<'a> {
     path: Vec<Move>,
     solutions: Vec<Vec<Move>>,
     nodes: u64,
+}
+
+#[derive(Clone)]
+struct IndexedPartialState {
+    cubie: FtoCubie,
+    indices: Vec<usize>,
+}
+
+struct IndexedPartialSearchContext<'a> {
+    problem: &'a PartialProblem,
+    pruning: &'a DynamicPruning,
+    config: &'a SearchConfig,
+    moves: [FtoCubie; MOVE_COUNT],
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    path: Vec<Move>,
+    solutions: Vec<Vec<Move>>,
+    nodes: u64,
+}
+
+impl IndexedPartialSearchContext<'_> {
+    fn dfs(&mut self, state: IndexedPartialState, depth_left: u8, last_move: Option<Move>) {
+        if self
+            .config
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return;
+        }
+        self.nodes += 1;
+        if self.pruning.heuristic_for_indices(&state.cubie, &state.indices) > depth_left {
+            return;
+        }
+        if depth_left == 0 {
+            if is_partial_solved(&state.cubie, &self.problem.mask) {
+                self.solutions.push(self.path.clone());
+            }
+            return;
+        }
+
+        for &mv in &self.config.allowed_moves {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let next_cubie = state.cubie.compose(&self.moves[mv.idx()]);
+            let next_indices = self.pruning.move_indices(&next_cubie, &state.indices, mv);
+            if self
+                .pruning
+                .heuristic_for_indices(&next_cubie, &next_indices)
+                > depth_left - 1
+            {
+                continue;
+            }
+            self.path.push(mv);
+            self.dfs(
+                IndexedPartialState {
+                    cubie: next_cubie,
+                    indices: next_indices,
+                },
+                depth_left - 1,
+                Some(mv),
+            );
+            self.path.pop();
+            if !self.config.find_all && !self.solutions.is_empty() {
+                return;
+            }
+        }
+    }
 }
 
 impl PartialSearchContext<'_> {
@@ -201,8 +333,52 @@ impl DynamicPruning {
             .unwrap_or(0)
     }
 
+    fn heuristic_for_indices(&self, state: &FtoCubie, indices: &[usize]) -> u8 {
+        self.tables
+            .iter()
+            .enumerate()
+            .map(|(idx, table)| table.value_for_index_or_state(indices[idx], state))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn indices_of_state(&self, state: &FtoCubie) -> Vec<usize> {
+        self.tables
+            .iter()
+            .map(|table| table.index_of_state(state))
+            .collect()
+    }
+
+    fn move_indices(&self, state: &FtoCubie, indices: &[usize], mv: Move) -> Vec<usize> {
+        self.tables
+            .iter()
+            .enumerate()
+            .map(|(idx, table)| table.move_cached_index(indices[idx], state, mv))
+            .collect()
+    }
+
     fn bytes(&self) -> usize {
-        self.tables.iter().map(|table| table.table.len()).sum()
+        self.tables.iter().map(DynamicTable::bytes).sum()
+    }
+
+    fn has_transitions(&self) -> bool {
+        self.tables.iter().any(|table| table.transitions_cache.is_some())
+    }
+
+    fn build_transitions(&mut self, max_bytes: usize) {
+        let mut used = 0_usize;
+        for table in &mut self.tables {
+            let bytes = table.transition_bytes();
+            if used + bytes > max_bytes {
+                continue;
+            }
+            table.build_transition_cache();
+            used += bytes;
+        }
+        eprintln!(
+            "built dynamic partial transition tables ({:.1} MiB)",
+            used as f64 / (1024.0 * 1024.0)
+        );
     }
 }
 
@@ -242,6 +418,7 @@ struct DynamicTable {
     pieces: Vec<u8>,
     table: Vec<u8>,
     transitions: PieceTransitions,
+    transitions_cache: Option<Vec<[u32; MOVE_COUNT]>>,
 }
 
 impl DynamicTable {
@@ -256,6 +433,7 @@ impl DynamicTable {
             pieces,
             table: vec![UNVISITED; size],
             transitions,
+            transitions_cache: None,
         };
         let solved = this.solved_index();
         this.table[solved] = 0;
@@ -305,12 +483,60 @@ impl DynamicTable {
 
     fn value(&self, state: &FtoCubie) -> u8 {
         let idx = self.index_of_state(state);
+        self.value_for_index(idx)
+    }
+
+    fn value_for_index_or_state(&self, idx: usize, state: &FtoCubie) -> u8 {
+        if self.transitions_cache.is_some() {
+            self.value_for_index(idx)
+        } else {
+            self.value(state)
+        }
+    }
+
+    fn value_for_index(&self, idx: usize) -> u8 {
         let value = self.table[idx];
         if value == UNVISITED {
             0
         } else {
             value
         }
+    }
+
+    fn move_cached_index(&self, idx: usize, state: &FtoCubie, mv: Move) -> usize {
+        self.transitions_cache
+            .as_ref()
+            .map(|cache| cache[idx][mv.idx()])
+            .filter(|&next| next != INVALID_TRANSITION)
+            .map_or_else(|| self.index_of_state(state), |next| next as usize)
+    }
+
+    fn bytes(&self) -> usize {
+        self.table.len() + self.transitions_cache.as_ref().map_or(0, |cache| {
+            cache.len() * MOVE_COUNT * std::mem::size_of::<u32>()
+        })
+    }
+
+    fn transition_bytes(&self) -> usize {
+        self.table.len() * MOVE_COUNT * std::mem::size_of::<u32>()
+    }
+
+    fn build_transition_cache(&mut self) {
+        if self.transitions_cache.is_some() {
+            return;
+        }
+        let mut cache = vec![[INVALID_TRANSITION; MOVE_COUNT]; self.table.len()];
+        for (idx, row) in cache.iter_mut().enumerate() {
+            if self.table[idx] == UNVISITED {
+                continue;
+            }
+            for &mv in &Move::ALL {
+                if let Some(next) = self.move_index(idx, mv) {
+                    row[mv.idx()] = next as u32;
+                }
+            }
+        }
+        self.transitions_cache = Some(cache);
     }
 
     fn index_of_state(&self, state: &FtoCubie) -> usize {
@@ -440,4 +666,30 @@ pub fn format_partial_solutions(result: SearchResult) -> (u64, Vec<String>) {
             .map(|solution| format_solution(solution))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DynamicKind, DynamicTable};
+    use crate::{moves::Move, FtoCubie};
+
+    #[test]
+    fn cached_edge_transition_matches_rerank() {
+        let mut table = DynamicTable::build(DynamicKind::Edge, vec![0, 1, 2], &Move::ALL);
+        table.build_transition_cache();
+        let state = FtoCubie::solved().apply(Move::R).apply(Move::U);
+        let idx = table.index_of_state(&state);
+        let next = state.apply(Move::B);
+        assert_eq!(table.move_cached_index(idx, &next, Move::B), table.index_of_state(&next));
+    }
+
+    #[test]
+    fn cached_corner_transition_matches_rerank() {
+        let mut table = DynamicTable::build(DynamicKind::Corner, vec![0, 1, 2], &Move::ALL);
+        table.build_transition_cache();
+        let state = FtoCubie::solved().apply(Move::R).apply(Move::U);
+        let idx = table.index_of_state(&state);
+        let next = state.apply(Move::B);
+        assert_eq!(table.move_cached_index(idx, &next, Move::B), table.index_of_state(&next));
+    }
 }
