@@ -1,17 +1,19 @@
 use fto_core::{
     moves::Move,
-    pruning::{PruningProgress, SolverPruning},
-    search::{self, SearchConfig},
-    tables::TransitionTables,
     FtoCubie,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    io::{BufRead, BufReader, Write},
     path::Path,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc,
         Arc, Mutex,
     },
+    thread,
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -221,10 +223,6 @@ fn solve_fto_inner(
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
 
-    emit_line(app, "info", "loading transition tables...");
-    let tables = TransitionTables::load_or_build(workspace_root.join("cache/transition-tables-v4.bin"))
-        .map_err(|error| error.to_string())?;
-
     let allowed_moves = parse_move_names(&request.allowed_moves)?;
     if allowed_moves.is_empty() {
         return Err("at least one move must be allowed".to_owned());
@@ -240,94 +238,7 @@ fn solve_fto_inner(
         FtoCubie::solved()
     };
 
-    let pruning_moves = if request.restricted_pruning {
-        allowed_moves.as_slice()
-    } else {
-        Move::ALL.as_slice()
-    };
-    let progress = |progress: PruningProgress| {
-        emit_line(
-            app,
-            "progress",
-            &format!(
-                "{}: depth {}  expanded {}  reached {}",
-                progress.name, progress.depth, progress.expanded, progress.reached
-            ),
-        );
-    };
-    let pruning = SolverPruning::load_or_build_with_moves_reporting(
-        &tables,
-        &workspace_root.join("cache/pruning-v4"),
-        1_000_000,
-        pruning_moves,
-        Some(cancel),
-        Some(&progress),
-    )?;
-    emit_line(app, "info", "pruning tables ready");
-    let search_progress = |depth: u8| {
-        emit_line(app, "search", &format!("searching depth {depth}..."));
-    };
-    let coord = cubie.coord();
-    let result = if let Some(max_depth) = request.max_depth {
-        search::solve_with_pruning_threads_reporting(
-            coord,
-            &tables,
-            Some(&pruning),
-            &SearchConfig {
-                min_depth: max_depth,
-                max_depth,
-                find_all: request.find_all,
-                allowed_moves,
-                cancel: Some(cancel.clone()),
-            },
-            request.threads.max(1),
-            search_progress,
-        )
-    } else {
-        let mut total_nodes = 0_u64;
-        let start_depth = pruning.heuristic_for_coord(coord);
-        let mut found = None;
-        for depth in start_depth..=u8::MAX {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            let result = search::solve_with_pruning_threads_reporting(
-                coord,
-                &tables,
-                Some(&pruning),
-                &SearchConfig {
-                    min_depth: depth,
-                    max_depth: depth,
-                    find_all: request.find_all,
-                    allowed_moves: allowed_moves.clone(),
-                    cancel: Some(cancel.clone()),
-                },
-                request.threads.max(1),
-                &search_progress,
-            );
-            total_nodes += result.nodes;
-            if !result.solutions.is_empty() {
-                found = Some(search::SearchResult {
-                    solutions: result.solutions,
-                    nodes: total_nodes,
-                });
-                break;
-            }
-        }
-        found.unwrap_or(search::SearchResult {
-            solutions: Vec::new(),
-            nodes: total_nodes,
-        })
-    };
-
-    Ok(SolveResponse {
-        nodes: result.nodes,
-        solutions: result
-            .solutions
-            .iter()
-            .map(|solution| search::format_solution(solution))
-            .collect(),
-    })
+    run_release_cli(workspace_root, request, &allowed_moves, cubie, cancel, app)
 }
 
 pub fn run() {
@@ -353,6 +264,171 @@ fn apply_sequence(mut cubie: FtoCubie, sequence: &str) -> Result<FtoCubie, Strin
         cubie = cubie.apply(parse_move(token)?);
     }
     Ok(cubie)
+}
+
+fn run_release_cli(
+    workspace_root: &Path,
+    request: &SolveRequest,
+    allowed_moves: &[Move],
+    cubie: FtoCubie,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<SolveResponse, String> {
+    let exe = workspace_root.join("target/release/fto-cli");
+    if !exe.exists() {
+        return Err(format!(
+            "release solver binary is missing: {}. Run `cargo build --release -p fto-cli` once.",
+            exe.display()
+        ));
+    }
+
+    let mut args = Vec::new();
+    if let Some(depth) = request.max_depth {
+        args.push("--depth".to_owned());
+        args.push(depth.to_string());
+        args.push("--exact".to_owned());
+    }
+    if request.find_all {
+        args.push("--all".to_owned());
+    }
+    if request.restricted_pruning {
+        args.push("--restricted-pruning".to_owned());
+    }
+    if request.threads > 1 {
+        args.push("--threads".to_owned());
+        args.push(request.threads.to_string());
+    }
+    if allowed_moves != Move::ALL.as_slice() {
+        args.push("--moves".to_owned());
+        args.push(allowed_moves.iter().map(|mv| mv.name()).collect::<Vec<_>>().join(" "));
+    }
+
+    emit_line(app, "info", &format!("running {}", exe.display()));
+    let mut child = Command::new(&exe)
+        .args(&args)
+        .current_dir(workspace_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start release solver: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(cubie_json(cubie).as_bytes())
+            .map_err(|error| format!("failed to send state to solver: {error}"))?;
+    }
+
+    let stdout = child.stdout.take().ok_or("failed to capture solver stdout")?;
+    let stderr = child.stderr.take().ok_or("failed to capture solver stderr")?;
+    let (tx, rx) = mpsc::channel::<(String, String)>();
+
+    spawn_line_reader(stdout, "stdout", tx.clone());
+    spawn_line_reader(stderr, "stderr", tx);
+
+    let mut stdout_lines = Vec::new();
+    loop {
+        while let Ok((source, line)) = rx.try_recv() {
+            let kind = classify_cli_line(&line, &source);
+            emit_line(app, kind, &line);
+            if source == "stdout" {
+                stdout_lines.push(line);
+            }
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".to_owned());
+        }
+
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => {
+                while let Ok((source, line)) = rx.try_recv() {
+                    let kind = classify_cli_line(&line, &source);
+                    emit_line(app, kind, &line);
+                    if source == "stdout" {
+                        stdout_lines.push(line);
+                    }
+                }
+                if !status.success() {
+                    return Err(format!("release solver exited with {status}"));
+                }
+                return parse_cli_response(&stdout_lines);
+            }
+            None => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn spawn_line_reader<R>(stream: R, source: &'static str, tx: mpsc::Sender<(String, String)>)
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            let _ = tx.send((source.to_owned(), line));
+        }
+    });
+}
+
+fn classify_cli_line(line: &str, source: &str) -> &'static str {
+    if line.starts_with("searching depth") {
+        "search"
+    } else if line.starts_with("loading") || line.starts_with("using") || line.starts_with("found solution") {
+        "info"
+    } else if line.starts_with("nodes:") || line.starts_with("solutions:") {
+        "done"
+    } else if source == "stderr" {
+        "progress"
+    } else {
+        "solution"
+    }
+}
+
+fn parse_cli_response(lines: &[String]) -> Result<SolveResponse, String> {
+    let mut nodes = 0_u64;
+    let mut solution_count = None;
+    let mut solutions = Vec::new();
+    for line in lines {
+        if let Some(rest) = line.strip_prefix("nodes:") {
+            nodes = rest.trim().parse().map_err(|_| "failed to parse solver node count")?;
+        } else if let Some(rest) = line.strip_prefix("solutions:") {
+            solution_count = Some(
+                rest.trim()
+                    .parse::<usize>()
+                    .map_err(|_| "failed to parse solver solution count")?,
+            );
+        } else if !line.trim().is_empty() {
+            solutions.push(line.clone());
+        }
+    }
+    if solution_count == Some(0) {
+        solutions.clear();
+    }
+    Ok(SolveResponse { nodes, solutions })
+}
+
+fn cubie_json(cubie: FtoCubie) -> String {
+    format!(
+        "{{\"cp\":{},\"co\":{},\"ep\":{},\"uf\":{},\"rl\":{}}}",
+        json_array(&cubie.cp),
+        json_array(&cubie.co),
+        json_array(&cubie.ep),
+        json_array(&cubie.uf),
+        json_array(&cubie.rl),
+    )
+}
+
+fn json_array<const N: usize>(values: &[u8; N]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 fn cubie_from_facelets(facelets: &[u8]) -> Result<FtoCubie, String> {
