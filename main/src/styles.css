@@ -118,7 +118,10 @@ main {
 }
 
 .input-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   padding: 22px 24px 24px;
   background: #ffffff;
 }
@@ -149,7 +152,6 @@ main {
 
 .setup-row input,
 .terminal,
-.move-log,
 .solutions {
   font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
@@ -326,7 +328,9 @@ h2 {
 
 .fto-viewer-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
+  min-height: 0;
   margin-top: 16px;
 }
 
@@ -406,8 +410,9 @@ h2 {
 }
 
 .terminal {
-  min-height: 112px;
-  max-height: 280px;
+  min-height: 160px;
+  height: 100%;
+  max-height: none;
   overflow-y: auto;
   border: 1px solid #161a1f;
   border-radius: 8px;
@@ -416,6 +421,14 @@ h2 {
   color: #c8d0d8;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.terminal-placeholder {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  color: #737f8b;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .terminal-line {
@@ -452,17 +465,6 @@ h2 {
   color: #e3a36f;
 }
 
-.move-log {
-  min-height: 32px;
-  border: 1px solid #d8dde3;
-  border-radius: 7px;
-  padding: 7px 9px;
-  background: #fbfcfd;
-  color: #6a737d;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
 @media (max-width: 980px) {
   .app-header {
     align-items: start;
@@ -487,8 +489,7 @@ h2 {
   }
 
   .fto-canvas-host {
-    width: calc(100% - 124px);
-    min-height: min(430px, 92vw);
+    min-height: 100%;
   }
 }
 
@@ -521,7 +522,4 @@ h2 {
     right: 10px;
   }
 
-  .fto-canvas-host {
-    width: calc(100% - 104px);
-  }
 }

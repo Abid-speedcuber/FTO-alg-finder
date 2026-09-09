@@ -258,11 +258,15 @@ function App() {
             onFacelets={handleFacelets}
             footer={
               <div className="terminal" ref={terminalRef}>
-                {terminal.map((line) => (
-                  <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
-                    {line.text}
-                  </div>
-                ))}
+                {terminal.length === 0 ? (
+                  <div className="terminal-placeholder">solutions and solver logs will appear here</div>
+                ) : (
+                  terminal.map((line) => (
+                    <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
+                      {line.text}
+                    </div>
+                  ))
+                )}
               </div>
             }
           />

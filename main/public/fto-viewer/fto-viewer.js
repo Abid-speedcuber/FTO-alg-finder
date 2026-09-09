@@ -27,10 +27,14 @@
     var stickerMeshes = [];
     var faceletColors = [];
     var puzzle;
+    var defaultOrbitX = 0.5;
+    var defaultOrbitY = -0.0;
+    var defaultOrbitZ = 0.01;
     var defaultOrbit = new THREE.Quaternion().multiply(
-      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.25),
-      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.2)
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), defaultOrbitX),
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), defaultOrbitY)
     );
+    defaultOrbit.multiplySelf(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), defaultOrbitZ));
     var orbit = new THREE.Quaternion().copy(defaultOrbit);
     var isDragging = false;
     var didDrag = false;
@@ -322,6 +326,12 @@
         updateOrbit();
         render();
       }
+      function rotateZ(amount) {
+        var delta = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), amount);
+        orbit.copy(new THREE.Quaternion().multiply(delta, orbit)).normalize();
+        updateOrbit();
+        render();
+      }
       function pointerUp(x, y) {
         if (activeDragMode === "paint" && !didDrag && x != null && y != null) {
           paintAt(x, y);
@@ -345,6 +355,13 @@
       };
       var onMouseUp = function(e) {
         pointerUp(e.clientX, e.clientY);
+      };
+      var onWheel = function(e) {
+        if (!isDragging || activeDragMode !== "pan") {
+          return;
+        }
+        e.preventDefault();
+        rotateZ(-e.deltaY * 0.004);
       };
       var onBlur = function() {
         endDrag();
@@ -377,6 +394,8 @@
       onCleanup(function() { window.removeEventListener("mouseup", onMouseUp); });
       window.addEventListener("blur", onBlur);
       onCleanup(function() { window.removeEventListener("blur", onBlur); });
+      container.addEventListener("wheel", onWheel, { passive: false });
+      onCleanup(function() { container.removeEventListener("wheel", onWheel); });
       container.addEventListener("touchstart", onTouchStart, { passive: true });
       container.addEventListener("touchmove", onTouchMove, { passive: true });
       container.addEventListener("touchend", onTouchEnd);

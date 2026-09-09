@@ -18,7 +18,6 @@ declare global {
       container: HTMLElement,
       options?: {
         keyboard?: boolean;
-        onMove?: (history: string[]) => void;
         onFacelets?: (facelets: number[]) => void;
       },
     ) => FtoViewerApi;
@@ -38,7 +37,6 @@ const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a05
 function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
-  const [history, setHistory] = useState<string[]>([]);
   const [mode, setModeState] = useState<"pan" | "paint">("pan");
   const [selectedColor, setSelectedColorState] = useState(0);
 
@@ -48,7 +46,6 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
     }
 
     const viewer = window.createFtoViewer(hostRef.current, {
-      onMove: setHistory,
       onFacelets,
     });
     viewerRef.current = viewer;
@@ -84,7 +81,6 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
 
   function resetPuzzle() {
     viewerRef.current?.resetPuzzle();
-    setHistory([]);
   }
 
   return (
@@ -122,7 +118,6 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
         </div>
       </div>
       {footer}
-      <div className="move-log">{history.slice(-40).join(" ")}</div>
     </div>
   );
 }
