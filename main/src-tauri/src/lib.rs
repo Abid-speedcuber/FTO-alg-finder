@@ -192,18 +192,6 @@ fn run_solve_blocking(
 
     match result {
         Ok(response) => {
-            emit_line(
-                app,
-                "done",
-                &format!(
-                    "nodes: {}  solutions: {}",
-                    response.nodes,
-                    response.solutions.len()
-                ),
-            );
-            for solution in &response.solutions {
-                emit_line(app, "solution", solution);
-            }
             let _ = app.emit("solve-result", response);
         }
         Err(error) => {
