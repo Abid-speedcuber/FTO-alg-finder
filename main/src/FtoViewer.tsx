@@ -27,6 +27,7 @@ declare global {
 
 type Props = {
   setup: string;
+  inputMode: "setup" | "alg";
   applySignal: number;
   onFacelets: (facelets: number[]) => void;
   footer?: ReactNode;
@@ -34,7 +35,7 @@ type Props = {
 
 const colorHex = ["#ffffff", "#ff8800", "#ffff00", "#00ff00", "#0000ff", "#ff0000", "#800080", "#00ffff"];
 
-function FtoViewer({ setup, applySignal, onFacelets, footer }: Props) {
+function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -68,9 +69,9 @@ function FtoViewer({ setup, applySignal, onFacelets, footer }: Props) {
 
   useEffect(() => {
     if (applySignal > 0) {
-      viewerRef.current?.applyAlgorithmInstant(setup);
+      viewerRef.current?.applyAlgorithmInstant(inputMode === "alg" ? invertAlgorithm(setup) : setup);
     }
-  }, [applySignal, setup]);
+  }, [applySignal, inputMode, setup]);
 
   function setPanMode() {
     setModeState("pan");
@@ -88,25 +89,62 @@ function FtoViewer({ setup, applySignal, onFacelets, footer }: Props) {
 
   return (
     <div className="fto-viewer-panel">
-      <div ref={hostRef} className="fto-canvas-host" />
-      <div className="viewer-controls">
-        {colorHex.map((hex, index) => (
-          <button
-            key={hex}
-            className={`swatch ${mode === "paint" && selectedColor === index ? "selected" : ""}`}
-            onClick={() => selectColor(index)}
-            style={{ ["--swatch" as string]: hex }}
-            title={`Color ${index}`}
-            aria-label={`Color ${index}`}
-          />
-        ))}
-        <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
-        <button onClick={resetPuzzle}>Reset</button>
+      <div className="fto-stage">
+        <div ref={hostRef} className="fto-canvas-host" />
+        <div className="viewer-controls viewer-controls-left">
+          {colorHex.slice(0, 5).map((hex, index) => (
+            <button
+              key={hex}
+              className={`swatch ${mode === "paint" && selectedColor === index ? "selected" : ""}`}
+              onClick={() => selectColor(index)}
+              style={{ ["--swatch" as string]: hex }}
+              title={`Color ${index}`}
+              aria-label={`Color ${index}`}
+            />
+          ))}
+        </div>
+        <div className="viewer-controls viewer-controls-right">
+          {colorHex.slice(5).map((hex, offset) => {
+            const index = offset + 5;
+            return (
+              <button
+                key={hex}
+                className={`swatch ${mode === "paint" && selectedColor === index ? "selected" : ""}`}
+                onClick={() => selectColor(index)}
+                style={{ ["--swatch" as string]: hex }}
+                title={`Color ${index}`}
+                aria-label={`Color ${index}`}
+              />
+            );
+          })}
+          <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
+          <button onClick={resetPuzzle}>Reset</button>
+        </div>
       </div>
       {footer}
       <div className="move-log">{history.slice(-40).join(" ")}</div>
     </div>
   );
+}
+
+function invertAlgorithm(algorithm: string) {
+  return algorithm
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .reverse()
+    .map(invertMove)
+    .join(" ");
+}
+
+function invertMove(move: string) {
+  if (move.endsWith("'")) {
+    return move.slice(0, -1);
+  }
+  if (move.endsWith("i")) {
+    return move.slice(0, -1);
+  }
+  return `${move}'`;
 }
 
 export default FtoViewer;

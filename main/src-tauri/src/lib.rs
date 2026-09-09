@@ -85,8 +85,7 @@ struct SolveRequest {
     state: Option<CubieState>,
     facelets: Option<Vec<u8>>,
     allowed_moves: Vec<String>,
-    max_depth: u8,
-    exact: bool,
+    max_depth: Option<u8>,
     find_all: bool,
     restricted_pruning: bool,
     threads: usize,
@@ -268,20 +267,58 @@ fn solve_fto_inner(
     let search_progress = |depth: u8| {
         emit_line(app, "search", &format!("searching depth {depth}..."));
     };
-    let result = search::solve_with_pruning_threads_reporting(
-        cubie.coord(),
-        &tables,
-        Some(&pruning),
-        &SearchConfig {
-            min_depth: if request.exact { request.max_depth } else { 0 },
-            max_depth: request.max_depth,
-            find_all: request.find_all,
-            allowed_moves,
-            cancel: Some(cancel.clone()),
-        },
-        request.threads.max(1),
-        search_progress,
-    );
+    let coord = cubie.coord();
+    let result = if let Some(max_depth) = request.max_depth {
+        search::solve_with_pruning_threads_reporting(
+            coord,
+            &tables,
+            Some(&pruning),
+            &SearchConfig {
+                min_depth: max_depth,
+                max_depth,
+                find_all: request.find_all,
+                allowed_moves,
+                cancel: Some(cancel.clone()),
+            },
+            request.threads.max(1),
+            search_progress,
+        )
+    } else {
+        let mut total_nodes = 0_u64;
+        let start_depth = pruning.heuristic_for_coord(coord);
+        let mut found = None;
+        for depth in start_depth..=u8::MAX {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let result = search::solve_with_pruning_threads_reporting(
+                coord,
+                &tables,
+                Some(&pruning),
+                &SearchConfig {
+                    min_depth: depth,
+                    max_depth: depth,
+                    find_all: request.find_all,
+                    allowed_moves: allowed_moves.clone(),
+                    cancel: Some(cancel.clone()),
+                },
+                request.threads.max(1),
+                &search_progress,
+            );
+            total_nodes += result.nodes;
+            if !result.solutions.is_empty() {
+                found = Some(search::SearchResult {
+                    solutions: result.solutions,
+                    nodes: total_nodes,
+                });
+                break;
+            }
+        }
+        found.unwrap_or(search::SearchResult {
+            solutions: Vec::new(),
+            nodes: total_nodes,
+        })
+    };
 
     Ok(SolveResponse {
         nodes: result.nodes,

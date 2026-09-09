@@ -41,15 +41,15 @@ const solved: CubieState = {
 };
 
 function App() {
-  const [setup, setSetup] = useState("R U B");
+  const [setup, setSetup] = useState("");
+  const [inputMode, setInputMode] = useState<"setup" | "alg">("setup");
   const [applySignal, setApplySignal] = useState(0);
   const [facelets, setFacelets] = useState<number[]>([]);
   const [cubieState, setCubieState] = useState<CubieState | null>(solved);
   const [stateError, setStateError] = useState("");
   const [banned, setBanned] = useState<Set<string>>(new Set());
-  const [depth, setDepth] = useState("8");
-  const [exact, setExact] = useState(true);
-  const [all, setAll] = useState(false);
+  const [depth, setDepth] = useState("");
+  const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
   const [threads, setThreads] = useState("1");
   const [status, setStatus] = useState("Idle");
@@ -61,6 +61,7 @@ function App() {
   const terminalRef = useRef<HTMLDivElement | null>(null);
 
   const allowedMoves = useMemo(() => moves.filter((move) => !banned.has(move)), [banned]);
+  const stateLabel = stateError ? "Invalid state" : "Valid state";
 
   const handleFacelets = useCallback((nextFacelets: number[]) => {
     setFacelets(nextFacelets);
@@ -154,8 +155,21 @@ function App() {
     });
   }
 
+  function allowAllMoves() {
+    setBanned(new Set());
+  }
+
+  function invertMoveSelection() {
+    setBanned((current) => new Set(moves.filter((move) => !current.has(move))));
+  }
+
   async function solve() {
     if (!cubieState || running) {
+      return;
+    }
+    const trimmedDepth = depth.trim();
+    if (trimmedDepth && !/^\d+$/.test(trimmedDepth)) {
+      setStatus("Depth must be empty or numeric");
       return;
     }
     setRunning(true);
@@ -164,7 +178,7 @@ function App() {
     clearTerminal();
     appendLine(
       "info",
-      `solve (depth=${depth} exact=${exact ? "on" : "off"} all=${all ? "on" : "off"} threads=${threads})`,
+      `solve (depth=${trimmedDepth || "auto"} all=${all ? "on" : "off"} threads=${threads})`,
     );
     try {
       await invoke("solve_fto", {
@@ -173,8 +187,7 @@ function App() {
           state: null,
           facelets,
           allowedMoves,
-          maxDepth: Number(depth),
-          exact,
+          maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
           findAll: all,
           restrictedPruning,
           threads: Number(threads),
@@ -194,16 +207,40 @@ function App() {
 
   return (
     <main>
+      <header className="app-header">
+        <div>
+          <h1>Optimal FTO Solver</h1>
+          <p>By Abid Ibn Ashraf</p>
+        </div>
+        <div className="status-strip">
+          <span className={`pill ${running ? "pill-running" : ""}`}>{status}</span>
+          <span className={`pill ${stateError ? "pill-bad" : "pill-good"}`}>{stateLabel}</span>
+          <span className="pill">{allowedMoves.length}/26 moves</span>
+          {result ? <span className="pill">{result.nodes.toLocaleString()} nodes</span> : null}
+        </div>
+      </header>
+
       <section className="workspace">
         <div className="input-pane">
-          <header>
-            <h1>Optimal FTO Solver</h1>
-            <div className="status">{status}</div>
-          </header>
-
           <div className="setup-row">
             <label className="field">
-              <span>Setup moves</span>
+              <span className="input-mode-toggle">
+                <button
+                  type="button"
+                  className={inputMode === "setup" ? "active" : ""}
+                  onClick={() => setInputMode("setup")}
+                >
+                  Setup Move
+                </button>
+                <span>/</span>
+                <button
+                  type="button"
+                  className={inputMode === "alg" ? "active" : ""}
+                  onClick={() => setInputMode("alg")}
+                >
+                  alg
+                </button>
+              </span>
               <input
                 value={setup}
                 onChange={(event) => setSetup(event.target.value)}
@@ -211,11 +248,12 @@ function App() {
                 autoComplete="off"
               />
             </label>
-            <button onClick={() => setApplySignal((current) => current + 1)}>Apply</button>
+            <button className="secondary" onClick={() => setApplySignal((current) => current + 1)}>Apply</button>
           </div>
 
           <FtoViewer
             setup={setup}
+            inputMode={inputMode}
             applySignal={applySignal}
             onFacelets={handleFacelets}
             footer={
@@ -231,13 +269,19 @@ function App() {
         </div>
 
         <div className="control-pane">
-          <section>
-            <h2>Moves</h2>
+          <section className="tool-section">
+            <div className="section-heading">
+              <h2>Move Set</h2>
+              <div className="mini-actions">
+                <button onClick={allowAllMoves}>All</button>
+                <button onClick={invertMoveSelection}>Invert</button>
+              </div>
+            </div>
             <div className="move-grid">
               {moves.map((move) => (
                 <button
                   key={move}
-                  className={banned.has(move) ? "banned" : ""}
+                  className={banned.has(move) ? "move-toggle banned" : "move-toggle"}
                   onClick={() => toggleMove(move)}
                 >
                   {move}
@@ -246,20 +290,26 @@ function App() {
             </div>
           </section>
 
-          <section className="solve-options">
-            <h2>Search</h2>
+          <section className="tool-section solve-options">
+            <div className="section-heading">
+              <h2>Search</h2>
+            </div>
+            <div className="search-grid">
             <label>
               Depth
-              <input value={depth} onChange={(event) => setDepth(event.target.value)} inputMode="numeric" />
+              <input
+                value={depth}
+                onChange={(event) => setDepth(event.target.value.replace(/\D/g, ""))}
+                inputMode="numeric"
+                placeholder="auto"
+              />
             </label>
             <label>
               Threads
               <input value={threads} onChange={(event) => setThreads(event.target.value)} inputMode="numeric" />
             </label>
-            <label className="check">
-              <input type="checkbox" checked={exact} onChange={(event) => setExact(event.target.checked)} />
-              Exact depth
-            </label>
+            </div>
+            <div className="option-list">
             <label className="check">
               <input type="checkbox" checked={all} onChange={(event) => setAll(event.target.checked)} />
               All solutions
@@ -272,13 +322,16 @@ function App() {
               />
               Restricted pruning
             </label>
+            </div>
+            <div className="actions-row">
             <button
-              className="primary"
+              className={running ? "primary stop" : "primary"}
               onClick={running ? stopSolve : solve}
               disabled={!running && (!cubieState || allowedMoves.length === 0)}
             >
               {running ? "Stop" : "Solve"}
             </button>
+            </div>
             {stateError ? <div className="state-error">{stateError}</div> : <div className="state-ok">valid FTO state</div>}
           </section>
         </div>
