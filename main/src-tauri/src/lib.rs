@@ -409,3 +409,26 @@ fn parse_move(token: &str) -> Result<Move, String> {
         _ => Err(format!("unknown move: {token}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{cubie_from_facelets, F, U};
+    use fto_core::FtoCubie;
+
+    fn solved_facelets() -> Vec<u8> {
+        (0..72).map(|idx| (idx / 9) as u8).collect()
+    }
+
+    #[test]
+    fn accepts_solved_facelets() {
+        let cubie = cubie_from_facelets(&solved_facelets()).expect("solved facelets should parse");
+        assert_eq!(cubie, FtoCubie::solved());
+    }
+
+    #[test]
+    fn accepts_same_orbit_center_swap() {
+        let mut facelets = solved_facelets();
+        facelets.swap(U + 2, F + 2);
+        cubie_from_facelets(&facelets).expect("same-orbit center swap should parse");
+    }
+}

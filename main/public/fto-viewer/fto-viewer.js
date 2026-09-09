@@ -2,6 +2,17 @@
   "use strict";
 
   var faceColors = [0xffffff, 0xff8800, 0xffff00, 0x00ff00, 0x0000ff, 0xff0000, 0x800080, 0x00ffff];
+  var polyFaceToFaceletFace = [0, 6, 7, 1, 4, 3, 2, 5];
+  var polyStickerToFaceletSlot = [
+    [0, 3, 8, 1, 6, 4, 2, 7, 5],
+    [0, 1, 4, 2, 5, 7, 3, 6, 8],
+    [0, 3, 8, 2, 7, 5, 1, 6, 4],
+    [0, 2, 7, 1, 5, 4, 3, 6, 8],
+    [4, 6, 8, 7, 5, 2, 3, 1, 0],
+    [8, 6, 4, 3, 1, 0, 5, 7, 2],
+    [4, 6, 8, 1, 3, 0, 7, 5, 2],
+    [8, 3, 0, 6, 1, 4, 5, 7, 2],
+  ];
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
   function createFtoViewer(container, options) {
@@ -48,8 +59,9 @@
           poly = trimmed;
         }
         var cords = poly.projection(puzzle.faceUVs[face]);
-        var faceletIndex = face * 9 + p;
-        var ownMat = new THREE.MeshBasicMaterial({ color: faceColors[face] });
+        var logicalFace = polyFaceToFaceletFace[face];
+        var faceletIndex = logicalFace * 9 + polyStickerToFaceletSlot[face][p];
+        var ownMat = new THREE.MeshBasicMaterial({ color: faceColors[logicalFace] });
         var mesh = new THREE.Mesh(new THREE.Ploy(cords), [ownMat, borderMat]);
         mesh.doubleSided = true;
         mesh.overdraw = true;
@@ -64,9 +76,9 @@
         sticker.matrixAutoUpdate = false;
         sticker.update();
 
-        cubePieces[idx] = [m, sticker, face, faceletIndex];
+        cubePieces[idx] = [m, sticker, logicalFace, faceletIndex];
         stickerMeshes.push(mesh);
-        faceletColors[faceletIndex] = face;
+        faceletColors[faceletIndex] = logicalFace;
         cubeObject.addChild(sticker);
       });
 
