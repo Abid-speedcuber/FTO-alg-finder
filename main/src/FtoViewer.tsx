@@ -5,6 +5,7 @@ type FtoViewerApi = {
   applyAlgorithm(algorithm: string): void;
   applyAlgorithmInstant(algorithm: string): void;
   getFacelets(): number[];
+  getCenterTargets(): CenterTargets;
   setMode(mode: "pan" | "paint"): void;
   setColor(color: number): void;
   resetPuzzle(): void;
@@ -19,22 +20,29 @@ declare global {
       options?: {
         keyboard?: boolean;
         onFacelets?: (facelets: number[]) => void;
+        onCenterTargets?: (targets: CenterTargets) => void;
       },
     ) => FtoViewerApi;
   }
 }
+
+export type CenterTargets = {
+  uf: Array<number | null>;
+  rl: Array<number | null>;
+};
 
 type Props = {
   setup: string;
   inputMode: "setup" | "alg";
   applySignal: number;
   onFacelets: (facelets: number[]) => void;
+  onCenterTargets: (targets: CenterTargets) => void;
   footer?: ReactNode;
 };
 
 const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
-function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props) {
+function FtoViewer({ setup, inputMode, applySignal, onFacelets, onCenterTargets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [mode, setModeState] = useState<"pan" | "paint">("pan");
@@ -47,6 +55,7 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
 
     const viewer = window.createFtoViewer(hostRef.current, {
       onFacelets,
+      onCenterTargets,
     });
     viewerRef.current = viewer;
 
@@ -54,7 +63,7 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, footer }: Props)
       viewer.dispose();
       viewerRef.current = null;
     };
-  }, [onFacelets]);
+  }, [onFacelets, onCenterTargets]);
 
   useEffect(() => {
     viewerRef.current?.setMode(mode);

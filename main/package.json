@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "tauri": "tauri",
+    "tauri": "cargo build --release -p fto-cli && tauri",
     "check": "tsc -b"
   },
   "dependencies": {

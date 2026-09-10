@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import FtoViewer from "./FtoViewer";
+import FtoViewer, { type CenterTargets } from "./FtoViewer";
 
 type CubieState = {
   cp: number[];
@@ -40,11 +40,19 @@ const solved: CubieState = {
   rl: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
 };
 
+function emptyCenterTargets(): CenterTargets {
+  return {
+    uf: [null, null, null, null],
+    rl: [null, null, null, null],
+  };
+}
+
 function App() {
   const [setup, setSetup] = useState("");
   const [inputMode, setInputMode] = useState<"setup" | "alg">("setup");
   const [applySignal, setApplySignal] = useState(0);
   const [facelets, setFacelets] = useState<number[]>([]);
+  const [centerTargets, setCenterTargets] = useState<CenterTargets>(emptyCenterTargets);
   const [cubieState, setCubieState] = useState<CubieState | null>(solved);
   const [stateError, setStateError] = useState("");
   const [banned, setBanned] = useState<Set<string>>(new Set());
@@ -186,6 +194,7 @@ function App() {
           scramble: null,
           state: null,
           facelets,
+          centerTargets,
           allowedMoves,
           maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
           findAll: all,
@@ -256,6 +265,7 @@ function App() {
             inputMode={inputMode}
             applySignal={applySignal}
             onFacelets={handleFacelets}
+            onCenterTargets={setCenterTargets}
             footer={
               <div className="terminal" ref={terminalRef}>
                 {terminal.length === 0 ? (

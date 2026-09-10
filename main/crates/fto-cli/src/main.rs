@@ -1144,6 +1144,8 @@ fn parse_partial_mask(input: &str) -> Result<PartialMask, String> {
         edges: parse_bool_array::<12>(mask, "edges")?,
         uf_centers: parse_bool_array::<12>(mask, "ufCenters")?,
         rl_centers: parse_bool_array::<12>(mask, "rlCenters")?,
+        uf_center_targets: parse_optional_u8_array::<4>(mask, "ufCenterTargets", 0, 11)?,
+        rl_center_targets: parse_optional_u8_array::<4>(mask, "rlCenterTargets", 0, 11)?,
     })
 }
 
@@ -1200,6 +1202,51 @@ fn parse_bool_array<const N: usize>(input: &str, key: &str) -> Result<[bool; N],
     values
         .try_into()
         .map_err(|values: Vec<bool>| format!("{key} must contain {N} values, got {}", values.len()))
+}
+
+fn parse_optional_u8_array<const N: usize>(
+    input: &str,
+    key: &str,
+    min: u8,
+    max: u8,
+) -> Result<[Option<u8>; N], String> {
+    let needle = format!("\"{key}\"");
+    let Some(key_start) = input.find(&needle) else {
+        return Ok([None; N]);
+    };
+    let after_key = &input[key_start + needle.len()..];
+    let open = after_key
+        .find('[')
+        .ok_or_else(|| format!("{key} must be a JSON array"))?;
+    let after_open = &after_key[open + 1..];
+    let close = after_open
+        .find(']')
+        .ok_or_else(|| format!("{key} array is missing closing bracket"))?;
+    let body = &after_open[..close];
+    let values = body
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value == "null" {
+                return Ok(None);
+            }
+            value
+                .parse::<u8>()
+                .map_err(|_| format!("{key} contains a non-u8 value: {value}"))
+                .and_then(|value| {
+                    if (min..=max).contains(&value) {
+                        Ok(Some(value))
+                    } else {
+                        Err(format!("{key} value {value} is outside {min}..={max}"))
+                    }
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    values.try_into().map_err(|values: Vec<Option<u8>>| {
+        format!("{key} must contain {N} values, got {}", values.len())
+    })
 }
 
 fn parse_array<const N: usize>(

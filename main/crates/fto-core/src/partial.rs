@@ -18,6 +18,8 @@ pub struct PartialMask {
     pub edges: [bool; 12],
     pub uf_centers: [bool; 12],
     pub rl_centers: [bool; 12],
+    pub uf_center_targets: [Option<u8>; 4],
+    pub rl_center_targets: [Option<u8>; 4],
 }
 
 impl PartialMask {
@@ -28,6 +30,8 @@ impl PartialMask {
             edges: [true; 12],
             uf_centers: [true; 12],
             rl_centers: [true; 12],
+            uf_center_targets: [None; 4],
+            rl_center_targets: [None; 4],
         }
     }
 
@@ -37,6 +41,8 @@ impl PartialMask {
             && self.edges.iter().all(|&v| v)
             && self.uf_centers.iter().all(|&v| v)
             && self.rl_centers.iter().all(|&v| v)
+            && self.uf_center_targets.iter().all(Option::is_none)
+            && self.rl_center_targets.iter().all(Option::is_none)
     }
 }
 
@@ -185,14 +191,38 @@ fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
         if mask.edges[piece] && state.ep[piece] != piece as u8 {
             return false;
         }
-        if mask.uf_centers[piece] && !center_piece_is_solved_by_color(&state.uf, piece as u8) {
+        if mask.uf_centers[piece]
+            && !center_piece_satisfies_constraint(
+                &state.uf,
+                piece as u8,
+                &mask.uf_center_targets,
+            )
+        {
             return false;
         }
-        if mask.rl_centers[piece] && !center_piece_is_solved_by_color(&state.rl, piece as u8) {
+        if mask.rl_centers[piece]
+            && !center_piece_satisfies_constraint(
+                &state.rl,
+                piece as u8,
+                &mask.rl_center_targets,
+            )
+        {
             return false;
         }
     }
     true
+}
+
+fn center_piece_satisfies_constraint(
+    orbit: &[u8; 12],
+    piece: u8,
+    targets: &[Option<u8>; 4],
+) -> bool {
+    let color = piece / 3;
+    if let Some(target_slot) = targets[color as usize] {
+        return orbit[target_slot as usize] == piece;
+    }
+    center_piece_is_solved_by_color(orbit, piece)
 }
 
 fn center_piece_is_solved_by_color(orbit: &[u8; 12], piece: u8) -> bool {
@@ -580,7 +610,7 @@ pub fn format_partial_solutions(result: SearchResult) -> (u64, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DynamicKind, DynamicTable};
+    use super::{is_partial_solved, DynamicKind, DynamicTable, PartialMask};
     use crate::{moves::Move, FtoCubie};
 
     #[test]
@@ -601,5 +631,26 @@ mod tests {
         let idx = table.index_of_state(&state);
         let next = state.apply(Move::B);
         assert_eq!(table.move_cached_index(idx, &next, Move::B), table.index_of_state(&next));
+    }
+
+    #[test]
+    fn pinned_center_requires_that_visible_center_identity() {
+        let mut mask = PartialMask {
+            corners: [false; 6],
+            edges: [false; 12],
+            uf_centers: [false; 12],
+            rl_centers: [false; 12],
+            uf_center_targets: [Some(1), None, None, None],
+            rl_center_targets: [None; 4],
+        };
+        mask.uf_centers[0] = true;
+
+        let mut wrong_duplicate_in_target = FtoCubie::solved();
+        wrong_duplicate_in_target.uf.swap(1, 2);
+        assert!(!is_partial_solved(&wrong_duplicate_in_target, &mask));
+
+        let mut pinned_identity_in_target = FtoCubie::solved();
+        pinned_identity_in_target.uf.swap(0, 1);
+        assert!(is_partial_solved(&pinned_identity_in_target, &mask));
     }
 }

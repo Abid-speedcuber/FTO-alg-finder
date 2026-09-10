@@ -35,6 +35,10 @@
     [4, 6, 8, 1, 3, 0, 7, 5, 2],
     [8, 3, 0, 6, 1, 4, 5, 7, 2],
   ];
+  var ufCenterFacelets = [2, 5, 7, 11, 14, 16, 20, 23, 25, 29, 32, 34];
+  var rlCenterFacelets = [38, 41, 43, 47, 50, 52, 65, 68, 70, 56, 59, 61];
+  var rlFaceColorToCenterGroup = [0, 1, 3, 2];
+  var targetHighlightHex = 0xf4ff62;
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
   function createFtoViewer(container, options) {
@@ -66,6 +70,12 @@
     var activeDragMode = "pan";
     var mode = options.mode || "pan";
     var selectedColor = options.color == null ? 0 : options.color;
+    var centerTargets = {
+      uf: [null, null, null, null],
+      rl: [null, null, null, null],
+    };
+    var targetPick = null;
+    var highlightedFacelets = [];
     var moveQueue = [];
     var animating = false;
     var moveHistory = [];
@@ -122,13 +132,50 @@
       updateOrbit();
     }
 
-    function setStickerColor(stickerIndex, color) {
+    function stickerColorHex(color) {
+      return color === ignoredColor ? ignoredColorHex : faceColors[color];
+    }
+
+    function setStickerDisplayColor(stickerIndex, color) {
       var sticker = cubePieces[stickerIndex];
       if (!sticker) {
         return;
       }
       var material = sticker[4].materials[0];
-      material.color.setHex(color === ignoredColor ? ignoredColorHex : faceColors[color]);
+      material.color.setHex(color);
+    }
+
+    function refreshStickerDisplayByFacelet(faceletIndex) {
+      var stickerIndex = faceletToSticker[faceletIndex];
+      if (stickerIndex != null) {
+        setStickerDisplayColor(stickerIndex, stickerColorHex(faceletColors[faceletIndex]));
+      }
+    }
+
+    function clearTargetHighlights() {
+      for (var i = 0; i < highlightedFacelets.length; i++) {
+        refreshStickerDisplayByFacelet(highlightedFacelets[i]);
+      }
+      highlightedFacelets = [];
+    }
+
+    function showTargetHighlights(facelets) {
+      clearTargetHighlights();
+      highlightedFacelets = facelets.slice();
+      for (var i = 0; i < highlightedFacelets.length; i++) {
+        var stickerIndex = faceletToSticker[highlightedFacelets[i]];
+        if (stickerIndex != null) {
+          setStickerDisplayColor(stickerIndex, targetHighlightHex);
+        }
+      }
+    }
+
+    function setStickerColor(stickerIndex, color) {
+      var sticker = cubePieces[stickerIndex];
+      if (!sticker) {
+        return;
+      }
+      setStickerDisplayColor(stickerIndex, stickerColorHex(color));
       sticker[2] = color;
       faceletColors[sticker[3]] = color;
     }
@@ -136,6 +183,19 @@
     function notifyState() {
       if (options.onFacelets) {
         options.onFacelets(getFacelets());
+      }
+    }
+
+    function getCenterTargets() {
+      return {
+        uf: centerTargets.uf.slice(),
+        rl: centerTargets.rl.slice(),
+      };
+    }
+
+    function notifyCenterTargets() {
+      if (options.onCenterTargets) {
+        options.onCenterTargets(getCenterTargets());
       }
     }
 
@@ -269,6 +329,7 @@
     }
 
     function applyAlgorithmInstant(algorithm) {
+      clearCenterTargetPick();
       var parsed = parseAlgorithm(algorithm);
       for (var i = 0; i < parsed.length; i++) {
         applyMoveInstant({ axis: parsed[i][0], pow: parsed[i][1] });
@@ -278,6 +339,77 @@
 
     function getFacelets() {
       return faceletColors.slice();
+    }
+
+    function centerInfo(faceletIndex) {
+      var ufSlot = ufCenterFacelets.indexOf(faceletIndex);
+      if (ufSlot !== -1) {
+        return { orbit: "uf", slot: ufSlot, color: Math.floor(ufSlot / 3) };
+      }
+      var rlSlot = rlCenterFacelets.indexOf(faceletIndex);
+      if (rlSlot !== -1) {
+        return { orbit: "rl", slot: rlSlot, color: Math.floor(rlSlot / 3) };
+      }
+      return null;
+    }
+
+    function selectedCenterGroup() {
+      if (selectedColor < 4) {
+        return { orbit: "uf", color: selectedColor };
+      }
+      return {
+        orbit: "rl",
+        color: rlFaceColorToCenterGroup[selectedColor - 4],
+      };
+    }
+
+    function targetCandidatesForSelection() {
+      var group = selectedCenterGroup();
+      var facelets = group.orbit === "uf" ? ufCenterFacelets : rlCenterFacelets;
+      var candidates = [];
+      for (var slot = 0; slot < facelets.length; slot++) {
+        if (Math.floor(slot / 3) === group.color) {
+          candidates.push(facelets[slot]);
+        }
+      }
+      return {
+        orbit: group.orbit,
+        color: group.color,
+        candidates: candidates,
+      };
+    }
+
+    function beginCenterTargetPick(faceletIndex) {
+      var info = centerInfo(faceletIndex);
+      var group = selectedCenterGroup();
+      if (!info || info.orbit !== group.orbit) {
+        return false;
+      }
+      targetPick = targetCandidatesForSelection();
+      showTargetHighlights(targetPick.candidates);
+      render();
+      return true;
+    }
+
+    function chooseCenterTarget(faceletIndex) {
+      if (!targetPick) {
+        return false;
+      }
+      var info = centerInfo(faceletIndex);
+      if (!info || info.orbit !== targetPick.orbit || info.color !== targetPick.color) {
+        clearCenterTargetPick();
+        return true;
+      }
+      centerTargets[targetPick.orbit][targetPick.color] = info.slot;
+      clearCenterTargetPick();
+      notifyCenterTargets();
+      render();
+      return true;
+    }
+
+    function clearCenterTargetPick() {
+      targetPick = null;
+      clearTargetHighlights();
     }
 
     function parseAlgorithm(algorithm) {
@@ -360,9 +492,9 @@
         updateOrbit();
         render();
       }
-      function pointerUp(x, y) {
+      function pointerUp(x, y, shiftKey) {
         if (activeDragMode === "paint" && !didDrag && x != null && y != null) {
-          paintAt(x, y);
+          paintAt(x, y, shiftKey);
         }
         endDrag();
       }
@@ -382,7 +514,7 @@
         pointerMove(e.clientX, e.clientY);
       };
       var onMouseUp = function(e) {
-        pointerUp(e.clientX, e.clientY);
+        pointerUp(e.clientX, e.clientY, e.shiftKey);
       };
       var onContextMenu = function(e) {
         e.preventDefault();
@@ -415,7 +547,7 @@
           return;
         }
         var touch = e.changedTouches[0];
-        pointerUp(touch && touch.clientX, touch && touch.clientY);
+        pointerUp(touch && touch.clientX, touch && touch.clientY, false);
       };
 
       container.addEventListener("mousedown", onMouseDown);
@@ -442,12 +574,23 @@
       return cleanup;
     }
 
-    function paintAt(x, y) {
+    function paintAt(x, y, shiftKey) {
       var stickerIndex = pickSticker(x, y);
       if (stickerIndex == null) {
+        if (targetPick) {
+          clearCenterTargetPick();
+          render();
+        }
+        return;
+      }
+      var faceletIndex = cubePieces[stickerIndex][3];
+      if (chooseCenterTarget(faceletIndex)) {
         return;
       }
       setStickerColor(stickerIndex, selectedColor);
+      if (shiftKey) {
+        beginCenterTargetPick(faceletIndex);
+      }
       render();
       notifyState();
     }
@@ -457,6 +600,7 @@
       if (stickerIndex == null || !cubePieces[stickerIndex]) {
         return;
       }
+      clearCenterTargetPick();
       var faceletIndex = cubePieces[stickerIndex][3];
       var group = pieceFacelets.find(function(facelets) {
         return facelets.indexOf(faceletIndex) !== -1;
@@ -571,12 +715,14 @@
     window.addEventListener("resize", resize);
     resize();
     notifyState();
+    notifyCenterTargets();
 
     return {
       applyAlgorithm: applyAlgorithm,
       applyAlgorithmInstant: applyAlgorithmInstant,
       queueMove: queueMove,
       getFacelets: getFacelets,
+      getCenterTargets: getCenterTargets,
       setMode: function(nextMode) {
         mode = nextMode;
         if (canvas) {
@@ -588,9 +734,14 @@
         selectedColor = color;
       },
       resetPuzzle: function() {
+        clearCenterTargetPick();
         moveQueue = [];
         animating = false;
         moveHistory = [];
+        centerTargets = {
+          uf: [null, null, null, null],
+          rl: [null, null, null, null],
+        };
         for (var i = 0; i < cubePieces.length; i++) {
           if (cubePieces[i]) {
             setStickerColor(i, Math.floor(cubePieces[i][3] / 9));
@@ -603,6 +754,7 @@
         }
         render();
         notifyState();
+        notifyCenterTargets();
       },
       resetView: function() {
         orbit.copy(defaultOrbit);
