@@ -540,7 +540,12 @@ fn cubie_from_partial_facelets(
         corner_xor ^= co[i];
     }
     if corner_xor != 0 {
-        return Err("defined corner orientation parity is invalid".to_owned());
+        let ignored_corner = slot_mask
+            .corners
+            .iter()
+            .position(|&care| !care)
+            .ok_or_else(|| "defined corner orientation parity is invalid".to_owned())?;
+        co[ignored_corner] ^= corner_xor;
     }
 
     let (mut ep, _) = detect_partial_pieces(&EDGE_FACELETS, facelets, &slot_mask.edges)
@@ -1128,7 +1133,7 @@ mod tests {
     use super::{
         cubie_and_partial_mask_from_facelets, cubie_from_facelets,
         cubie_from_facelets_for_solving, cubie_from_facelets_with_center_targets, CenterTargets,
-        EDGE_FACELETS, F, U, empty_center_source_groups,
+        CORNER_FACELETS, EDGE_FACELETS, F, U, empty_center_source_groups,
     };
     use fto_core::FtoCubie;
 
@@ -1157,6 +1162,26 @@ mod tests {
         }
         cubie_from_facelets_for_solving(&facelets)
             .expect("partial facelets with a blacked edge slot should parse");
+    }
+
+    #[test]
+    fn ignored_corner_absorbs_orientation_parity() {
+        let mut facelets = solved_facelets();
+        for &facelet in &CORNER_FACELETS[0] {
+            facelets[facelet] = 8;
+        }
+        let corner = CORNER_FACELETS[1];
+        let original = [
+            facelets[corner[0]],
+            facelets[corner[1]],
+            facelets[corner[2]],
+            facelets[corner[3]],
+        ];
+        for i in 0..4 {
+            facelets[corner[i]] = original[(i + 2) % 4];
+        }
+        cubie_from_facelets_for_solving(&facelets)
+            .expect("ignored corner should absorb visible corner orientation parity");
     }
 
     #[test]
