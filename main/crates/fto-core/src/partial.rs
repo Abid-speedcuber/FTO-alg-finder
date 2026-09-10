@@ -3,10 +3,7 @@ use crate::{
     search::{format_solution, SearchConfig, SearchResult},
     FtoCubie,
 };
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
 
 const UNVISITED: u8 = u8::MAX;
 const INVALID_TRANSITION: u32 = u32::MAX;
@@ -14,9 +11,6 @@ const EDGE_TABLE_PIECES: usize = 5;
 const CORNER_TABLE_PIECES: usize = 5;
 const MAX_DYNAMIC_TABLES: usize = 6;
 const MAX_DYNAMIC_TRANSITION_BYTES: usize = 96 * 1024 * 1024;
-const INDEX_AFTER_DEPTH: u8 = 8;
-const INDEX_AFTER_DEPTH_TIME: Duration = Duration::from_millis(250);
-const INDEX_AFTER_DEPTH_NODES: u64 = 100_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PartialMask {
@@ -55,6 +49,7 @@ pub struct PartialProblem {
 #[must_use]
 pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchResult {
     let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
+    pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
     eprintln!(
         "using {} dynamic partial pruning tables ({:.1} MiB)",
         pruning.tables.len(),
@@ -71,16 +66,9 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
     let start_depth = config
         .min_depth
         .max(pruning.heuristic(&problem.cubie));
-    let mut indexed = false;
     for depth in start_depth..=config.max_depth {
         eprintln!("searching depth {depth}...");
-        let started = Instant::now();
-        let depth_result = if indexed {
-            search_indexed(problem, &pruning, config, depth)
-        } else {
-            search_cubie(problem, &pruning, config, depth)
-        };
-        let elapsed = started.elapsed();
+        let depth_result = search_indexed(problem, &pruning, config, depth);
         let depth_nodes = depth_result.nodes;
         total.nodes += depth_nodes;
         total.solutions.extend(depth_result.solutions);
@@ -88,39 +76,8 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
             eprintln!("found solution at depth {depth}");
             break;
         }
-        if !indexed && should_enable_indexing(depth, depth_nodes, elapsed) {
-            pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
-            indexed = pruning.has_transitions();
-        }
     }
     total
-}
-
-fn should_enable_indexing(depth: u8, nodes: u64, elapsed: Duration) -> bool {
-    depth >= INDEX_AFTER_DEPTH || elapsed >= INDEX_AFTER_DEPTH_TIME || nodes >= INDEX_AFTER_DEPTH_NODES
-}
-
-fn search_cubie(
-    problem: &PartialProblem,
-    pruning: &DynamicPruning,
-    config: &SearchConfig,
-    depth: u8,
-) -> SearchResult {
-    let mut ctx = PartialSearchContext {
-        problem,
-        pruning,
-        config,
-        moves: move_cubies(),
-        commute: move_commutation(),
-        path: Vec::with_capacity(depth as usize),
-        solutions: Vec::new(),
-        nodes: 0,
-    };
-    ctx.dfs(problem.cubie, depth, None);
-    SearchResult {
-        solutions: ctx.solutions,
-        nodes: ctx.nodes,
-    }
 }
 
 fn search_indexed(
@@ -148,17 +105,6 @@ fn search_indexed(
         solutions: ctx.solutions,
         nodes: ctx.nodes,
     }
-}
-
-struct PartialSearchContext<'a> {
-    problem: &'a PartialProblem,
-    pruning: &'a DynamicPruning,
-    config: &'a SearchConfig,
-    moves: [FtoCubie; MOVE_COUNT],
-    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
-    path: Vec<Move>,
-    solutions: Vec<Vec<Move>>,
-    nodes: u64,
 }
 
 #[derive(Clone)]
@@ -229,63 +175,31 @@ impl IndexedPartialSearchContext<'_> {
     }
 }
 
-impl PartialSearchContext<'_> {
-    fn dfs(&mut self, state: FtoCubie, depth_left: u8, last_move: Option<Move>) {
-        if self
-            .config
-            .cancel
-            .as_ref()
-            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            return;
-        }
-        self.nodes += 1;
-        if self.pruning.heuristic(&state) > depth_left {
-            return;
-        }
-        if depth_left == 0 {
-            if is_partial_solved(&state, &self.problem.mask) {
-                self.solutions.push(self.path.clone());
-            }
-            return;
-        }
-
-        for &mv in &self.config.allowed_moves {
-            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
-                continue;
-            }
-            let next = state.compose(&self.moves[mv.idx()]);
-            if self.pruning.heuristic(&next) > depth_left - 1 {
-                continue;
-            }
-            self.path.push(mv);
-            self.dfs(next, depth_left - 1, Some(mv));
-            self.path.pop();
-            if !self.config.find_all && !self.solutions.is_empty() {
-                return;
-            }
-        }
-    }
-}
-
 fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
-    for pos in 0..6 {
-        if mask.corners[pos] && (state.cp[pos] != pos as u8 || state.co[pos] != 0) {
+    for piece in 0..6 {
+        if mask.corners[piece] && (state.cp[piece] != piece as u8 || state.co[piece] != 0) {
             return false;
         }
     }
-    for pos in 0..12 {
-        if mask.edges[pos] && state.ep[pos] != pos as u8 {
+    for piece in 0..12 {
+        if mask.edges[piece] && state.ep[piece] != piece as u8 {
             return false;
         }
-        if mask.uf_centers[pos] && state.uf[pos] / 3 != pos as u8 / 3 {
+        if mask.uf_centers[piece] && !center_piece_is_solved_by_color(&state.uf, piece as u8) {
             return false;
         }
-        if mask.rl_centers[pos] && state.rl[pos] / 3 != pos as u8 / 3 {
+        if mask.rl_centers[piece] && !center_piece_is_solved_by_color(&state.rl, piece as u8) {
             return false;
         }
     }
     true
+}
+
+fn center_piece_is_solved_by_color(orbit: &[u8; 12], piece: u8) -> bool {
+    orbit
+        .iter()
+        .position(|&candidate| candidate == piece)
+        .is_some_and(|pos| pos as u8 / 3 == piece / 3)
 }
 
 struct DynamicPruning {
@@ -359,10 +273,6 @@ impl DynamicPruning {
 
     fn bytes(&self) -> usize {
         self.tables.iter().map(DynamicTable::bytes).sum()
-    }
-
-    fn has_transitions(&self) -> bool {
-        self.tables.iter().any(|table| table.transitions_cache.is_some())
     }
 
     fn build_transitions(&mut self, max_bytes: usize) {
