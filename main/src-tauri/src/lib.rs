@@ -79,6 +79,7 @@ const RL_CENTER_FACELETS: [usize; 12] = [
     R + 5,
     R + 7,
 ];
+const RL_LAST_LAYER_FIXED_CENTER_SLOT: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +92,7 @@ struct SolveRequest {
     max_depth: Option<u8>,
     find_all: bool,
     restricted_pruning: bool,
+    last_layer_mode: bool,
     threads: usize,
 }
 
@@ -112,6 +114,7 @@ struct PartialMask {
     rl_centers: [bool; 12],
     uf_center_targets: [Option<u8>; 4],
     rl_center_targets: [Option<u8>; 4],
+    last_layer_centers: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -119,6 +122,14 @@ struct PartialMask {
 struct CenterTargets {
     uf: [Option<u8>; 4],
     rl: [Option<u8>; 4],
+    uf_sources: [Option<u8>; 4],
+    rl_sources: [Option<u8>; 4],
+    #[serde(default = "empty_center_source_groups")]
+    rl_top_sources: [Vec<u8>; 4],
+}
+
+fn empty_center_source_groups() -> [Vec<u8>; 4] {
+    [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -238,7 +249,11 @@ fn solve_fto_inner(
     let (cubie, partial_mask) = if let Some(state) = request.state.clone() {
         (FtoCubie::new(state.cp, state.co, state.ep, state.uf, state.rl), None)
     } else if let Some(facelets) = request.facelets.clone() {
-        cubie_and_partial_mask_from_facelets(&facelets, request.center_targets.as_ref())?
+        cubie_and_partial_mask_from_facelets(
+            &facelets,
+            request.center_targets.as_ref(),
+            request.last_layer_mode,
+        )?
     } else if let Some(scramble) = request.scramble.clone() {
         (apply_sequence(FtoCubie::solved(), &scramble)?, None)
     } else {
@@ -301,6 +316,9 @@ fn run_release_cli(
     }
     if request.restricted_pruning {
         args.push("--restricted-pruning".to_owned());
+    }
+    if request.last_layer_mode {
+        args.push("--last-layer".to_owned());
     }
     if request.threads > 1 {
         args.push("--threads".to_owned());
@@ -447,13 +465,14 @@ fn json_array<const N: usize>(values: &[u8; N]) -> String {
 
 fn partial_mask_json(mask: &PartialMask) -> String {
     format!(
-        "{{\"corners\":{},\"edges\":{},\"ufCenters\":{},\"rlCenters\":{},\"ufCenterTargets\":{},\"rlCenterTargets\":{}}}",
+        "{{\"corners\":{},\"edges\":{},\"ufCenters\":{},\"rlCenters\":{},\"ufCenterTargets\":{},\"rlCenterTargets\":{},\"lastLayerCenters\":{}}}",
         bool_array(&mask.corners),
         bool_array(&mask.edges),
         bool_array(&mask.uf_centers),
         bool_array(&mask.rl_centers),
         option_u8_array(&mask.uf_center_targets),
         option_u8_array(&mask.rl_center_targets),
+        mask.last_layer_centers,
     )
 }
 
@@ -480,15 +499,19 @@ fn option_u8_array<const N: usize>(values: &[Option<u8>; N]) -> String {
 }
 
 fn cubie_from_facelets_for_solving(facelets: &[u8]) -> Result<FtoCubie, String> {
-    cubie_and_partial_mask_from_facelets(facelets, None).map(|(cubie, _)| cubie)
+    cubie_and_partial_mask_from_facelets(facelets, None, false).map(|(cubie, _)| cubie)
 }
 
 fn cubie_and_partial_mask_from_facelets(
     facelets: &[u8],
     center_targets: Option<&CenterTargets>,
+    last_layer_mode: bool,
 ) -> Result<(FtoCubie, Option<PartialMask>), String> {
     if facelets.iter().any(|&color| color == 8) {
-        cubie_from_partial_facelets(facelets, center_targets).map(|(cubie, mask)| (cubie, Some(mask)))
+        cubie_from_partial_facelets(facelets, center_targets, last_layer_mode)
+            .map(|(cubie, mask)| (cubie, Some(mask)))
+    } else if last_layer_mode {
+        cubie_from_facelets_with_center_targets(facelets, center_targets).map(|cubie| (cubie, None))
     } else {
         cubie_from_facelets(facelets).map(|cubie| (cubie, None))
     }
@@ -497,6 +520,7 @@ fn cubie_and_partial_mask_from_facelets(
 fn cubie_from_partial_facelets(
     facelets: &[u8],
     center_targets: Option<&CenterTargets>,
+    last_layer_mode: bool,
 ) -> Result<(FtoCubie, PartialMask), String> {
     if facelets.len() != 72 {
         return Err("facelet input must contain exactly 72 stickers".to_owned());
@@ -530,6 +554,9 @@ fn cubie_from_partial_facelets(
         &slot_mask.uf_centers,
         0,
         center_targets.map(|targets| &targets.uf),
+        center_targets.map(|targets| &targets.uf_sources),
+        None,
+        None,
     )?;
     let rl = read_partial_centers(
         facelets,
@@ -537,8 +564,12 @@ fn cubie_from_partial_facelets(
         &slot_mask.rl_centers,
         4,
         center_targets.map(|targets| &targets.rl),
+        center_targets.map(|targets| &targets.rl_sources),
+        center_targets.map(|targets| &targets.rl_top_sources),
+        Some(&RL_LAST_LAYER_FIXED_CENTER_SLOT),
     )?;
     let mut mask = identity_mask_from_slot_mask(&slot_mask, &cp, &ep, &uf, &rl);
+    mask.last_layer_centers = last_layer_mode;
     apply_center_targets(&mut mask, center_targets)?;
 
     Ok((FtoCubie::new(cp, co, ep, uf, rl), mask))
@@ -555,6 +586,7 @@ fn partial_slot_mask_from_facelets(facelets: &[u8]) -> Result<PartialMask, Strin
         rl_centers: center_care_mask(&RL_CENTER_FACELETS, facelets),
         uf_center_targets: [None; 4],
         rl_center_targets: [None; 4],
+        last_layer_centers: false,
     })
 }
 
@@ -572,6 +604,7 @@ fn identity_mask_from_slot_mask(
         rl_centers: [false; 12],
         uf_center_targets: [None; 4],
         rl_center_targets: [None; 4],
+        last_layer_centers: false,
     };
     for pos in 0..6 {
         if slot_mask.corners[pos] {
@@ -743,6 +776,9 @@ fn read_partial_centers<const N: usize>(
     care: &[bool; N],
     color_base: u8,
     center_targets: Option<&[Option<u8>; 4]>,
+    center_sources: Option<&[Option<u8>; 4]>,
+    top_sources: Option<&[Vec<u8>; 4]>,
+    fixed_slots: Option<&[Option<u8>; 4]>,
 ) -> Result<[u8; N], String> {
     let mut cared_per_color = [0_u8; 4];
     let mut visible_color = [usize::MAX; N];
@@ -771,6 +807,61 @@ fn read_partial_centers<const N: usize>(
 
     let mut used_piece = [false; N];
     let mut out = [u8::MAX; N];
+
+    for color in 0..4 {
+        let Some(target) = center_targets.and_then(|targets| targets[color]) else {
+            continue;
+        };
+        if usize::from(target) >= N {
+            return Err("defined center orbit target is outside the orbit".to_owned());
+        }
+        if target / 3 != color as u8 {
+            return Err("defined center orbit target has the wrong color".to_owned());
+        }
+        let source = center_sources
+            .and_then(|sources| sources[color])
+            .and_then(|source| {
+                (usize::from(source) < N
+                    && care[usize::from(source)]
+                    && visible_color[usize::from(source)] == color)
+                    .then_some(usize::from(source))
+            })
+            .or_else(|| {
+                (cared_per_color[color] == 1).then(|| {
+                    (0..N)
+                        .find(|&pos| care[pos] && visible_color[pos] == color)
+                        .expect("one cared center of this color should exist")
+                })
+            });
+        let Some(source) = source else {
+            continue;
+        };
+        if used_piece[usize::from(target)] {
+            return Err("partial center fill failed".to_owned());
+        }
+        out[source] = target;
+        used_piece[usize::from(target)] = true;
+    }
+
+    if let Some(top_sources) = top_sources {
+        for color in 0..4 {
+            let fixed_slot = fixed_slots
+                .and_then(|slots| slots[color])
+                .map(usize::from);
+            for &source in &top_sources[color] {
+                let source = usize::from(source);
+                if source >= N || !care[source] || visible_color[source] != color || out[source] != u8::MAX {
+                    continue;
+                }
+                let piece = (color * 3..color * 3 + 3)
+                    .find(|&piece| !used_piece[piece] && Some(piece) != fixed_slot)
+                    .ok_or_else(|| "partial center fill failed".to_owned())?;
+                out[source] = piece as u8;
+                used_piece[piece] = true;
+            }
+        }
+    }
+
     for pos in 0..N {
         if !care[pos] {
             continue;
@@ -779,18 +870,8 @@ fn read_partial_centers<const N: usize>(
         if mapped == usize::MAX {
             continue;
         }
-        if cared_per_color[mapped] == 1 {
-            if let Some(Some(target)) = center_targets.map(|targets| targets[mapped]) {
-                if usize::from(target) >= N {
-                    return Err("defined center orbit target is outside the orbit".to_owned());
-                }
-                if target / 3 != mapped as u8 {
-                    return Err("defined center orbit target has the wrong color".to_owned());
-                }
-                out[pos] = target;
-                used_piece[usize::from(target)] = true;
-                continue;
-            }
+        if out[pos] != u8::MAX {
+            continue;
         }
         let piece = (mapped * 3..mapped * 3 + 3)
             .find(|&piece| !used_piece[piece])
@@ -817,6 +898,20 @@ fn read_partial_centers<const N: usize>(
 }
 
 fn cubie_from_facelets(facelets: &[u8]) -> Result<FtoCubie, String> {
+    cubie_from_facelets_with_optional_center_targets(facelets, None)
+}
+
+fn cubie_from_facelets_with_center_targets(
+    facelets: &[u8],
+    center_targets: Option<&CenterTargets>,
+) -> Result<FtoCubie, String> {
+    cubie_from_facelets_with_optional_center_targets(facelets, center_targets)
+}
+
+fn cubie_from_facelets_with_optional_center_targets(
+    facelets: &[u8],
+    center_targets: Option<&CenterTargets>,
+) -> Result<FtoCubie, String> {
     if facelets.len() != 72 {
         return Err("facelet input must contain exactly 72 stickers".to_owned());
     }
@@ -861,8 +956,35 @@ fn cubie_from_facelets(facelets: &[u8]) -> Result<FtoCubie, String> {
         return Err("edge permutation parity is invalid".to_owned());
     }
 
-    let mut uf = read_uf_centers(facelets)?;
-    let mut rl = read_rl_centers(facelets)?;
+    let center_care = [true; 12];
+    let mut uf = if let Some(targets) = center_targets {
+        read_partial_centers(
+            facelets,
+            &UF_CENTER_FACELETS,
+            &center_care,
+            0,
+            Some(&targets.uf),
+            Some(&targets.uf_sources),
+            None,
+            None,
+        )?
+    } else {
+        read_uf_centers(facelets)?
+    };
+    let mut rl = if let Some(targets) = center_targets {
+        read_partial_centers(
+            facelets,
+            &RL_CENTER_FACELETS,
+            &center_care,
+            4,
+            Some(&targets.rl),
+            Some(&targets.rl_sources),
+            Some(&targets.rl_top_sources),
+            Some(&RL_LAST_LAYER_FIXED_CENTER_SLOT),
+        )?
+    } else {
+        read_rl_centers(facelets)?
+    };
     if permutation_parity(&uf) != 0 {
         swap_zero_one(&mut uf);
     }
@@ -1004,8 +1126,9 @@ fn parse_move(token: &str) -> Result<Move, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cubie_and_partial_mask_from_facelets, cubie_from_facelets, cubie_from_facelets_for_solving,
-        CenterTargets, EDGE_FACELETS, F, U,
+        cubie_and_partial_mask_from_facelets, cubie_from_facelets,
+        cubie_from_facelets_for_solving, cubie_from_facelets_with_center_targets, CenterTargets,
+        EDGE_FACELETS, F, U, empty_center_source_groups,
     };
     use fto_core::FtoCubie;
 
@@ -1048,7 +1171,7 @@ mod tests {
         for &facelet in &EDGE_FACELETS[2] {
             facelets[facelet] = 8;
         }
-        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, None)
+        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, None, false)
             .expect("partial facelets should parse");
         let mask = mask.expect("black stickers should produce a partial mask");
         assert!(mask.edges[0]);
@@ -1064,12 +1187,55 @@ mod tests {
         let targets = CenterTargets {
             uf: [Some(1), None, None, None],
             rl: [None; 4],
+            uf_sources: [None; 4],
+            rl_sources: [None; 4],
+            rl_top_sources: empty_center_source_groups(),
         };
-        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, Some(&targets))
+        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false)
             .expect("partial facelets with center target should parse");
         let mask = mask.expect("black stickers should produce a partial mask");
         assert!(!mask.uf_centers[0]);
         assert!(mask.uf_centers[1]);
         assert_eq!(mask.uf_center_targets[0], Some(1));
+    }
+
+    #[test]
+    fn last_layer_exact_parser_uses_center_target_source() {
+        let facelets = solved_facelets();
+        let targets = CenterTargets {
+            uf: [None; 4],
+            rl: [None, None, Some(8), None],
+            uf_sources: [None; 4],
+            rl_sources: [None, None, Some(7), None],
+            rl_top_sources: empty_center_source_groups(),
+        };
+        let cubie = cubie_from_facelets_with_center_targets(&facelets, Some(&targets))
+            .expect("targeted exact facelets should parse");
+        assert_eq!(cubie.rl[7], 8);
+    }
+
+    #[test]
+    fn last_layer_exact_parser_keeps_top_center_source_off_fixed_slot() {
+        let facelets = solved_facelets();
+        let mut top_sources = empty_center_source_groups();
+        top_sources[2].push(7);
+        let targets = CenterTargets {
+            uf: [None; 4],
+            rl: [None; 4],
+            uf_sources: [None; 4],
+            rl_sources: [None; 4],
+            rl_top_sources: top_sources,
+        };
+        let cubie = cubie_from_facelets_with_center_targets(&facelets, Some(&targets))
+            .expect("targeted exact facelets should parse");
+        assert_ne!(cubie.rl[7], 8);
+        assert_eq!(cubie.rl[7] / 3, 2);
+    }
+
+    #[test]
+    fn last_layer_mode_without_black_stickers_uses_exact_state() {
+        let (_, mask) = cubie_and_partial_mask_from_facelets(&solved_facelets(), None, true)
+            .expect("last-layer facelets should parse");
+        assert!(mask.is_none());
     }
 }

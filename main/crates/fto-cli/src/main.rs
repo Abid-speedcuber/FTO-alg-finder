@@ -40,6 +40,7 @@ fn run() -> Result<(), String> {
     let mut bidirectional_max_mib = 3072_usize;
     let mut bidirectional_start_pruning = false;
     let mut restricted_pruning = false;
+    let mut last_layer_mode = false;
     let mut allowed_moves = Move::ALL.to_vec();
     let mut use_solver_pruning = true;
     let mut keep_all_pruning_pdbs = false;
@@ -75,6 +76,7 @@ fn run() -> Result<(), String> {
             "--no-bidirectional" => disable_bidirectional = true,
             "--bidir-start-pruning" => bidirectional_start_pruning = true,
             "--restricted-pruning" => restricted_pruning = true,
+            "--last-layer" => last_layer_mode = true,
             "--no-pruning" => use_solver_pruning = false,
             "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
             "--benchmark-iters" => {
@@ -322,6 +324,7 @@ fn run() -> Result<(), String> {
             exact_depth,
             find_all,
             allowed_moves,
+            last_layer_mode,
         );
         println!("nodes: {}", result.nodes);
         println!("solutions: {}", result.solutions.len());
@@ -349,10 +352,9 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
-    let coord = cubie.coord();
     if benchmark {
         run_solve_benchmark(
-            coord,
+            cubie,
             &tables,
             pruning_tables.as_ref(),
             max_depth,
@@ -365,12 +367,13 @@ fn run() -> Result<(), String> {
             bidirectional_start_pruning,
             progress_million * 1_000_000,
             allowed_moves.clone(),
+            last_layer_mode,
         )?;
         return Ok(());
     }
     let result = if let Some(max_depth) = max_depth {
         solve_once(
-            coord,
+            cubie,
             &tables,
             pruning_tables.as_ref(),
             max_depth,
@@ -382,10 +385,11 @@ fn run() -> Result<(), String> {
             bidirectional_start_pruning,
             progress_million * 1_000_000,
             allowed_moves.clone(),
+            last_layer_mode,
         )
     } else {
         solve_incrementally(
-            coord,
+            cubie,
             &tables,
             pruning_tables.as_ref(),
             find_all,
@@ -395,6 +399,7 @@ fn run() -> Result<(), String> {
             bidirectional_start_pruning,
             progress_million * 1_000_000,
             allowed_moves,
+            last_layer_mode,
         )
     }?;
 
@@ -412,6 +417,7 @@ fn solve_partial_input(
     exact_depth: bool,
     find_all: bool,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> search::SearchResult {
     let config = SearchConfig {
         min_depth: if exact_depth {
@@ -422,13 +428,14 @@ fn solve_partial_input(
         max_depth: max_depth.unwrap_or(u8::MAX),
         find_all,
         allowed_moves,
+        free_u_ends: last_layer_mode,
         cancel: None,
     };
     partial::solve_partial(problem, &config)
 }
 
 fn solve_once(
-    coord: fto_core::FtoCoord,
+    cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     max_depth: u8,
@@ -440,8 +447,27 @@ fn solve_once(
     bidirectional_start_pruning: bool,
     progress_interval: usize,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> Result<search::SearchResult, String> {
+    let coord = cubie.coord();
+    if last_layer_mode {
+        return Ok(search::solve_last_layer_with_pruning_threads(
+            cubie,
+            tables,
+            pruning,
+            &SearchConfig {
+                min_depth: if exact_depth { max_depth } else { 0 },
+                max_depth,
+                find_all,
+                allowed_moves,
+                free_u_ends: true,
+                cancel: None,
+            },
+            threads,
+        ));
+    }
     if exact_depth
+        && !last_layer_mode
         && bidirectional_threshold.is_some_and(|threshold| max_depth >= threshold)
     {
         eprintln!("using bidirectional exact-depth search");
@@ -470,6 +496,7 @@ fn solve_once(
             max_depth,
             find_all,
             allowed_moves,
+            free_u_ends: last_layer_mode,
             cancel: None,
         },
         threads,
@@ -491,7 +518,7 @@ fn bidirectional_max_paths(max_mib: usize) -> usize {
 }
 
 fn run_solve_benchmark(
-    coord: fto_core::FtoCoord,
+    cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     max_depth: Option<u8>,
@@ -504,12 +531,13 @@ fn run_solve_benchmark(
     bidirectional_start_pruning: bool,
     progress_interval: usize,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> Result<(), String> {
     let iterations = iterations.max(1);
     let warmups = 2;
     for _ in 0..warmups {
         let result = benchmark_solve_once(
-            coord,
+            cubie,
             tables,
             pruning,
             max_depth,
@@ -521,6 +549,7 @@ fn run_solve_benchmark(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves.clone(),
+            last_layer_mode,
         )?;
         std::hint::black_box(result.nodes);
         std::hint::black_box(result.solutions.len());
@@ -531,7 +560,7 @@ fn run_solve_benchmark(
     for _ in 0..iterations {
         let start = Instant::now();
         let result = benchmark_solve_once(
-            coord,
+            cubie,
             tables,
             pruning,
             max_depth,
@@ -543,6 +572,7 @@ fn run_solve_benchmark(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves.clone(),
+            last_layer_mode,
         )?;
         let elapsed = start.elapsed();
         std::hint::black_box(result.nodes);
@@ -579,7 +609,7 @@ fn run_solve_benchmark(
 }
 
 fn benchmark_solve_once(
-    coord: fto_core::FtoCoord,
+    cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     max_depth: Option<u8>,
@@ -591,10 +621,11 @@ fn benchmark_solve_once(
     bidirectional_start_pruning: bool,
     progress_interval: usize,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> Result<search::SearchResult, String> {
     if let Some(max_depth) = max_depth {
         solve_once(
-            coord,
+            cubie,
             tables,
             pruning,
             max_depth,
@@ -606,10 +637,11 @@ fn benchmark_solve_once(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves,
+            last_layer_mode,
         )
     } else {
         solve_incrementally_quiet(
-            coord,
+            cubie,
             tables,
             pruning,
             find_all,
@@ -619,6 +651,7 @@ fn benchmark_solve_once(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves,
+            last_layer_mode,
         )
     }
 }
@@ -638,7 +671,7 @@ fn load_solver_pruning(
 }
 
 fn solve_incrementally(
-    coord: fto_core::FtoCoord,
+    cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     find_all: bool,
@@ -648,15 +681,18 @@ fn solve_incrementally(
     bidirectional_start_pruning: bool,
     progress_interval: usize,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> Result<search::SearchResult, String> {
+    let coord = cubie.coord();
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
         .unwrap_or(0);
+    let start_depth = if last_layer_mode { 0 } else { start_depth };
     let mut total_nodes = 0_u64;
     for depth in start_depth..=u8::MAX {
         eprintln!("searching depth {depth}...");
         let mut result = solve_once(
-            coord,
+            cubie,
             tables,
             pruning,
             depth,
@@ -668,6 +704,7 @@ fn solve_incrementally(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves.clone(),
+            last_layer_mode,
         )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
@@ -680,7 +717,7 @@ fn solve_incrementally(
 }
 
 fn solve_incrementally_quiet(
-    coord: fto_core::FtoCoord,
+    cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     find_all: bool,
@@ -690,14 +727,17 @@ fn solve_incrementally_quiet(
     bidirectional_start_pruning: bool,
     progress_interval: usize,
     allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
 ) -> Result<search::SearchResult, String> {
+    let coord = cubie.coord();
     let start_depth = pruning
         .map(|tables| tables.heuristic_for_coord(coord))
         .unwrap_or(0);
+    let start_depth = if last_layer_mode { 0 } else { start_depth };
     let mut total_nodes = 0_u64;
     for depth in start_depth..=u8::MAX {
         let mut result = solve_once(
-            coord,
+            cubie,
             tables,
             pruning,
             depth,
@@ -709,6 +749,7 @@ fn solve_incrementally_quiet(
             bidirectional_start_pruning,
             progress_interval,
             allowed_moves.clone(),
+            last_layer_mode,
         )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
@@ -1086,6 +1127,7 @@ fn print_help() {
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-max-mib 3072
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-start-pruning
   fto-cli --json state.json --depth 17 --exact --threads 2
+  fto-cli --json state.json --depth 4 --exact --last-layer
   fto-cli --scramble \"R U R'\" --depth 10 --ban \"D D' F Fw\"
   fto-cli --scramble \"R U R'\" --depth 10 --moves \"R R' U U'\" --restricted-pruning
   fto-cli --scramble \"R U R'\" --depth 6
@@ -1102,6 +1144,7 @@ fn print_help() {
 
 If no depth is provided, search starts at the pruning lower bound and increases until a solution is found.
 Exact searches at depth 19+ use bidirectional search unless --no-bidirectional is used.
+--last-layer treats leading/trailing U or U' as free and keeps fixed RL last-layer centers distinct.
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
 --ban removes moves from search. --moves replaces the search move set.
 By default restricted searches still use the all-move base pruning table; --restricted-pruning builds PDBs for the allowed set.
@@ -1146,6 +1189,7 @@ fn parse_partial_mask(input: &str) -> Result<PartialMask, String> {
         rl_centers: parse_bool_array::<12>(mask, "rlCenters")?,
         uf_center_targets: parse_optional_u8_array::<4>(mask, "ufCenterTargets", 0, 11)?,
         rl_center_targets: parse_optional_u8_array::<4>(mask, "rlCenterTargets", 0, 11)?,
+        last_layer_centers: parse_optional_bool(mask, "lastLayerCenters")?,
     })
 }
 
@@ -1247,6 +1291,25 @@ fn parse_optional_u8_array<const N: usize>(
     values.try_into().map_err(|values: Vec<Option<u8>>| {
         format!("{key} must contain {N} values, got {}", values.len())
     })
+}
+
+fn parse_optional_bool(input: &str, key: &str) -> Result<bool, String> {
+    let needle = format!("\"{key}\"");
+    let Some(key_start) = input.find(&needle) else {
+        return Ok(false);
+    };
+    let after_key = &input[key_start + needle.len()..];
+    let colon = after_key
+        .find(':')
+        .ok_or_else(|| format!("{key} must be a JSON boolean"))?;
+    let value = after_key[colon + 1..].trim_start();
+    if value.starts_with("true") {
+        Ok(true)
+    } else if value.starts_with("false") {
+        Ok(false)
+    } else {
+        Err(format!("{key} must be a JSON boolean"))
+    }
 }
 
 fn parse_array<const N: usize>(

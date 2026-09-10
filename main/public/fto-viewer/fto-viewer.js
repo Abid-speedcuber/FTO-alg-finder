@@ -38,6 +38,12 @@
   var ufCenterFacelets = [2, 5, 7, 11, 14, 16, 20, 23, 25, 29, 32, 34];
   var rlCenterFacelets = [38, 41, 43, 47, 50, 52, 65, 68, 70, 56, 59, 61];
   var rlFaceColorToCenterGroup = [0, 1, 3, 2];
+  var lastLayerUniqueCenterSlot = [null, 3, 8, 10];
+  var lastLayerCenterColors = {
+    5: { affected: 0x51e86f, fixed: 0x009245 },
+    6: { affected: 0xb8b8b8, fixed: 0x707070 },
+    7: { affected: 0xffb34a, fixed: 0xff7800 },
+  };
   var targetHighlightHex = 0xf4ff62;
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
@@ -70,10 +76,15 @@
     var activeDragMode = "pan";
     var mode = options.mode || "pan";
     var selectedColor = options.color == null ? 0 : options.color;
+    var lastLayerMode = !!options.lastLayerMode;
     var centerTargets = {
       uf: [null, null, null, null],
       rl: [null, null, null, null],
+      ufSources: [null, null, null, null],
+      rlSources: [null, null, null, null],
+      rlTopSources: [[], [], [], []],
     };
+    var lastLayerCenterMarks = new Array(12).fill(null);
     var targetPick = null;
     var highlightedFacelets = [];
     var moveQueue = [];
@@ -132,8 +143,21 @@
       updateOrbit();
     }
 
-    function stickerColorHex(color) {
-      return color === ignoredColor ? ignoredColorHex : faceColors[color];
+    function stickerColorHex(color, faceletIndex) {
+      if (color === ignoredColor) {
+        return ignoredColorHex;
+      }
+      if (lastLayerMode && lastLayerCenterColors[color]) {
+        var info = centerInfo(faceletIndex);
+        if (info && info.orbit === "rl") {
+          return lastLayerCenterMarks[info.slot] === "fixed"
+            ? lastLayerCenterColors[color].fixed
+            : lastLayerCenterMarks[info.slot] === "top"
+            ? lastLayerCenterColors[color].affected
+            : faceColors[color];
+        }
+      }
+      return faceColors[color];
     }
 
     function setStickerDisplayColor(stickerIndex, color) {
@@ -148,7 +172,7 @@
     function refreshStickerDisplayByFacelet(faceletIndex) {
       var stickerIndex = faceletToSticker[faceletIndex];
       if (stickerIndex != null) {
-        setStickerDisplayColor(stickerIndex, stickerColorHex(faceletColors[faceletIndex]));
+        setStickerDisplayColor(stickerIndex, stickerColorHex(faceletColors[faceletIndex], faceletIndex));
       }
     }
 
@@ -175,9 +199,33 @@
       if (!sticker) {
         return;
       }
-      setStickerDisplayColor(stickerIndex, stickerColorHex(color));
+      var info = centerInfo(sticker[3]);
+      if (info && info.orbit === "rl") {
+        lastLayerCenterMarks[info.slot] = null;
+        removeTopSource(info.slot);
+        for (var colorGroup = 0; colorGroup < centerTargets.rlSources.length; colorGroup++) {
+          if (centerTargets.rlSources[colorGroup] === info.slot) {
+            centerTargets.rl[colorGroup] = null;
+            centerTargets.rlSources[colorGroup] = null;
+          }
+        }
+      }
+      setStickerDisplayColor(stickerIndex, stickerColorHex(color, sticker[3]));
       sticker[2] = color;
       faceletColors[sticker[3]] = color;
+    }
+
+    function setLastLayerCenterColor(stickerIndex, color, role) {
+      var sticker = cubePieces[stickerIndex];
+      if (!sticker) {
+        return;
+      }
+      setStickerColor(stickerIndex, color);
+      var info = centerInfo(sticker[3]);
+      if (lastLayerMode && info && info.orbit === "rl" && lastLayerCenterColors[color]) {
+        lastLayerCenterMarks[info.slot] = role;
+        refreshStickerDisplayByFacelet(sticker[3]);
+      }
     }
 
     function notifyState() {
@@ -190,6 +238,9 @@
       return {
         uf: centerTargets.uf.slice(),
         rl: centerTargets.rl.slice(),
+        ufSources: centerTargets.ufSources.slice(),
+        rlSources: centerTargets.rlSources.slice(),
+        rlTopSources: centerTargets.rlTopSources.map(function(sources) { return sources.slice(); }),
       };
     }
 
@@ -330,6 +381,7 @@
 
     function applyAlgorithmInstant(algorithm) {
       clearCenterTargetPick();
+      clearLastLayerCenterMarks();
       var parsed = parseAlgorithm(algorithm);
       for (var i = 0; i < parsed.length; i++) {
         applyMoveInstant({ axis: parsed[i][0], pow: parsed[i][1] });
@@ -354,12 +406,16 @@
     }
 
     function selectedCenterGroup() {
-      if (selectedColor < 4) {
-        return { orbit: "uf", color: selectedColor };
+      return selectedCenterGroupForColor(selectedColor);
+    }
+
+    function selectedCenterGroupForColor(color) {
+      if (color < 4) {
+        return { orbit: "uf", color: color };
       }
       return {
         orbit: "rl",
-        color: rlFaceColorToCenterGroup[selectedColor - 4],
+        color: rlFaceColorToCenterGroup[color - 4],
       };
     }
 
@@ -375,6 +431,7 @@
       return {
         orbit: group.orbit,
         color: group.color,
+        sourceSlot: null,
         candidates: candidates,
       };
     }
@@ -386,6 +443,7 @@
         return false;
       }
       targetPick = targetCandidatesForSelection();
+      targetPick.sourceSlot = info.slot;
       showTargetHighlights(targetPick.candidates);
       render();
       return true;
@@ -401,10 +459,83 @@
         return true;
       }
       centerTargets[targetPick.orbit][targetPick.color] = info.slot;
+      centerTargets[targetPick.orbit + "Sources"][targetPick.color] = targetPick.sourceSlot;
       clearCenterTargetPick();
       notifyCenterTargets();
       render();
       return true;
+    }
+
+    function markLastLayerUniqueCenter(faceletIndex) {
+      if (!lastLayerMode || selectedColor < 5 || selectedColor > 7) {
+        return false;
+      }
+      var info = centerInfo(faceletIndex);
+      var group = selectedCenterGroup();
+      if (!info || !group || info.orbit !== "rl") {
+        return false;
+      }
+      clearLastLayerFixedCenter(group.color);
+      setLastLayerCenterColor(faceletToSticker[faceletIndex], selectedColor, "fixed");
+      centerTargets.rl[group.color] = lastLayerUniqueCenterSlot[group.color];
+      centerTargets.rlSources[group.color] = info.slot;
+      removeTopSource(info.slot);
+      clearCenterTargetPick();
+      notifyState();
+      notifyCenterTargets();
+      render();
+      return true;
+    }
+
+    function clearLastLayerFixedCenter(colorGroup) {
+      var oldSource = centerTargets.rlSources[colorGroup];
+      if (oldSource != null) {
+        lastLayerCenterMarks[oldSource] = null;
+        refreshStickerDisplayByFacelet(rlCenterFacelets[oldSource]);
+      }
+      centerTargets.rl[colorGroup] = null;
+      centerTargets.rlSources[colorGroup] = null;
+    }
+
+    function addTopSource(colorGroup, sourceSlot) {
+      removeTopSource(sourceSlot);
+      if (centerTargets.rlTopSources[colorGroup].indexOf(sourceSlot) === -1) {
+        centerTargets.rlTopSources[colorGroup].push(sourceSlot);
+      }
+    }
+
+    function removeTopSource(sourceSlot) {
+      for (var color = 0; color < centerTargets.rlTopSources.length; color++) {
+        var sources = centerTargets.rlTopSources[color];
+        var index = sources.indexOf(sourceSlot);
+        if (index !== -1) {
+          sources.splice(index, 1);
+        }
+      }
+    }
+
+    function clearLastLayerCenterMarks() {
+      for (var i = 0; i < lastLayerCenterMarks.length; i++) {
+        lastLayerCenterMarks[i] = null;
+      }
+      for (var color = 1; color <= 3; color++) {
+        centerTargets.rl[color] = null;
+        centerTargets.rlSources[color] = null;
+      }
+      centerTargets.rlTopSources = [[], [], [], []];
+      for (var slot = 0; slot < rlCenterFacelets.length; slot++) {
+        refreshStickerDisplayByFacelet(rlCenterFacelets[slot]);
+      }
+      notifyCenterTargets();
+    }
+
+    function canMarkLastLayerCenter(faceletIndex) {
+      var info = centerInfo(faceletIndex);
+      return lastLayerMode
+        && selectedColor >= 5
+        && selectedColor <= 7
+        && info
+        && info.orbit === "rl";
     }
 
     function clearCenterTargetPick() {
@@ -492,9 +623,9 @@
         updateOrbit();
         render();
       }
-      function pointerUp(x, y, shiftKey) {
+      function pointerUp(x, y, shiftKey, ctrlKey) {
         if (activeDragMode === "paint" && !didDrag && x != null && y != null) {
-          paintAt(x, y, shiftKey);
+          paintAt(x, y, shiftKey, ctrlKey);
         }
         endDrag();
       }
@@ -514,7 +645,7 @@
         pointerMove(e.clientX, e.clientY);
       };
       var onMouseUp = function(e) {
-        pointerUp(e.clientX, e.clientY, e.shiftKey);
+        pointerUp(e.clientX, e.clientY, e.shiftKey, e.ctrlKey);
       };
       var onContextMenu = function(e) {
         e.preventDefault();
@@ -547,7 +678,7 @@
           return;
         }
         var touch = e.changedTouches[0];
-        pointerUp(touch && touch.clientX, touch && touch.clientY, false);
+        pointerUp(touch && touch.clientX, touch && touch.clientY, false, false);
       };
 
       container.addEventListener("mousedown", onMouseDown);
@@ -574,7 +705,7 @@
       return cleanup;
     }
 
-    function paintAt(x, y, shiftKey) {
+    function paintAt(x, y, shiftKey, ctrlKey) {
       var stickerIndex = pickSticker(x, y);
       if (stickerIndex == null) {
         if (targetPick) {
@@ -587,7 +718,21 @@
       if (chooseCenterTarget(faceletIndex)) {
         return;
       }
-      setStickerColor(stickerIndex, selectedColor);
+      if (ctrlKey && markLastLayerUniqueCenter(faceletIndex)) {
+        return;
+      }
+      if (canMarkLastLayerCenter(faceletIndex)) {
+        var info = centerInfo(faceletIndex);
+        var group = selectedCenterGroup();
+        if (info && group && centerTargets.rlSources[group.color] === info.slot) {
+          clearLastLayerFixedCenter(group.color);
+        }
+        setLastLayerCenterColor(stickerIndex, selectedColor, "top");
+        addTopSource(group.color, info.slot);
+        notifyCenterTargets();
+      } else {
+        setStickerColor(stickerIndex, selectedColor);
+      }
       if (shiftKey) {
         beginCenterTargetPick(faceletIndex);
       }
@@ -733,6 +878,19 @@
       setColor: function(color) {
         selectedColor = color;
       },
+      setLastLayerMode: function(enabled) {
+        lastLayerMode = !!enabled;
+        clearCenterTargetPick();
+        if (!lastLayerMode) {
+          clearLastLayerCenterMarks();
+        }
+        for (var i = 0; i < cubePieces.length; i++) {
+          if (cubePieces[i]) {
+            refreshStickerDisplayByFacelet(cubePieces[i][3]);
+          }
+        }
+        render();
+      },
       resetPuzzle: function() {
         clearCenterTargetPick();
         moveQueue = [];
@@ -741,7 +899,11 @@
         centerTargets = {
           uf: [null, null, null, null],
           rl: [null, null, null, null],
+          ufSources: [null, null, null, null],
+          rlSources: [null, null, null, null],
+          rlTopSources: [[], [], [], []],
         };
+        lastLayerCenterMarks = new Array(12).fill(null);
         for (var i = 0; i < cubePieces.length; i++) {
           if (cubePieces[i]) {
             setStickerColor(i, Math.floor(cubePieces[i][3] / 9));

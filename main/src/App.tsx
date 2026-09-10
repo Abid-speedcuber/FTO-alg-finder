@@ -44,6 +44,9 @@ function emptyCenterTargets(): CenterTargets {
   return {
     uf: [null, null, null, null],
     rl: [null, null, null, null],
+    ufSources: [null, null, null, null],
+    rlSources: [null, null, null, null],
+    rlTopSources: [[], [], [], []],
   };
 }
 
@@ -59,6 +62,7 @@ function App() {
   const [depth, setDepth] = useState("");
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
+  const [lastLayerMode, setLastLayerMode] = useState(false);
   const [threads, setThreads] = useState("1");
   const [status, setStatus] = useState("Idle");
   const [result, setResult] = useState<SolveResult | null>(null);
@@ -199,6 +203,7 @@ function App() {
           maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
           findAll: all,
           restrictedPruning,
+          lastLayerMode,
           threads: Number(threads),
         },
       });
@@ -264,6 +269,7 @@ function App() {
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
+            lastLayerMode={lastLayerMode}
             onFacelets={handleFacelets}
             onCenterTargets={setCenterTargets}
             footer={
@@ -327,6 +333,14 @@ function App() {
             <label className="check">
               <input type="checkbox" checked={all} onChange={(event) => setAll(event.target.checked)} />
               All solutions
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={lastLayerMode}
+                onChange={(event) => setLastLayerMode(event.target.checked)}
+              />
+              Last layer mode
             </label>
             <label className="check">
               <input

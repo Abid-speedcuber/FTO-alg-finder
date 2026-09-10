@@ -8,6 +8,7 @@ type FtoViewerApi = {
   getCenterTargets(): CenterTargets;
   setMode(mode: "pan" | "paint"): void;
   setColor(color: number): void;
+  setLastLayerMode(enabled: boolean): void;
   resetPuzzle(): void;
   resetView(): void;
   dispose(): void;
@@ -29,12 +30,16 @@ declare global {
 export type CenterTargets = {
   uf: Array<number | null>;
   rl: Array<number | null>;
+  ufSources: Array<number | null>;
+  rlSources: Array<number | null>;
+  rlTopSources: number[][];
 };
 
 type Props = {
   setup: string;
   inputMode: "setup" | "alg";
   applySignal: number;
+  lastLayerMode: boolean;
   onFacelets: (facelets: number[]) => void;
   onCenterTargets: (targets: CenterTargets) => void;
   footer?: ReactNode;
@@ -42,7 +47,7 @@ type Props = {
 
 const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
-function FtoViewer({ setup, inputMode, applySignal, onFacelets, onCenterTargets, footer }: Props) {
+function FtoViewer({ setup, inputMode, applySignal, lastLayerMode, onFacelets, onCenterTargets, footer }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [mode, setModeState] = useState<"pan" | "paint">("pan");
@@ -72,6 +77,10 @@ function FtoViewer({ setup, inputMode, applySignal, onFacelets, onCenterTargets,
   useEffect(() => {
     viewerRef.current?.setColor(selectedColor);
   }, [selectedColor]);
+
+  useEffect(() => {
+    viewerRef.current?.setLastLayerMode(lastLayerMode);
+  }, [lastLayerMode]);
 
   useEffect(() => {
     if (applySignal > 0) {

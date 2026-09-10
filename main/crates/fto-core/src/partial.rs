@@ -11,6 +11,7 @@ const EDGE_TABLE_PIECES: usize = 5;
 const CORNER_TABLE_PIECES: usize = 5;
 const MAX_DYNAMIC_TABLES: usize = 6;
 const MAX_DYNAMIC_TRANSITION_BYTES: usize = 96 * 1024 * 1024;
+const RL_LAST_LAYER_FIXED_CENTER_SLOT: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PartialMask {
@@ -20,6 +21,7 @@ pub struct PartialMask {
     pub rl_centers: [bool; 12],
     pub uf_center_targets: [Option<u8>; 4],
     pub rl_center_targets: [Option<u8>; 4],
+    pub last_layer_centers: bool,
 }
 
 impl PartialMask {
@@ -32,6 +34,7 @@ impl PartialMask {
             rl_centers: [true; 12],
             uf_center_targets: [None; 4],
             rl_center_targets: [None; 4],
+            last_layer_centers: false,
         }
     }
 
@@ -43,6 +46,7 @@ impl PartialMask {
             && self.rl_centers.iter().all(|&v| v)
             && self.uf_center_targets.iter().all(Option::is_none)
             && self.rl_center_targets.iter().all(Option::is_none)
+            && !self.last_layer_centers
     }
 }
 
@@ -69,9 +73,15 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
         solutions: Vec::new(),
         nodes: 0,
     };
-    let start_depth = config
-        .min_depth
-        .max(pruning.heuristic(&problem.cubie));
+    let start_depth = config.min_depth.max(if config.free_u_ends {
+        partial_start_states(problem.cubie, &move_cubies(), true)
+            .into_iter()
+            .map(|(_, state, _)| adjusted_pruning_value(pruning.heuristic(&state), true))
+            .min()
+            .unwrap_or(0)
+    } else {
+        pruning.heuristic(&problem.cubie)
+    });
     for depth in start_depth..=config.max_depth {
         eprintln!("searching depth {depth}...");
         let depth_result = search_indexed(problem, &pruning, config, depth);
@@ -92,10 +102,6 @@ fn search_indexed(
     config: &SearchConfig,
     depth: u8,
 ) -> SearchResult {
-    let root = IndexedPartialState {
-        cubie: problem.cubie,
-        indices: pruning.indices_of_state(&problem.cubie),
-    };
     let mut ctx = IndexedPartialSearchContext {
         problem,
         pruning,
@@ -106,7 +112,22 @@ fn search_indexed(
         solutions: Vec::new(),
         nodes: 0,
     };
-    ctx.dfs(root, depth, None);
+    for (prefix, start, last_move) in partial_start_states(problem.cubie, &ctx.moves, config.free_u_ends) {
+        let root = IndexedPartialState {
+            cubie: start,
+            indices: pruning.indices_of_state(&start),
+        };
+        if let Some(prefix) = prefix {
+            ctx.path.push(prefix);
+        }
+        ctx.dfs(root, depth, last_move);
+        if prefix.is_some() {
+            ctx.path.pop();
+        }
+        if !config.find_all && !ctx.solutions.is_empty() {
+            break;
+        }
+    }
     SearchResult {
         solutions: ctx.solutions,
         nodes: ctx.nodes,
@@ -141,12 +162,26 @@ impl IndexedPartialSearchContext<'_> {
             return;
         }
         self.nodes += 1;
-        if self.pruning.heuristic_for_indices(&state.cubie, &state.indices) > depth_left {
+        if adjusted_pruning_value(
+            self.pruning
+                .heuristic_for_indices(&state.cubie, &state.indices),
+            self.config.free_u_ends,
+        ) > depth_left
+        {
             return;
         }
         if depth_left == 0 {
-            if is_partial_solved(&state.cubie, &self.problem.mask) {
-                self.solutions.push(self.path.clone());
+            if let Some(suffix) = partial_free_u_suffix(
+                state.cubie,
+                &self.moves,
+                &self.problem.mask,
+                self.config.free_u_ends,
+            ) {
+                let mut solution = self.path.clone();
+                if let Some(suffix) = suffix {
+                    solution.push(suffix);
+                }
+                self.solutions.push(solution);
             }
             return;
         }
@@ -157,10 +192,11 @@ impl IndexedPartialSearchContext<'_> {
             }
             let next_cubie = state.cubie.compose(&self.moves[mv.idx()]);
             let next_indices = self.pruning.move_indices(&next_cubie, &state.indices, mv);
-            if self
-                .pruning
-                .heuristic_for_indices(&next_cubie, &next_indices)
-                > depth_left - 1
+            if adjusted_pruning_value(
+                self.pruning
+                    .heuristic_for_indices(&next_cubie, &next_indices),
+                self.config.free_u_ends,
+            ) > depth_left - 1
             {
                 continue;
             }
@@ -196,6 +232,7 @@ fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
                 &state.uf,
                 piece as u8,
                 &mask.uf_center_targets,
+                false,
             )
         {
             return false;
@@ -205,6 +242,7 @@ fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
                 &state.rl,
                 piece as u8,
                 &mask.rl_center_targets,
+                mask.last_layer_centers,
             )
         {
             return false;
@@ -217,10 +255,25 @@ fn center_piece_satisfies_constraint(
     orbit: &[u8; 12],
     piece: u8,
     targets: &[Option<u8>; 4],
+    last_layer_rl: bool,
 ) -> bool {
     let color = piece / 3;
     if let Some(target_slot) = targets[color as usize] {
         return orbit[target_slot as usize] == piece;
+    }
+    if last_layer_rl {
+        if let Some(fixed_slot) = RL_LAST_LAYER_FIXED_CENTER_SLOT[color as usize] {
+            return orbit
+                .iter()
+                .position(|&candidate| candidate == piece)
+                .is_some_and(|pos| {
+                    if piece == fixed_slot {
+                        pos == fixed_slot as usize
+                    } else {
+                        pos as u8 / 3 == color && pos != fixed_slot as usize
+                    }
+                });
+        }
     }
     center_piece_is_solved_by_color(orbit, piece)
 }
@@ -230,6 +283,54 @@ fn center_piece_is_solved_by_color(orbit: &[u8; 12], piece: u8) -> bool {
         .iter()
         .position(|&candidate| candidate == piece)
         .is_some_and(|pos| pos as u8 / 3 == piece / 3)
+}
+
+fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
+    if free_u_ends {
+        value.saturating_sub(1)
+    } else {
+        value
+    }
+}
+
+fn partial_start_states(
+    root: FtoCubie,
+    moves: &[FtoCubie; MOVE_COUNT],
+    free_u_ends: bool,
+) -> Vec<(Option<Move>, FtoCubie, Option<Move>)> {
+    if !free_u_ends {
+        return vec![(None, root, None)];
+    }
+    vec![
+        (None, root, None),
+        (Some(Move::U), root.compose(&moves[Move::U.idx()]), Some(Move::U)),
+        (
+            Some(Move::Up),
+            root.compose(&moves[Move::Up.idx()]),
+            Some(Move::Up),
+        ),
+    ]
+}
+
+fn partial_free_u_suffix(
+    state: FtoCubie,
+    moves: &[FtoCubie; MOVE_COUNT],
+    mask: &PartialMask,
+    free_u_ends: bool,
+) -> Option<Option<Move>> {
+    if is_partial_solved(&state, mask) {
+        return Some(None);
+    }
+    if !free_u_ends {
+        return None;
+    }
+    if is_partial_solved(&state.compose(&moves[Move::U.idx()]), mask) {
+        return Some(Some(Move::U));
+    }
+    if is_partial_solved(&state.compose(&moves[Move::Up.idx()]), mask) {
+        return Some(Some(Move::Up));
+    }
+    None
 }
 
 struct DynamicPruning {
@@ -642,6 +743,7 @@ mod tests {
             rl_centers: [false; 12],
             uf_center_targets: [Some(1), None, None, None],
             rl_center_targets: [None; 4],
+            last_layer_centers: false,
         };
         mask.uf_centers[0] = true;
 
@@ -652,5 +754,31 @@ mod tests {
         let mut pinned_identity_in_target = FtoCubie::solved();
         pinned_identity_in_target.uf.swap(0, 1);
         assert!(is_partial_solved(&pinned_identity_in_target, &mask));
+    }
+
+    #[test]
+    fn last_layer_rl_centers_keep_fixed_duplicate_separate() {
+        let mut mask = PartialMask {
+            corners: [false; 6],
+            edges: [false; 12],
+            uf_centers: [false; 12],
+            rl_centers: [false; 12],
+            uf_center_targets: [None; 4],
+            rl_center_targets: [None; 4],
+            last_layer_centers: true,
+        };
+        mask.rl_centers[3] = true;
+        mask.rl_centers[4] = true;
+
+        let solved = FtoCubie::solved();
+        assert!(is_partial_solved(&solved, &mask));
+
+        let mut affected_swap = FtoCubie::solved();
+        affected_swap.rl.swap(4, 5);
+        assert!(is_partial_solved(&affected_swap, &mask));
+
+        let mut fixed_swap = FtoCubie::solved();
+        fixed_swap.rl.swap(3, 4);
+        assert!(!is_partial_solved(&fixed_swap, &mask));
     }
 }

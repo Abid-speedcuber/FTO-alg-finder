@@ -3,6 +3,7 @@ use crate::{
     moves::{move_cubies, Move, MOVE_COUNT},
     pruning::SolverPruning,
     tables::TransitionTables,
+    FtoCubie,
     FtoCoord,
 };
 use std::{
@@ -20,6 +21,7 @@ pub struct SearchConfig {
     pub max_depth: u8,
     pub find_all: bool,
     pub allowed_moves: Vec<Move>,
+    pub free_u_ends: bool,
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -32,6 +34,7 @@ impl Default for SearchConfig {
             max_depth: 6,
             find_all: true,
             allowed_moves: Move::ALL.to_vec(),
+            free_u_ends: false,
             cancel: None,
         }
     }
@@ -92,6 +95,198 @@ pub fn solve_with_pruning_threads_reporting(
     solve_with_pruning_threads_impl(coord, tables, pruning, config, threads, Some(&report))
 }
 
+#[must_use]
+pub fn solve_last_layer_with_pruning_threads(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
+    let coord = cubie.coord();
+    let start_depth = config.min_depth;
+    let config = SearchConfig {
+        min_depth: start_depth,
+        max_depth: config.max_depth,
+        find_all: config.find_all,
+        allowed_moves: config.allowed_moves.clone(),
+        free_u_ends: true,
+        cancel: config.cancel.clone(),
+    };
+    solve_last_layer_impl(cubie, SearchState::from_coord(coord), tables, pruning, &config, threads)
+}
+
+fn solve_last_layer_impl(
+    cubie: FtoCubie,
+    state: SearchState,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
+    if threads <= 1 || config.max_depth <= 1 {
+        return solve_last_layer_single(cubie, state, tables, pruning, config);
+    }
+
+    let moves = move_cubies();
+    let commute = move_commutation();
+    let mut total = SearchResult {
+        solutions: Vec::new(),
+        nodes: 0,
+    };
+
+    for depth in config.min_depth..=config.max_depth {
+        if is_cancelled(config) {
+            break;
+        }
+        if depth == 0 {
+            let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
+            for (prefix, start_cubie, start_state, _) in last_layer_start_states(cubie, state, tables, &moves) {
+                ctx.nodes += 1;
+                if let Some(suffix) = last_layer_free_u_suffix(start_cubie, &moves) {
+                    let mut solution = Vec::new();
+                    if let Some(prefix) = prefix {
+                        solution.push(prefix);
+                    }
+                    if let Some(suffix) = suffix {
+                        solution.push(suffix);
+                    }
+                    ctx.solutions.push(solution);
+                    if !config.find_all {
+                        break;
+                    }
+                }
+                let _ = start_state;
+            }
+            total.nodes += ctx.nodes;
+            total.solutions.extend(ctx.solutions);
+            if !config.find_all && !total.solutions.is_empty() {
+                break;
+            }
+            continue;
+        }
+
+        let child_depth = depth - 1;
+        let mut roots = Vec::new();
+        for (prefix, start_cubie, start_state, last_move) in
+            last_layer_start_states(cubie, state, tables, &moves)
+        {
+            for &mv in &config.allowed_moves {
+                if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
+                    continue;
+                }
+                let pruning_child = start_state.apply_pruning(tables, mv);
+                let pruning_value = adjusted_pruning_value(
+                    pruning
+                        .map(|pdb| {
+                            pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx)
+                        })
+                        .unwrap_or(0),
+                    true,
+                );
+                if pruning_value > child_depth {
+                    continue;
+                }
+                roots.push((
+                    prefix,
+                    mv,
+                    start_cubie.compose(&moves[mv.idx()]),
+                    start_state.apply_with_pruning_child(tables, mv, pruning_child),
+                ));
+            }
+        }
+
+        if roots.is_empty() {
+            total.nodes += 1;
+            continue;
+        }
+
+        let worker_count = threads.min(roots.len());
+        let chunk_size = roots.len().div_ceil(worker_count);
+        let mut depth_result = SearchResult {
+            solutions: Vec::new(),
+            nodes: 1,
+        };
+
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in roots.chunks(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
+                    for &(prefix, mv, next_cubie, next_state) in chunk {
+                        if let Some(prefix) = prefix {
+                            ctx.path.push(prefix);
+                        }
+                        ctx.path.push(mv);
+                        ctx.dfs(next_cubie, next_state, child_depth, Some(mv), true);
+                        ctx.path.pop();
+                        if prefix.is_some() {
+                            ctx.path.pop();
+                        }
+                        if !config.find_all && !ctx.solutions.is_empty() {
+                            break;
+                        }
+                    }
+                    SearchResult {
+                        solutions: ctx.solutions,
+                        nodes: ctx.nodes,
+                    }
+                }));
+            }
+
+            for handle in handles {
+                let result = handle.join().expect("last-layer search worker panicked");
+                depth_result.nodes += result.nodes;
+                depth_result.solutions.extend(result.solutions);
+            }
+        });
+
+        total.nodes += depth_result.nodes;
+        total.solutions.extend(depth_result.solutions);
+        if !config.find_all && !total.solutions.is_empty() {
+            break;
+        }
+    }
+    total
+}
+
+fn solve_last_layer_single(
+    cubie: FtoCubie,
+    state: SearchState,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    config: &SearchConfig,
+) -> SearchResult {
+    let moves = move_cubies();
+    let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
+    for depth in config.min_depth..=config.max_depth {
+        if is_cancelled(config) {
+            break;
+        }
+        for (prefix, start_cubie, start_state, last_move) in
+            last_layer_start_states(cubie, state, tables, &moves)
+        {
+            if let Some(prefix) = prefix {
+                ctx.path.push(prefix);
+            }
+            ctx.dfs(start_cubie, start_state, depth, last_move, false);
+            if prefix.is_some() {
+                ctx.path.pop();
+            }
+            if !config.find_all && !ctx.solutions.is_empty() {
+                break;
+            }
+        }
+        if !config.find_all && !ctx.solutions.is_empty() {
+            break;
+        }
+    }
+    SearchResult {
+        solutions: ctx.solutions,
+        nodes: ctx.nodes,
+    }
+}
+
 fn solve_with_pruning_threads_impl(
     coord: FtoCoord,
     tables: &TransitionTables,
@@ -106,6 +301,8 @@ fn solve_with_pruning_threads_impl(
 
     let root = SearchState::from_coord(coord);
     let solved = SearchState::from_coord(FtoCoord::solved());
+    let solved_u = SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord());
+    let solved_up = SearchState::from_coord(FtoCubie::solved().apply(Move::Up).coord());
     let commute = move_commutation();
     let mut total = SearchResult {
         solutions: Vec::new(),
@@ -120,28 +317,52 @@ fn solve_with_pruning_threads_impl(
             report(depth);
         }
         if depth == 0 {
-            total.nodes += 1;
-            if root == solved {
-                total.solutions.push(Vec::new());
-                if !config.find_all {
-                    break;
+            for (prefix, start, _) in exact_start_states(root, tables, config.free_u_ends) {
+                total.nodes += 1;
+                if let Some(suffix) =
+                    free_u_suffix(start, solved, solved_u, solved_up, config.free_u_ends)
+                {
+                    let mut solution = Vec::new();
+                    if let Some(prefix) = prefix {
+                        solution.push(prefix);
+                    }
+                    if let Some(suffix) = suffix {
+                        solution.push(suffix);
+                    }
+                    total.solutions.push(solution);
+                    if !config.find_all {
+                        break;
+                    }
                 }
+            }
+            if !config.find_all && !total.solutions.is_empty() {
+                break;
             }
             continue;
         }
 
         let child_depth = depth - 1;
         let mut roots = Vec::new();
-        for &mv in &config.allowed_moves {
-            let pruning_child = root.apply_pruning(tables, mv);
-            let pruning_value = pruning
-                .map(|pdb| pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx))
-                .unwrap_or(0);
-            if pruning_value > child_depth {
-                continue;
+        for (prefix, start, last_move) in exact_start_states(root, tables, config.free_u_ends) {
+            for &mv in &config.allowed_moves {
+                if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
+                    continue;
+                }
+                let pruning_child = start.apply_pruning(tables, mv);
+                let pruning_value = adjusted_pruning_value(
+                    pruning
+                        .map(|pdb| {
+                            pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx)
+                        })
+                        .unwrap_or(0),
+                    config.free_u_ends,
+                );
+                if pruning_value > child_depth {
+                    continue;
+                }
+                let state = start.apply_with_pruning_child(tables, mv, pruning_child);
+                roots.push((prefix, mv, state));
             }
-            let state = root.apply_with_pruning_child(tables, mv, pruning_child);
-            roots.push((mv, state));
         }
         if roots.is_empty() {
             total.nodes += 1;
@@ -165,17 +386,25 @@ fn solve_with_pruning_threads_impl(
                         commute,
                         config,
                         solved,
+                        solved_u,
+                        solved_up,
                         solutions: Vec::new(),
                         path: Vec::with_capacity(config.max_depth as usize),
                         nodes: 0,
                     };
-                    for &(mv, state) in chunk {
+                    for &(prefix, mv, state) in chunk {
                         if is_cancelled(config) {
                             break;
+                        }
+                        if let Some(prefix) = prefix {
+                            ctx.path.push(prefix);
                         }
                         ctx.path.push(mv);
                         ctx.dfs(state, child_depth, Some(mv), true);
                         ctx.path.pop();
+                        if prefix.is_some() {
+                            ctx.path.pop();
+                        }
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
                         }
@@ -362,6 +591,8 @@ fn solve_with_pruning_single(
         commute: move_commutation(),
         config,
         solved: SearchState::from_coord(FtoCoord::solved()),
+        solved_u: SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord()),
+        solved_up: SearchState::from_coord(FtoCubie::solved().apply(Move::Up).coord()),
         solutions: Vec::new(),
         path: Vec::with_capacity(config.max_depth as usize),
         nodes: 0,
@@ -375,7 +606,18 @@ fn solve_with_pruning_single(
         if let Some(report) = report {
             report(depth);
         }
-        ctx.dfs(state, depth, None, false);
+        for (prefix, start, last_move) in exact_start_states(state, tables, config.free_u_ends) {
+            if let Some(prefix) = prefix {
+                ctx.path.push(prefix);
+            }
+            ctx.dfs(start, depth, last_move, false);
+            if prefix.is_some() {
+                ctx.path.pop();
+            }
+            if !config.find_all && !ctx.solutions.is_empty() {
+                break;
+            }
+        }
         if !config.find_all && !ctx.solutions.is_empty() {
             break;
         }
@@ -393,9 +635,119 @@ struct SearchContext<'a> {
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     config: &'a SearchConfig,
     solved: SearchState,
+    solved_u: SearchState,
+    solved_up: SearchState,
     solutions: Vec<Vec<Move>>,
     path: Vec<Move>,
     nodes: u64,
+}
+
+struct LastLayerSearchContext<'a> {
+    tables: &'a TransitionTables,
+    pruning: Option<&'a SolverPruning>,
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    moves: [FtoCubie; MOVE_COUNT],
+    config: &'a SearchConfig,
+    solutions: Vec<Vec<Move>>,
+    path: Vec<Move>,
+    nodes: u64,
+}
+
+impl<'a> LastLayerSearchContext<'a> {
+    fn new(
+        tables: &'a TransitionTables,
+        pruning: Option<&'a SolverPruning>,
+        config: &'a SearchConfig,
+    ) -> Self {
+        Self {
+            tables,
+            pruning,
+            commute: move_commutation(),
+            moves: move_cubies(),
+            config,
+            solutions: Vec::new(),
+            path: Vec::with_capacity(config.max_depth as usize),
+            nodes: 0,
+        }
+    }
+
+    fn dfs(
+        &mut self,
+        cubie: FtoCubie,
+        state: SearchState,
+        depth_left: u8,
+        last_move: Option<Move>,
+        pruning_checked: bool,
+    ) {
+        if is_cancelled(self.config) {
+            return;
+        }
+        self.nodes += 1;
+        if !pruning_checked && self.pruning_value(state) > depth_left {
+            return;
+        }
+        if depth_left == 0 {
+            if let Some(suffix) = last_layer_free_u_suffix(cubie, &self.moves) {
+                let mut solution = self.path.clone();
+                if let Some(suffix) = suffix {
+                    solution.push(suffix);
+                }
+                self.solutions.push(solution);
+            }
+            return;
+        }
+
+        let child_depth = depth_left - 1;
+        let mut children = [(0_u8, Move::U, cubie, state); MOVE_COUNT];
+        let mut child_count = 0;
+        for &mv in &self.config.allowed_moves {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let pruning_child = state.apply_pruning(self.tables, mv);
+            let pruning_value = self.pruning_value_for_child(pruning_child);
+            if pruning_value > child_depth {
+                continue;
+            }
+            children[child_count] = (
+                pruning_value,
+                mv,
+                cubie.compose(&self.moves[mv.idx()]),
+                state.apply_with_pruning_child(self.tables, mv, pruning_child),
+            );
+            child_count += 1;
+        }
+        if !self.config.find_all {
+            children[..child_count].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        }
+
+        for &(_, mv, next_cubie, next_state) in &children[..child_count] {
+            self.path.push(mv);
+            self.dfs(next_cubie, next_state, child_depth, Some(mv), true);
+            self.path.pop();
+            if !self.config.find_all && !self.solutions.is_empty() {
+                return;
+            }
+        }
+    }
+
+    fn pruning_value(&self, state: SearchState) -> u8 {
+        adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .unwrap_or(0),
+            true,
+        )
+    }
+
+    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+        adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+                .unwrap_or(0),
+            true,
+        )
+    }
 }
 
 impl SearchContext<'_> {
@@ -414,8 +766,18 @@ impl SearchContext<'_> {
             return;
         }
         if depth_left == 0 {
-            if state == self.solved {
-                self.solutions.push(self.path.clone());
+            if let Some(suffix) = free_u_suffix(
+                state,
+                self.solved,
+                self.solved_u,
+                self.solved_up,
+                self.config.free_u_ends,
+            ) {
+                let mut solution = self.path.clone();
+                if let Some(suffix) = suffix {
+                    solution.push(suffix);
+                }
+                self.solutions.push(solution);
             }
             return;
         }
@@ -455,15 +817,21 @@ impl SearchContext<'_> {
     }
 
     fn pruning_value(&self, state: SearchState) -> u8 {
-        self.pruning
+        adjusted_pruning_value(
+            self.pruning
             .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
-            .unwrap_or(0)
+                .unwrap_or(0),
+            self.config.free_u_ends,
+        )
     }
 
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
-        self.pruning
+        adjusted_pruning_value(
+            self.pruning
             .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
-            .unwrap_or(0)
+                .unwrap_or(0),
+            self.config.free_u_ends,
+        )
     }
 
     fn should_skip_after(&self, last: Move, current: Move) -> bool {
@@ -476,6 +844,138 @@ fn is_cancelled(config: &SearchConfig) -> bool {
         .cancel
         .as_ref()
         .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+}
+
+fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
+    if free_u_ends {
+        value.saturating_sub(1)
+    } else {
+        value
+    }
+}
+
+fn exact_start_states(
+    root: SearchState,
+    tables: &TransitionTables,
+    free_u_ends: bool,
+) -> Vec<(Option<Move>, SearchState, Option<Move>)> {
+    if !free_u_ends {
+        return vec![(None, root, None)];
+    }
+    let u_child = root.apply_pruning(tables, Move::U);
+    let up_child = root.apply_pruning(tables, Move::Up);
+    vec![
+        (None, root, None),
+        (
+            Some(Move::U),
+            root.apply_with_pruning_child(tables, Move::U, u_child),
+            Some(Move::U),
+        ),
+        (
+            Some(Move::Up),
+            root.apply_with_pruning_child(tables, Move::Up, up_child),
+            Some(Move::Up),
+        ),
+    ]
+}
+
+fn free_u_suffix(
+    state: SearchState,
+    solved: SearchState,
+    solved_u: SearchState,
+    solved_up: SearchState,
+    free_u_ends: bool,
+) -> Option<Option<Move>> {
+    if state == solved {
+        return Some(None);
+    }
+    if !free_u_ends {
+        return None;
+    }
+    if state == solved_u {
+        return Some(Some(Move::Up));
+    }
+    if state == solved_up {
+        return Some(Some(Move::U));
+    }
+    None
+}
+
+fn last_layer_start_states(
+    root_cubie: FtoCubie,
+    root_state: SearchState,
+    tables: &TransitionTables,
+    moves: &[FtoCubie; MOVE_COUNT],
+) -> Vec<(Option<Move>, FtoCubie, SearchState, Option<Move>)> {
+    let u_child = root_state.apply_pruning(tables, Move::U);
+    let up_child = root_state.apply_pruning(tables, Move::Up);
+    vec![
+        (None, root_cubie, root_state, None),
+        (
+            Some(Move::U),
+            root_cubie.compose(&moves[Move::U.idx()]),
+            root_state.apply_with_pruning_child(tables, Move::U, u_child),
+            Some(Move::U),
+        ),
+        (
+            Some(Move::Up),
+            root_cubie.compose(&moves[Move::Up.idx()]),
+            root_state.apply_with_pruning_child(tables, Move::Up, up_child),
+            Some(Move::Up),
+        ),
+    ]
+}
+
+fn last_layer_free_u_suffix(
+    cubie: FtoCubie,
+    moves: &[FtoCubie; MOVE_COUNT],
+) -> Option<Option<Move>> {
+    if is_last_layer_solved(&cubie) {
+        return Some(None);
+    }
+    if is_last_layer_solved(&cubie.compose(&moves[Move::U.idx()])) {
+        return Some(Some(Move::U));
+    }
+    if is_last_layer_solved(&cubie.compose(&moves[Move::Up.idx()])) {
+        return Some(Some(Move::Up));
+    }
+    None
+}
+
+fn is_last_layer_solved(cubie: &FtoCubie) -> bool {
+    if cubie.cp != [0, 1, 2, 3, 4, 5] || cubie.co != [0; 6] {
+        return false;
+    }
+    if cubie.ep != [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
+        return false;
+    }
+    for pos in 0..12 {
+        if cubie.uf[pos] / 3 != pos as u8 / 3 {
+            return false;
+        }
+        if !rl_last_layer_center_solved(cubie.rl[pos], pos as u8) {
+            return false;
+        }
+    }
+    true
+}
+
+fn rl_last_layer_center_solved(piece: u8, pos: u8) -> bool {
+    const FIXED: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
+    let color = piece / 3;
+    let pos_color = pos / 3;
+    if color != pos_color {
+        return false;
+    }
+    if let Some(fixed_slot) = FIXED[color as usize] {
+        if piece == fixed_slot {
+            pos == fixed_slot
+        } else {
+            pos != fixed_slot
+        }
+    } else {
+        true
+    }
 }
 
 struct BackwardBuilder<'a> {
@@ -739,6 +1239,7 @@ mod tests {
                 max_depth: 2,
                 find_all: false,
                 allowed_moves: Move::ALL.to_vec(),
+                free_u_ends: false,
                 cancel: None,
             },
         );
