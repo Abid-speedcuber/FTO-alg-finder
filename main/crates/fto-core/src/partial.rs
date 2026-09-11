@@ -682,8 +682,19 @@ fn pow_usize(base: usize, exp: usize) -> usize {
     (0..exp).fold(1, |acc, _| acc * base)
 }
 
+fn is_r_face_move(mv: Move) -> bool {
+    matches!(mv, Move::R | Move::Rp)
+}
+
+fn is_r_trigger(mv: Move) -> bool {
+    matches!(mv, Move::RURp | Move::RUpRp | Move::RpUR | Move::RpUpR)
+}
+
 fn should_skip_after(commute: &[[bool; MOVE_COUNT]; MOVE_COUNT], last: Move, current: Move) -> bool {
-    last.axis() == current.axis() || (commute[last.idx()][current.idx()] && current.idx() < last.idx())
+    last.axis() == current.axis()
+        || (is_r_face_move(last) && is_r_trigger(current))
+        || (is_r_trigger(last) && is_r_face_move(current))
+        || (commute[last.idx()][current.idx()] && current.idx() < last.idx())
 }
 
 fn move_commutation() -> [[bool; MOVE_COUNT]; MOVE_COUNT] {

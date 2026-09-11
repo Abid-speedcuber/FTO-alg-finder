@@ -326,7 +326,13 @@ fn run_release_cli(
     }
     if allowed_moves != Move::ALL.as_slice() {
         args.push("--moves".to_owned());
-        args.push(allowed_moves.iter().map(|mv| mv.name()).collect::<Vec<_>>().join(" "));
+        args.push(
+            allowed_moves
+                .iter()
+                .map(|mv| format!("{mv:?}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
 
     emit_line(app, "info", &format!("running {}", exe.display()));
@@ -1102,10 +1108,10 @@ fn parse_move(token: &str) -> Result<Move, String> {
         "U'" | "Ui" => Ok(Move::Up),
         "F" => Ok(Move::F),
         "F'" | "Fi" => Ok(Move::Fp),
-        "BR" | "r" => Ok(Move::Br),
-        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::Brp),
-        "BL" | "l" => Ok(Move::Bl),
-        "BL'" | "BLi" | "l'" | "li" => Ok(Move::Blp),
+        "BR" | "r" => Ok(Move::BR),
+        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::BRp),
+        "BL" | "l" => Ok(Move::BL),
+        "BL'" | "BLi" | "l'" | "li" => Ok(Move::BLp),
         "D" => Ok(Move::D),
         "D'" | "Di" => Ok(Move::Dp),
         "B" => Ok(Move::B),
@@ -1124,6 +1130,10 @@ fn parse_move(token: &str) -> Result<Move, String> {
         "Lw'" | "Lwi" => Ok(Move::Lwp),
         "M" => Ok(Move::M),
         "M'" | "Mi" => Ok(Move::Mp),
+        "(R U R')" => Ok(Move::RURp),
+        "(R U' R')" => Ok(Move::RUpRp),
+        "(R' U R)" => Ok(Move::RpUR),
+        "(R' U' R)" => Ok(Move::RpUpR),
         _ => Err(format!("unknown move: {token}")),
     }
 }

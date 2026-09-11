@@ -30,6 +30,7 @@ type TerminalLine = {
 const moves = [
   "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
   "R", "R'", "L", "L'", "Uw", "Uw'", "Fw", "Fw'", "Rw", "Rw'", "Lw", "Lw'", "M", "M'",
+  "(R U R')", "(R U' R')", "(R' U R)", "(R' U' R)",
 ];
 
 const solved: CubieState = {

@@ -7,10 +7,10 @@ pub enum Move {
     Up = 1,
     F = 2,
     Fp = 3,
-    Br = 4,
-    Brp = 5,
-    Bl = 6,
-    Blp = 7,
+    BR = 4,
+    BRp = 5,
+    BL = 6,
+    BLp = 7,
     D = 8,
     Dp = 9,
     B = 10,
@@ -29,6 +29,10 @@ pub enum Move {
     Lwp = 23,
     M = 24,
     Mp = 25,
+    RURp = 26,
+    RUpRp = 27,
+    RpUR = 28,
+    RpUpR = 29,
 }
 
 impl Move {
@@ -37,10 +41,10 @@ impl Move {
         Self::Up,
         Self::F,
         Self::Fp,
-        Self::Br,
-        Self::Brp,
-        Self::Bl,
-        Self::Blp,
+        Self::BR,
+        Self::BRp,
+        Self::BL,
+        Self::BLp,
         Self::D,
         Self::Dp,
         Self::B,
@@ -59,6 +63,10 @@ impl Move {
         Self::Lwp,
         Self::M,
         Self::Mp,
+        Self::RURp,
+        Self::RUpRp,
+        Self::RpUR,
+        Self::RpUpR,
     ];
 
     #[must_use]
@@ -68,10 +76,10 @@ impl Move {
             Self::Up => "U'",
             Self::F => "F",
             Self::Fp => "F'",
-            Self::Br => "BR",
-            Self::Brp => "BR'",
-            Self::Bl => "BL",
-            Self::Blp => "BL'",
+            Self::BR => "BR",
+            Self::BRp => "BR'",
+            Self::BL => "BL",
+            Self::BLp => "BL'",
             Self::D => "D",
             Self::Dp => "D'",
             Self::B => "B",
@@ -90,6 +98,10 @@ impl Move {
             Self::Lwp => "Lw'",
             Self::M => "M",
             Self::Mp => "M'",
+            Self::RURp => "(R U R')",
+            Self::RUpRp => "(R U' R')",
+            Self::RpUR => "(R' U R)",
+            Self::RpUpR => "(R' U' R)",
         }
     }
 
@@ -114,7 +126,7 @@ impl Move {
     }
 }
 
-pub const MOVE_COUNT: usize = 26;
+pub const MOVE_COUNT: usize = 30;
 
 #[must_use]
 pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
@@ -123,6 +135,35 @@ pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
     moves[..24].copy_from_slice(&all);
     moves[Move::M.idx()] = all[Move::Rwp.idx()].compose(&all[Move::R.idx()]);
     moves[Move::Mp.idx()] = all[Move::Rw.idx()].compose(&all[Move::Rp.idx()]);
+
+    moves[Move::RURp.idx()] = FtoCubie::new(
+        [2, 1, 5, 3, 4, 0],
+        [1, 0, 1, 0, 0, 0],
+        [0, 6, 1, 3, 4, 5, 2, 7, 8, 9, 10, 11],
+        [0, 1, 5, 2, 4, 3, 6, 7, 8, 9, 10, 11],
+        [0, 1, 2, 3, 6, 7, 9, 10, 8, 4, 5, 11],
+    );
+    moves[Move::RUpRp.idx()] = FtoCubie::new(
+        [5, 1, 0, 3, 4, 2],
+        [0, 0, 1, 0, 0, 1],
+        [0, 2, 6, 3, 4, 5, 1, 7, 8, 9, 10, 11],
+        [0, 1, 3, 5, 4, 2, 6, 7, 8, 9, 10, 11],
+        [0, 1, 2, 3, 9, 10, 4, 5, 8, 6, 7, 11],
+    );
+    moves[Move::RpUR.idx()] = FtoCubie::new(
+        [0, 5, 1, 3, 4, 2],
+        [0, 1, 1, 0, 0, 0],
+        [0, 11, 1, 3, 4, 5, 6, 7, 8, 9, 10, 2],
+        [0, 1, 7, 3, 4, 5, 6, 8, 2, 9, 10, 11],
+        [0, 1, 2, 3, 6, 7, 10, 11, 8, 9, 4, 5],
+    );
+    moves[Move::RpUpR.idx()] = FtoCubie::new(
+        [0, 2, 5, 3, 4, 1],
+        [0, 1, 0, 0, 0, 1],
+        [0, 2, 11, 3, 4, 5, 6, 7, 8, 9, 10, 1],
+        [0, 1, 8, 3, 4, 5, 6, 2, 7, 9, 10, 11],
+        [0, 1, 2, 3, 10, 11, 4, 5, 8, 9, 6, 7],
+    );
     moves
 }
 

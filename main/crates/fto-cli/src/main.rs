@@ -116,11 +116,11 @@ fn run() -> Result<(), String> {
             }
             "--moves" => {
                 i += 1;
-                allowed_moves = parse_move_list(args.get(i).ok_or("--moves needs a move list")?)?;
+                allowed_moves = parse_move_ident_list(args.get(i).ok_or("--moves needs a move list")?)?;
             }
             "--ban" => {
                 i += 1;
-                let banned = parse_move_list(args.get(i).ok_or("--ban needs a move list")?)?;
+                let banned = parse_move_ident_list(args.get(i).ok_or("--ban needs a move list")?)?;
                 allowed_moves.retain(|mv| !banned.contains(mv));
                 if allowed_moves.is_empty() {
                     return Err("--ban removed every move".to_owned());
@@ -1128,8 +1128,8 @@ fn print_help() {
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-start-pruning
   fto-cli --json state.json --depth 17 --exact --threads 2
   fto-cli --json state.json --depth 4 --exact --last-layer
-  fto-cli --scramble \"R U R'\" --depth 10 --ban \"D D' F Fw\"
-  fto-cli --scramble \"R U R'\" --depth 10 --moves \"R R' U U'\" --restricted-pruning
+  fto-cli --scramble \"R U R'\" --depth 10 --ban \"Dp F Fp\"
+  fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --restricted-pruning
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
@@ -1147,6 +1147,7 @@ Exact searches at depth 19+ use bidirectional search unless --no-bidirectional i
 --last-layer treats leading/trailing U or U' as free and keeps fixed RL last-layer centers distinct.
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
 --ban removes moves from search. --moves replaces the search move set.
+Both take a space/comma/semicolon-separated list of move identifiers (Rust enum names, e.g. R, Rp, Brp, RURp) rather than display notation, since display notation like (R U R') contains spaces.
 By default restricted searches still use the all-move base pruning table; --restricted-pruning builds PDBs for the allowed set.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.
 If no state is provided, the solved state is used."
@@ -1369,10 +1370,10 @@ fn parse_move(token: &str) -> Result<fto_core::moves::Move, String> {
         "U'" | "Ui" => Ok(Move::Up),
         "F" => Ok(Move::F),
         "F'" | "Fi" => Ok(Move::Fp),
-        "BR" | "r" => Ok(Move::Br),
-        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::Brp),
-        "BL" | "l" => Ok(Move::Bl),
-        "BL'" | "BLi" | "l'" | "li" => Ok(Move::Blp),
+        "BR" | "r" => Ok(Move::BR),
+        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::BRp),
+        "BL" | "l" => Ok(Move::BL),
+        "BL'" | "BLi" | "l'" | "li" => Ok(Move::BLp),
         "D" => Ok(Move::D),
         "D'" | "Di" => Ok(Move::Dp),
         "B" => Ok(Move::B),
@@ -1391,17 +1392,25 @@ fn parse_move(token: &str) -> Result<fto_core::moves::Move, String> {
         "Lw'" | "Lwi" => Ok(Move::Lwp),
         "M" => Ok(Move::M),
         "M'" | "Mi" => Ok(Move::Mp),
+        "(R U R')" => Ok(Move::RURp),
+        "(R U' R')" => Ok(Move::RUpRp),
+        "(R' U R)" => Ok(Move::RpUR),
+        "(R' U' R)" => Ok(Move::RpUpR),
         _ => Err(format!("unknown move: {token}")),
     }
 }
 
-fn parse_move_list(input: &str) -> Result<Vec<Move>, String> {
+fn parse_move_ident_list(input: &str) -> Result<Vec<Move>, String> {
     let mut moves = Vec::new();
     for token in input
         .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
         .filter(|token| !token.is_empty())
     {
-        let mv = parse_move(token)?;
+        let mv = Move::ALL
+            .iter()
+            .copied()
+            .find(|mv| format!("{mv:?}") == token)
+            .ok_or_else(|| format!("unknown move: {token}"))?;
         if !moves.contains(&mv) {
             moves.push(mv);
         }
