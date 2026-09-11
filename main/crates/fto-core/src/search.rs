@@ -687,6 +687,9 @@ impl<'a> LastLayerSearchContext<'a> {
             return;
         }
         if depth_left == 0 {
+            if ends_in_u_or_up(&self.path) {
+                return;
+            }
             if let Some(suffix) = last_layer_free_u_suffix(cubie, &self.moves) {
                 let mut solution = self.path.clone();
                 if let Some(suffix) = suffix {
@@ -844,6 +847,10 @@ fn is_cancelled(config: &SearchConfig) -> bool {
         .cancel
         .as_ref()
         .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+}
+
+fn ends_in_u_or_up(path: &[Move]) -> bool {
+    matches!(path.last(), Some(&Move::U) | Some(&Move::Up))
 }
 
 fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {

@@ -82,11 +82,18 @@ function FtoViewer({ setup, inputMode, applySignal, lastLayerMode, onFacelets, o
     viewerRef.current?.setLastLayerMode(lastLayerMode);
   }, [lastLayerMode]);
 
+  const applyStateRef = useRef({ setup, inputMode });
+  applyStateRef.current = { setup, inputMode };
+
   useEffect(() => {
     if (applySignal > 0) {
-      viewerRef.current?.applyAlgorithmInstant(inputMode === "alg" ? invertAlgorithm(setup) : setup);
+      const { setup: currentSetup, inputMode: currentMode } = applyStateRef.current;
+      viewerRef.current?.applyAlgorithmInstant(
+        currentMode === "alg" ? invertAlgorithm(currentSetup) : currentSetup,
+      );
     }
-  }, [applySignal, inputMode, setup]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applySignal]);
 
   function setPanMode() {
     setModeState("pan");

@@ -546,6 +546,8 @@
     function parseAlgorithm(algorithm) {
       algorithm = algorithm || "";
       var expanded = algorithm
+        .replace(/\bBR\b/g, "Br")
+        .replace(/\bBL\b/g, "Bl")
         .replace(/\bM'\b/g, "Rw R'")
         .replace(/\bMi\b/g, "Rw R'")
         .replace(/\bM\b/g, "Rw' R");
