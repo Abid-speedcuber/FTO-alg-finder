@@ -232,7 +232,7 @@ function App() {
         <div className="status-strip">
           <span className={`pill ${running ? "pill-running" : ""}`}>{status}</span>
           <span className={`pill ${stateError ? "pill-bad" : "pill-good"}`}>{stateLabel}</span>
-          <span className="pill">{allowedMoves.length}/26 moves</span>
+          <span className="pill">{allowedMoves.length}/38 moves</span>
           {result ? <span className="pill">{result.nodes.toLocaleString()} nodes</span> : null}
         </div>
       </header>
