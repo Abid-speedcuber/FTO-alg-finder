@@ -29,10 +29,14 @@ pub enum Move {
     Lwp = 23,
     M = 24,
     Mp = 25,
-    RURp = 26,
-    RUpRp = 27,
-    RpUR = 28,
-    RpUpR = 29,
+    S = 26,
+    Sp = 27,
+    E = 28,
+    Ep = 29,
+    RURp = 30,
+    RUpRp = 31,
+    RpUR = 32,
+    RpUpR = 33,
 }
 
 impl Move {
@@ -63,6 +67,10 @@ impl Move {
         Self::Lwp,
         Self::M,
         Self::Mp,
+        Self::S,
+        Self::Sp,
+        Self::E,
+        Self::Ep,
         Self::RURp,
         Self::RUpRp,
         Self::RpUR,
@@ -98,6 +106,10 @@ impl Move {
             Self::Lwp => "Lw'",
             Self::M => "M",
             Self::Mp => "M'",
+            Self::S => "S",
+            Self::Sp => "S'",
+            Self::E => "E",
+            Self::Ep => "E'",
             Self::RURp => "(R U R')",
             Self::RUpRp => "(R U' R')",
             Self::RpUR => "(R' U R)",
@@ -126,7 +138,7 @@ impl Move {
     }
 }
 
-pub const MOVE_COUNT: usize = 30;
+pub const MOVE_COUNT: usize = 34;
 
 #[must_use]
 pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
@@ -135,6 +147,10 @@ pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
     moves[..24].copy_from_slice(&all);
     moves[Move::M.idx()] = all[Move::Rwp.idx()].compose(&all[Move::R.idx()]);
     moves[Move::Mp.idx()] = all[Move::Rw.idx()].compose(&all[Move::Rp.idx()]);
+    moves[Move::S.idx()] = all[Move::Fw.idx()].compose(&all[Move::Fp.idx()]);
+    moves[Move::Sp.idx()] = all[Move::Fwp.idx()].compose(&all[Move::F.idx()]);
+    moves[Move::E.idx()] = all[Move::Uwp.idx()].compose(&all[Move::U.idx()]);
+    moves[Move::Ep.idx()] = all[Move::Uw.idx()].compose(&all[Move::Up.idx()]);
 
     moves[Move::RURp.idx()] = FtoCubie::new(
         [2, 1, 5, 3, 4, 0],
@@ -253,4 +269,38 @@ fn cstimer_move_cubies() -> [FtoCubie; 24] {
         moves[i] = moves[i - 1].compose(&moves[i - 1]);
     }
     moves
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Move;
+    use crate::FtoCubie;
+
+    #[test]
+    fn slice_moves_match_expanded_sequences() {
+        assert_eq!(
+            FtoCubie::solved().apply(Move::M),
+            FtoCubie::solved().apply(Move::Rwp).apply(Move::R)
+        );
+        assert_eq!(
+            FtoCubie::solved().apply(Move::Mp),
+            FtoCubie::solved().apply(Move::Rw).apply(Move::Rp)
+        );
+        assert_eq!(
+            FtoCubie::solved().apply(Move::S),
+            FtoCubie::solved().apply(Move::Fw).apply(Move::Fp)
+        );
+        assert_eq!(
+            FtoCubie::solved().apply(Move::Sp),
+            FtoCubie::solved().apply(Move::Fwp).apply(Move::F)
+        );
+        assert_eq!(
+            FtoCubie::solved().apply(Move::E),
+            FtoCubie::solved().apply(Move::Uwp).apply(Move::U)
+        );
+        assert_eq!(
+            FtoCubie::solved().apply(Move::Ep),
+            FtoCubie::solved().apply(Move::Uw).apply(Move::Up)
+        );
+    }
 }

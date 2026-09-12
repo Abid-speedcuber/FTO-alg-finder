@@ -30,6 +30,7 @@ type TerminalLine = {
 const moves = [
   "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
   "R", "R'", "L", "L'", "Uw", "Uw'", "Fw", "Fw'", "Rw", "Rw'", "Lw", "Lw'", "M", "M'",
+  "S", "S'", "E", "E'",
   "(R U R')", "(R U' R')", "(R' U R)", "(R' U' R)",
 ];
 

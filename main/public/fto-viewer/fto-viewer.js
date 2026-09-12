@@ -548,9 +548,15 @@
       var expanded = algorithm
         .replace(/\bBR\b/g, "Br")
         .replace(/\bBL\b/g, "Bl")
-        .replace(/\bM'\b/g, "Rw R'")
-        .replace(/\bMi\b/g, "Rw R'")
-        .replace(/\bM\b/g, "Rw' R")
+        .replace(/(^|\s)M'(?=\s|$)/g, "$1Rw R'")
+        .replace(/(^|\s)Mi(?=\s|$)/g, "$1Rw R'")
+        .replace(/(^|\s)M(?=\s|$)/g, "$1Rw' R")
+        .replace(/(^|\s)S'(?=\s|$)/g, "$1Fw' F")
+        .replace(/(^|\s)Si(?=\s|$)/g, "$1Fw' F")
+        .replace(/(^|\s)S(?=\s|$)/g, "$1Fw F'")
+        .replace(/(^|\s)E'(?=\s|$)/g, "$1Uw U'")
+        .replace(/(^|\s)Ei(?=\s|$)/g, "$1Uw U'")
+        .replace(/(^|\s)E(?=\s|$)/g, "$1Uw' U")
         .replace(/\b([A-Z])w\b/g, "2$1");
       return puzzle.parser.parseScramble(expanded);
     }
