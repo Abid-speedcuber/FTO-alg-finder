@@ -550,7 +550,8 @@
         .replace(/\bBL\b/g, "Bl")
         .replace(/\bM'\b/g, "Rw R'")
         .replace(/\bMi\b/g, "Rw R'")
-        .replace(/\bM\b/g, "Rw' R");
+        .replace(/\bM\b/g, "Rw' R")
+        .replace(/\b([A-Z])w\b/g, "2$1");
       return puzzle.parser.parseScramble(expanded);
     }
 
