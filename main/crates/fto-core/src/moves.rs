@@ -37,6 +37,10 @@ pub enum Move {
     RUpRp = 31,
     RpUR = 32,
     RpUpR = 33,
+    FUFp = 34,
+    FUpFp = 35,
+    FpUF = 36,
+    FpUpF = 37,
 }
 
 impl Move {
@@ -75,6 +79,10 @@ impl Move {
         Self::RUpRp,
         Self::RpUR,
         Self::RpUpR,
+        Self::FUFp,
+        Self::FUpFp,
+        Self::FpUF,
+        Self::FpUpF,
     ];
 
     #[must_use]
@@ -114,6 +122,10 @@ impl Move {
             Self::RUpRp => "(R U' R')",
             Self::RpUR => "(R' U R)",
             Self::RpUpR => "(R' U' R)",
+            Self::FUFp => "(F U F')",
+            Self::FUpFp => "(F U' F')",
+            Self::FpUF => "(F' U F)",
+            Self::FpUpF => "(F' U' F)",
         }
     }
 
@@ -138,7 +150,7 @@ impl Move {
     }
 }
 
-pub const MOVE_COUNT: usize = 34;
+pub const MOVE_COUNT: usize = 38;
 
 #[must_use]
 pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
@@ -180,6 +192,11 @@ pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
         [0, 1, 8, 3, 4, 5, 6, 2, 7, 9, 10, 11],
         [0, 1, 2, 3, 10, 11, 4, 5, 8, 9, 6, 7],
     );
+
+    moves[Move::FUFp.idx()] = all[Move::F.idx()].compose(&all[Move::U.idx()]).compose(&all[Move::Fp.idx()]);
+    moves[Move::FUpFp.idx()] = all[Move::F.idx()].compose(&all[Move::Up.idx()]).compose(&all[Move::Fp.idx()]);
+    moves[Move::FpUF.idx()] = all[Move::Fp.idx()].compose(&all[Move::U.idx()]).compose(&all[Move::F.idx()]);
+    moves[Move::FpUpF.idx()] = all[Move::Fp.idx()].compose(&all[Move::Up.idx()]).compose(&all[Move::F.idx()]);
     moves
 }
 

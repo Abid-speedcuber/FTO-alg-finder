@@ -1138,6 +1138,10 @@ fn parse_move(token: &str) -> Result<Move, String> {
         "(R U' R')" => Ok(Move::RUpRp),
         "(R' U R)" => Ok(Move::RpUR),
         "(R' U' R)" => Ok(Move::RpUpR),
+        "(F U F')" => Ok(Move::FUFp),
+        "(F U' F')" => Ok(Move::FUpFp),
+        "(F' U F)" => Ok(Move::FpUF),
+        "(F' U' F)" => Ok(Move::FpUpF),
         _ => Err(format!("unknown move: {token}")),
     }
 }

@@ -32,6 +32,7 @@ const moves = [
   "R", "R'", "L", "L'", "Uw", "Uw'", "Fw", "Fw'", "Rw", "Rw'", "Lw", "Lw'", "M", "M'",
   "S", "S'", "E", "E'",
   "(R U R')", "(R U' R')", "(R' U R)", "(R' U' R)",
+  "(F U F')", "(F U' F')", "(F' U F)", "(F' U' F)",
 ];
 
 const solved: CubieState = {
