@@ -88,6 +88,7 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
         let depth_nodes = depth_result.nodes;
         total.nodes += depth_nodes;
         total.solutions.extend(depth_result.solutions);
+        dedup_solutions(&mut total.solutions);
         if !total.solutions.is_empty() {
             eprintln!("found solution at depth {depth}");
             break;
@@ -109,21 +110,20 @@ fn search_indexed(
         moves: move_cubies(),
         commute: move_commutation(),
         path: Vec::with_capacity(depth as usize),
+        free_prefix: None,
         solutions: Vec::new(),
         nodes: 0,
     };
-    for (prefix, start, last_move) in partial_start_states(problem.cubie, &ctx.moves, config.free_u_ends) {
+    for (prefix, start, last_move) in
+        partial_start_states(problem.cubie, &ctx.moves, config.free_u_ends)
+    {
         let root = IndexedPartialState {
             cubie: start,
             indices: pruning.indices_of_state(&start),
         };
-        if let Some(prefix) = prefix {
-            ctx.path.push(prefix);
-        }
+        ctx.free_prefix = prefix;
         ctx.dfs(root, depth, last_move);
-        if prefix.is_some() {
-            ctx.path.pop();
-        }
+        ctx.free_prefix = None;
         if !config.find_all && !ctx.solutions.is_empty() {
             break;
         }
@@ -147,6 +147,7 @@ struct IndexedPartialSearchContext<'a> {
     moves: [FtoCubie; MOVE_COUNT],
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     path: Vec<Move>,
+    free_prefix: Option<Move>,
     solutions: Vec<Vec<Move>>,
     nodes: u64,
 }
@@ -171,22 +172,28 @@ impl IndexedPartialSearchContext<'_> {
             return;
         }
         if depth_left == 0 {
+            if self.config.free_u_ends && ends_in_u_or_up(&self.path) {
+                return;
+            }
             if let Some(suffix) = partial_free_u_suffix(
                 state.cubie,
                 &self.moves,
                 &self.problem.mask,
                 self.config.free_u_ends,
-            ) {
-                let mut solution = self.path.clone();
-                if let Some(suffix) = suffix {
-                    solution.push(suffix);
-                }
-                self.solutions.push(solution);
+            )
+            {
+                push_unique_solution(
+                    &mut self.solutions,
+                    free_auf_solution(self.free_prefix, &self.path, suffix),
+                );
             }
             return;
         }
 
         for &mv in &self.config.allowed_moves {
+            if self.config.free_u_ends && self.path.is_empty() && is_u_turn(mv) {
+                continue;
+            }
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
@@ -331,6 +338,42 @@ fn partial_free_u_suffix(
         return Some(Some(Move::Up));
     }
     None
+}
+
+fn ends_in_u_or_up(path: &[Move]) -> bool {
+    matches!(path.last(), Some(&Move::U) | Some(&Move::Up))
+}
+
+fn is_u_turn(mv: Move) -> bool {
+    matches!(mv, Move::U | Move::Up)
+}
+
+fn push_unique_solution(solutions: &mut Vec<Vec<Move>>, solution: Vec<Move>) {
+    if !solutions.contains(&solution) {
+        solutions.push(solution);
+    }
+}
+
+fn free_auf_solution(prefix: Option<Move>, path: &[Move], suffix: Option<Move>) -> Vec<Move> {
+    let mut solution = Vec::with_capacity(
+        path.len() + usize::from(prefix.is_some()) + usize::from(suffix.is_some()),
+    );
+    if let Some(prefix) = prefix {
+        solution.push(prefix);
+    }
+    solution.extend_from_slice(path);
+    if let Some(suffix) = suffix {
+        solution.push(suffix);
+    }
+    solution
+}
+
+fn dedup_solutions(solutions: &mut Vec<Vec<Move>>) {
+    let mut unique = Vec::with_capacity(solutions.len());
+    for solution in solutions.drain(..) {
+        push_unique_solution(&mut unique, solution);
+    }
+    *solutions = unique;
 }
 
 struct DynamicPruning {

@@ -141,17 +141,15 @@ fn solve_last_layer_impl(
         }
         if depth == 0 {
             let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
-            for (prefix, start_cubie, start_state, _) in last_layer_start_states(cubie, state, tables, &moves) {
+            for (prefix, start_cubie, start_state, _) in
+                last_layer_start_states(cubie, state, tables, &moves)
+            {
                 ctx.nodes += 1;
                 if let Some(suffix) = last_layer_free_u_suffix(start_cubie, &moves) {
-                    let mut solution = Vec::new();
-                    if let Some(prefix) = prefix {
-                        solution.push(prefix);
-                    }
-                    if let Some(suffix) = suffix {
-                        solution.push(suffix);
-                    }
-                    ctx.solutions.push(solution);
+                    push_unique_solution(
+                        &mut ctx.solutions,
+                        free_auf_solution(prefix, &[], suffix),
+                    );
                     if !config.find_all {
                         break;
                     }
@@ -172,6 +170,9 @@ fn solve_last_layer_impl(
             last_layer_start_states(cubie, state, tables, &moves)
         {
             for &mv in &config.allowed_moves {
+                if is_u_turn(mv) {
+                    continue;
+                }
                 if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
                     continue;
                 }
@@ -214,15 +215,11 @@ fn solve_last_layer_impl(
                 handles.push(scope.spawn(move || {
                     let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
                     for &(prefix, mv, next_cubie, next_state) in chunk {
-                        if let Some(prefix) = prefix {
-                            ctx.path.push(prefix);
-                        }
+                        ctx.free_prefix = prefix;
                         ctx.path.push(mv);
                         ctx.dfs(next_cubie, next_state, child_depth, Some(mv), true);
                         ctx.path.pop();
-                        if prefix.is_some() {
-                            ctx.path.pop();
-                        }
+                        ctx.free_prefix = None;
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
                         }
@@ -243,6 +240,7 @@ fn solve_last_layer_impl(
 
         total.nodes += depth_result.nodes;
         total.solutions.extend(depth_result.solutions);
+        dedup_solutions(&mut total.solutions);
         if !config.find_all && !total.solutions.is_empty() {
             break;
         }
@@ -266,13 +264,9 @@ fn solve_last_layer_single(
         for (prefix, start_cubie, start_state, last_move) in
             last_layer_start_states(cubie, state, tables, &moves)
         {
-            if let Some(prefix) = prefix {
-                ctx.path.push(prefix);
-            }
+            ctx.free_prefix = prefix;
             ctx.dfs(start_cubie, start_state, depth, last_move, false);
-            if prefix.is_some() {
-                ctx.path.pop();
-            }
+            ctx.free_prefix = None;
             if !config.find_all && !ctx.solutions.is_empty() {
                 break;
             }
@@ -650,6 +644,7 @@ struct LastLayerSearchContext<'a> {
     config: &'a SearchConfig,
     solutions: Vec<Vec<Move>>,
     path: Vec<Move>,
+    free_prefix: Option<Move>,
     nodes: u64,
 }
 
@@ -667,6 +662,7 @@ impl<'a> LastLayerSearchContext<'a> {
             config,
             solutions: Vec::new(),
             path: Vec::with_capacity(config.max_depth as usize),
+            free_prefix: None,
             nodes: 0,
         }
     }
@@ -691,11 +687,10 @@ impl<'a> LastLayerSearchContext<'a> {
                 return;
             }
             if let Some(suffix) = last_layer_free_u_suffix(cubie, &self.moves) {
-                let mut solution = self.path.clone();
-                if let Some(suffix) = suffix {
-                    solution.push(suffix);
-                }
-                self.solutions.push(solution);
+                push_unique_solution(
+                    &mut self.solutions,
+                    free_auf_solution(self.free_prefix, &self.path, suffix),
+                );
             }
             return;
         }
@@ -704,6 +699,9 @@ impl<'a> LastLayerSearchContext<'a> {
         let mut children = [(0_u8, Move::U, cubie, state); MOVE_COUNT];
         let mut child_count = 0;
         for &mv in &self.config.allowed_moves {
+            if self.config.free_u_ends && self.path.is_empty() && is_u_turn(mv) {
+                continue;
+            }
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
@@ -853,6 +851,10 @@ fn ends_in_u_or_up(path: &[Move]) -> bool {
     matches!(path.last(), Some(&Move::U) | Some(&Move::Up))
 }
 
+fn is_u_turn(mv: Move) -> bool {
+    matches!(mv, Move::U | Move::Up)
+}
+
 fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
     if free_u_ends {
         value.saturating_sub(1)
@@ -947,6 +949,34 @@ fn last_layer_free_u_suffix(
         return Some(Some(Move::Up));
     }
     None
+}
+
+fn push_unique_solution(solutions: &mut Vec<Vec<Move>>, solution: Vec<Move>) {
+    if !solutions.contains(&solution) {
+        solutions.push(solution);
+    }
+}
+
+fn free_auf_solution(prefix: Option<Move>, path: &[Move], suffix: Option<Move>) -> Vec<Move> {
+    let mut solution = Vec::with_capacity(
+        path.len() + usize::from(prefix.is_some()) + usize::from(suffix.is_some()),
+    );
+    if let Some(prefix) = prefix {
+        solution.push(prefix);
+    }
+    solution.extend_from_slice(path);
+    if let Some(suffix) = suffix {
+        solution.push(suffix);
+    }
+    solution
+}
+
+fn dedup_solutions(solutions: &mut Vec<Vec<Move>>) {
+    let mut unique = Vec::with_capacity(solutions.len());
+    for solution in solutions.drain(..) {
+        push_unique_solution(&mut unique, solution);
+    }
+    *solutions = unique;
 }
 
 fn is_last_layer_solved(cubie: &FtoCubie) -> bool {
