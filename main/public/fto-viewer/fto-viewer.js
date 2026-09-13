@@ -490,7 +490,8 @@
     function clearLastLayerFixedCenter(colorGroup) {
       var oldSource = centerTargets.rlSources[colorGroup];
       if (oldSource != null) {
-        lastLayerCenterMarks[oldSource] = null;
+        lastLayerCenterMarks[oldSource] = "top";
+        addTopSource(colorGroup, oldSource);
         refreshStickerDisplayByFacelet(rlCenterFacelets[oldSource]);
       }
       centerTargets.rl[colorGroup] = null;
