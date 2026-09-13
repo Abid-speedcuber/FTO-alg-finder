@@ -89,6 +89,7 @@ struct SolveRequest {
     facelets: Option<Vec<u8>>,
     center_targets: Option<CenterTargets>,
     allowed_moves: Vec<String>,
+    instance_moves: Vec<String>,
     max_depth: Option<u8>,
     find_all: bool,
     restricted_pruning: bool,
@@ -245,6 +246,17 @@ fn solve_fto_inner(
     if allowed_moves.is_empty() {
         return Err("at least one move must be allowed".to_owned());
     }
+    let instance_moves = if request.instance_moves.is_empty() {
+        Move::ALL.to_vec()
+    } else {
+        parse_move_names(&request.instance_moves)?
+    };
+    let instance_move_set = instance_moves.iter().copied().collect::<std::collections::HashSet<_>>();
+    if !allowed_moves.iter().all(|mv| instance_move_set.contains(mv)) {
+        return Err(
+            "the selected move set is not contained in this instance's move set".to_owned(),
+        );
+    }
 
     let (cubie, partial_mask) = if let Some(state) = request.state.clone() {
         (FtoCubie::new(state.cp, state.co, state.ep, state.uf, state.rl), None)
@@ -260,7 +272,7 @@ fn solve_fto_inner(
         (FtoCubie::solved(), None)
     };
 
-    run_release_cli(workspace_root, request, &allowed_moves, cubie, partial_mask, cancel, app)
+    run_release_cli(workspace_root, request, &allowed_moves, &instance_moves, cubie, partial_mask, cancel, app)
 }
 
 pub fn run() {
@@ -292,6 +304,7 @@ fn run_release_cli(
     workspace_root: &Path,
     request: &SolveRequest,
     allowed_moves: &[Move],
+    instance_moves: &[Move],
     cubie: FtoCubie,
     partial_mask: Option<PartialMask>,
     cancel: &Arc<AtomicBool>,
@@ -328,6 +341,16 @@ fn run_release_cli(
         args.push("--moves".to_owned());
         args.push(
             allowed_moves
+                .iter()
+                .map(|mv| format!("{mv:?}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    if instance_moves != Move::ALL.as_slice() {
+        args.push("--instance-moves".to_owned());
+        args.push(
+            instance_moves
                 .iter()
                 .map(|mv| format!("{mv:?}"))
                 .collect::<Vec<_>>()
@@ -1099,7 +1122,14 @@ fn swap_zero_one<const N: usize>(perm: &mut [u8; N]) {
 }
 
 fn parse_move_names(names: &[String]) -> Result<Vec<Move>, String> {
-    names.iter().map(|name| parse_move(name)).collect()
+    let mut moves = Vec::new();
+    for name in names {
+        let mv = parse_move(name)?;
+        if !moves.contains(&mv) {
+            moves.push(mv);
+        }
+    }
+    Ok(moves)
 }
 
 fn parse_move(token: &str) -> Result<Move, String> {

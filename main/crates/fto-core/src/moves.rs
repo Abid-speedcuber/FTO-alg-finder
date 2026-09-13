@@ -1,6 +1,6 @@
 use crate::cubie::FtoCubie;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
 pub enum Move {
     U = 0,

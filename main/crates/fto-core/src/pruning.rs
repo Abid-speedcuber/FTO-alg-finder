@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     coord::{CENTER3_COUNT, CENTER_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT},
-    moves::Move,
+    moves::{Move, MOVE_COUNT},
     tables::TransitionTables,
     FtoCoord,
 };
@@ -298,24 +298,38 @@ fn build_solver_table_from_root(
     Ok(table)
 }
 
-fn move_set_suffix(moves: &[Move]) -> String {
+pub fn move_set_suffix(moves: &[Move]) -> String {
     if moves == Move::ALL.as_slice() {
         return "all".to_owned();
     }
-    let mut out = String::new();
-    for &mv in moves {
-        if !out.is_empty() {
-            out.push('_');
-        }
-        out.push_str(
-            &mv.name()
-                .replace('\'', "p")
-                .replace(' ', "")
-                .replace("BR", "br")
-                .replace("BL", "bl"),
-        );
+    let mut sorted = moves.to_vec();
+    sorted.sort_unstable_by_key(|mv| mv.idx());
+    sorted
+        .iter()
+        .map(|mv| format!("{mv:?}"))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+pub fn parse_move_set_suffix(suffix: &str) -> Option<Vec<Move>> {
+    if suffix == "all" {
+        return Some(Move::ALL.to_vec());
     }
-    out
+    let mut moves = Vec::with_capacity(MOVE_COUNT);
+    for token in suffix.split('_') {
+        let mv = Move::ALL
+            .iter()
+            .copied()
+            .find(|mv| format!("{mv:?}") == token)?;
+        if moves.contains(&mv) {
+            return None;
+        }
+        moves.push(mv);
+    }
+    if moves.is_empty() {
+        return None;
+    }
+    Some(moves)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +636,7 @@ fn build_pruning_table_from_index(
     let mut expanded = 0_usize;
     let mut next_progress = progress_interval;
     let cancel_check_mask: usize = 8191;
+    let mut empty_depths = 0_usize;
 
     for depth in 0..u8::MAX {
         if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
@@ -684,7 +699,18 @@ fn build_pruning_table_from_index(
             );
         }
         if next_frontier == 0 {
-            break;
+            empty_depths += 1;
+            if empty_depths >= 2 {
+                if progress_interval > 0 {
+                    eprintln!(
+                        "  {}: no new states for two consecutive depths, done",
+                        spec.name()
+                    );
+                }
+                break;
+            }
+        } else {
+            empty_depths = 0;
         }
     }
 
@@ -839,5 +865,33 @@ mod tests {
 
         assert_eq!(stats.table_entries, 11_520);
         assert!(stats.max_depth > 0);
+    }
+
+    #[test]
+    fn move_set_suffix_round_trips() {
+        use crate::moves::{Move, Move::*};
+        for set in [
+            vec![R, Rp, U, Up, F, Fp],
+            vec![RURp, FUpFp, S, Sp, M],
+            vec![Dp, E, Lw, B, BRp],
+            Move::ALL.to_vec(),
+        ] {
+            let suffix = super::move_set_suffix(&set);
+            let parsed = super::parse_move_set_suffix(&suffix).expect("suffix should parse back");
+            let mut parsed_sorted = parsed;
+            parsed_sorted.sort_unstable_by_key(|mv| mv.idx());
+            let mut set_sorted = set;
+            set_sorted.sort_unstable_by_key(|mv| mv.idx());
+            assert_eq!(parsed_sorted, set_sorted, "round trip for {suffix}");
+        }
+    }
+
+    #[test]
+    fn move_set_suffix_is_canonical() {
+        use crate::moves::Move::*;
+        assert_eq!(
+            super::move_set_suffix(&[U, R, Up]),
+            super::move_set_suffix(&[R, U, Up])
+        );
     }
 }

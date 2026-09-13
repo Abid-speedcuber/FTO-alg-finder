@@ -42,6 +42,7 @@ fn run() -> Result<(), String> {
     let mut restricted_pruning = false;
     let mut last_layer_mode = false;
     let mut allowed_moves = Move::ALL.to_vec();
+    let mut instance_moves: Option<Vec<Move>> = None;
     let mut use_solver_pruning = true;
     let mut keep_all_pruning_pdbs = false;
     let mut max_pruning_mib = 1024_usize;
@@ -117,6 +118,12 @@ fn run() -> Result<(), String> {
             "--moves" => {
                 i += 1;
                 allowed_moves = parse_move_ident_list(args.get(i).ok_or("--moves needs a move list")?)?;
+            }
+            "--instance-moves" => {
+                i += 1;
+                instance_moves = Some(parse_move_ident_list(
+                    args.get(i).ok_or("--instance-moves needs a move list")?,
+                )?);
             }
             "--ban" => {
                 i += 1;
@@ -339,15 +346,14 @@ fn run() -> Result<(), String> {
     };
 
     let pruning_tables = if use_solver_pruning {
+        let instance_moves = instance_moves.unwrap_or_else(|| Move::ALL.to_vec());
         Some(load_solver_pruning(
             &tables,
             &pruning_out_dir,
             progress_million * 1_000_000,
-            if restricted_pruning {
-                &allowed_moves
-            } else {
-                &Move::ALL
-            },
+            &allowed_moves,
+            &instance_moves,
+            restricted_pruning,
         )?)
     } else {
         None
@@ -660,14 +666,114 @@ fn load_solver_pruning(
     tables: &TransitionTables,
     out_dir: &Path,
     progress_interval: usize,
-    moves: &[Move],
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
 ) -> Result<SolverPruning, String> {
-    let pruning = SolverPruning::load_or_build_with_moves(tables, out_dir, progress_interval, moves)?;
+    let target = select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+    let pruning = SolverPruning::load_or_build_with_moves(tables, out_dir, progress_interval, &target)?;
     eprintln!(
-        "using 2 pruning tables: edge3+uf3 / corner+uf3 ({:.1} MiB)",
+        "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({:.1} MiB)",
+        target
+            .iter()
+            .map(|mv| format!("{mv:?}"))
+            .collect::<Vec<_>>()
+            .join(" "),
         pruning.total_bytes() as f64 / (1024.0 * 1024.0)
     );
     Ok(pruning)
+}
+
+fn select_pruning_move_set(
+    out_dir: &Path,
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
+) -> Result<Vec<Move>, String> {
+    if allowed_moves.is_empty() {
+        return Err("at least one move must be allowed".to_owned());
+    }
+    let instance_set: HashSet<Move> = HashSet::from_iter(instance_moves.iter().copied());
+    if !allowed_moves.iter().all(|mv| instance_set.contains(mv)) {
+        return Err(
+            "the solve move set is not contained in the instance move set; the base pruning \
+             table would be an invalid heuristic"
+                .to_owned(),
+        );
+    }
+
+    let mut candidates = Vec::<Vec<Move>>::new();
+    candidates.extend(discover_cached_move_sets(out_dir)?);
+    if restricted_pruning {
+        candidates.push(allowed_moves.to_vec());
+    }
+    candidates.push(instance_moves.to_vec());
+    if instance_moves != Move::ALL.as_slice() {
+        candidates.push(Move::ALL.to_vec());
+    }
+
+    let mut allowed_sorted = allowed_moves.to_vec();
+    allowed_sorted.sort_unstable_by_key(|mv| mv.idx());
+
+    let mut best: Option<&Vec<Move>> = None;
+    for candidate in &candidates {
+        let set: HashSet<Move> = HashSet::from_iter(candidate.iter().copied());
+        if !allowed_moves.iter().all(|mv| set.contains(mv)) {
+            continue;
+        }
+        let better = match best {
+            Some(current) => {
+                candidate.len() < current.len()
+                    || (candidate.len() == current.len()
+                        && candidate == &allowed_sorted
+                        && current != &allowed_sorted)
+            }
+            None => true,
+        };
+        if better {
+            best = Some(candidate);
+        }
+    }
+
+    let Some(best) = best else {
+        return Err("no cached pruning table move set covers the solve move set".to_owned());
+    };
+    eprintln!(
+        "selected pruning tables built with moves: {}",
+        best.iter()
+            .map(|mv| format!("{mv:?}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(best.clone())
+}
+
+fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
+    let mut sets = Vec::<Vec<Move>>::new();
+    let entries = match fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(sets),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(suffix) = name
+            .strip_prefix("edge3__uf3__")
+            .and_then(|name| name.strip_suffix(".pdb"))
+        else {
+            continue;
+        };
+        if !out_dir.join(format!("corner__uf3__{suffix}.pdb")).exists() {
+            continue;
+        }
+        if let Some(mut moves) = pruning::parse_move_set_suffix(suffix) {
+            moves.sort_unstable_by_key(|mv| mv.idx());
+            if !sets.contains(&moves) {
+                sets.push(moves);
+            }
+        }
+    }
+    Ok(sets)
 }
 
 fn solve_incrementally(
@@ -1130,6 +1236,7 @@ fn print_help() {
   fto-cli --json state.json --depth 4 --exact --last-layer
   fto-cli --scramble \"R U R'\" --depth 10 --ban \"Dp F Fp\"
   fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --restricted-pruning
+  fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --instance-moves \"R Rp U Up F Fp\"
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
   fto-cli --json state.json --depth 6 --all --exact
@@ -1147,8 +1254,9 @@ Exact searches at depth 19+ use bidirectional search unless --no-bidirectional i
 --last-layer treats leading/trailing U or U' as free and keeps fixed RL last-layer centers distinct.
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
 --ban removes moves from search. --moves replaces the search move set.
+--instance-moves sets the instance's base move set used to select/build its base pruning table.
 Both take a space/comma/semicolon-separated list of move identifiers (Rust enum names, e.g. R, Rp, Brp, RURp) rather than display notation, since display notation like (R U R') contains spaces.
-By default restricted searches still use the all-move base pruning table; --restricted-pruning builds PDBs for the allowed set.
+Pruning table selection is automatic: the smallest cached move set that covers the search move set wins (cached restricted tables are shared across instances). --restricted-pruning additionally builds/loads a pruning table for exactly the search move set.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.
 If no state is provided, the solved state is used."
     );
