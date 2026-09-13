@@ -529,6 +529,25 @@
       notifyCenterTargets();
     }
 
+    function applyLastLayerResetMarks() {
+      var fixedSlotByColor = [null, 3, 8, 10];
+      var faceletColorByGroup = [4, 5, 7, 6];
+      for (var color = 1; color <= 3; color++) {
+        var fixedSlot = fixedSlotByColor[color];
+        var paintColor = faceletColorByGroup[color];
+        setLastLayerCenterColor(faceletToSticker[rlCenterFacelets[fixedSlot]], paintColor, "fixed");
+        centerTargets.rl[color] = fixedSlot;
+        centerTargets.rlSources[color] = fixedSlot;
+        for (var slot = 0; slot < rlCenterFacelets.length; slot++) {
+          if (Math.floor(slot / 3) !== color || slot === fixedSlot) {
+            continue;
+          }
+          setLastLayerCenterColor(faceletToSticker[rlCenterFacelets[slot]], paintColor, "top");
+          centerTargets.rlTopSources[color].push(slot);
+        }
+      }
+    }
+
     function canMarkLastLayerCenter(faceletIndex) {
       var info = centerInfo(faceletIndex);
       return lastLayerMode
@@ -919,6 +938,9 @@
             cubePieces[i][1].matrix.copy(cubePieces[i][0]);
             cubePieces[i][1].update();
           }
+        }
+        if (lastLayerMode) {
+          applyLastLayerResetMarks();
         }
         if (options.onMove) {
           options.onMove([]);
