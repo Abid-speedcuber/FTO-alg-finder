@@ -45,6 +45,7 @@
     7: { affected: 0xffb34a, fixed: 0xff7800 },
   };
   var targetHighlightHex = 0xf4ff62;
+  var swapHighlightHex = 0xff80d4;
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
   function createFtoViewer(container, options) {
@@ -87,10 +88,42 @@
     var lastLayerCenterMarks = new Array(12).fill(null);
     var targetPick = null;
     var highlightedFacelets = [];
+    var swapSelection = null;
+    var pieceSlots = [];
+    var pieceKinds = [];
+    var faceletToPieceIdx = [];
     var moveQueue = [];
     var animating = false;
     var moveHistory = [];
     var disposed = false;
+
+    function buildPieceIndex() {
+      var inPieces = new Array(72);
+      var cornerCount = 6;
+      var edgeCount = 12;
+      for (var i = 0; i < cornerCount + edgeCount; i++) {
+        pieceSlots.push(pieceFacelets[i].slice());
+        pieceKinds.push(i < cornerCount ? "corner" : "edge");
+        var slots = pieceSlots[pieceSlots.length - 1];
+        for (var j = 0; j < slots.length; j++) {
+          inPieces[slots[j]] = true;
+        }
+      }
+      for (var f = 0; f < 72; f++) {
+        if (inPieces[f]) {
+          continue;
+        }
+        pieceSlots.push([f]);
+        pieceKinds.push("center");
+      }
+      for (var p = 0; p < pieceSlots.length; p++) {
+        var pieceSlotList = pieceSlots[p];
+        for (var s = 0; s < pieceSlotList.length; s++) {
+          faceletToPieceIdx[pieceSlotList[s]] = p;
+        }
+      }
+    }
+    buildPieceIndex();
 
     function initPuzzle() {
       puzzle = poly3d.makePuzzle(8, [-5, 1 / 3, -1 / 3], [], [-5]);
@@ -112,6 +145,7 @@
         var cords = colorPoly.projection(puzzle.faceUVs[face]);
         var logicalFace = polyFaceToFaceletFace[face];
         var faceletIndex = logicalFace * 9 + polyStickerToFaceletSlot[face][p];
+        var borderMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
         var borderMesh = new THREE.Mesh(new THREE.Ploy(borderCords), [borderMat]);
         var ownMat = new THREE.MeshBasicMaterial({ color: faceColors[logicalFace] });
         var mesh = new THREE.Mesh(new THREE.Ploy(cords), [ownMat]);
@@ -122,6 +156,8 @@
         mesh.position = new THREE.Vector3(0, 0, 0.002);
         mesh.ftoStickerIndex = idx;
         mesh.ftoFaceletIndex = faceletIndex;
+        borderMesh.ftoStickerIndex = idx;
+        borderMesh.ftoFaceletIndex = faceletIndex;
 
         var sticker = new THREE.Object3D();
         sticker.addChild(borderMesh);
@@ -132,9 +168,10 @@
         sticker.matrixAutoUpdate = false;
         sticker.update();
 
-        cubePieces[idx] = [m, sticker, logicalFace, faceletIndex, mesh];
+        cubePieces[idx] = [m, sticker, logicalFace, faceletIndex, mesh, borderMat];
         faceletToSticker[faceletIndex] = idx;
         stickerMeshes.push(mesh);
+        stickerMeshes.push(borderMesh);
         faceletColors[faceletIndex] = logicalFace;
         cubeObject.addChild(sticker);
       });
@@ -382,6 +419,7 @@
     function applyAlgorithmInstant(algorithm) {
       clearCenterTargetPick();
       clearLastLayerCenterMarks();
+      clearSwapSelection();
       var parsed = parseAlgorithm(algorithm);
       for (var i = 0; i < parsed.length; i++) {
         applyMoveInstant({ axis: parsed[i][0], pow: parsed[i][1] });
@@ -451,6 +489,129 @@
         t = next;
       }
       return t;
+    }
+
+    function setSwapStickerColor(stickerIndex, color) {
+      var sticker = cubePieces[stickerIndex];
+      if (!sticker) {
+        return;
+      }
+      setStickerDisplayColor(stickerIndex, stickerColorHex(color, sticker[3]));
+      sticker[2] = color;
+      faceletColors[sticker[3]] = color;
+    }
+
+    function setStickerBorderColor(stickerIndex, hex) {
+      var sticker = cubePieces[stickerIndex];
+      if (!sticker || !sticker[5]) {
+        return;
+      }
+      sticker[5].color.setHex(hex);
+    }
+
+    function applyPieceOutline(pieceIdx) {
+      var slots = pieceSlots[pieceIdx];
+      for (var i = 0; i < slots.length; i++) {
+        var stickerIndex = faceletToSticker[slots[i]];
+        if (stickerIndex != null) {
+          setStickerBorderColor(stickerIndex, swapHighlightHex);
+        }
+      }
+    }
+
+    function clearPieceOutline(pieceIdx) {
+      var slots = pieceSlots[pieceIdx];
+      for (var i = 0; i < slots.length; i++) {
+        var stickerIndex = faceletToSticker[slots[i]];
+        if (stickerIndex != null) {
+          setStickerBorderColor(stickerIndex, 0x000000);
+        }
+      }
+    }
+
+    function setSwapSelection(pieceIdx) {
+      clearSwapSelection();
+      swapSelection = pieceIdx;
+      applyPieceOutline(pieceIdx);
+      render();
+    }
+
+    function clearSwapSelection() {
+      if (swapSelection == null) {
+        return;
+      }
+      var old = swapSelection;
+      swapSelection = null;
+      clearPieceOutline(old);
+    }
+
+    function swapPieces(a, b) {
+      var fa = pieceSlots[a];
+      var fb = pieceSlots[b];
+      var colorsA = [];
+      var colorsB = [];
+      for (var i = 0; i < fa.length; i++) {
+        colorsA.push(faceletColors[fa[i]]);
+        colorsB.push(faceletColors[fb[i]]);
+      }
+      for (var i = 0; i < fa.length; i++) {
+        setSwapStickerColor(faceletToSticker[fa[i]], colorsB[i]);
+        setSwapStickerColor(faceletToSticker[fb[i]], colorsA[i]);
+      }
+    }
+
+    function flipCornerParity(pieceIdx) {
+      var slots = pieceSlots[pieceIdx];
+      var colors = [];
+      for (var i = 0; i < slots.length; i++) {
+        colors.push(faceletColors[slots[i]]);
+      }
+      for (var i = 0; i < slots.length; i++) {
+        setSwapStickerColor(faceletToSticker[slots[i]], colors[(i + 2) % slots.length]);
+      }
+    }
+
+    function swapAt(x, y) {
+      var stickerIndex = pickSticker(x, y);
+      if (stickerIndex == null || !cubePieces[stickerIndex]) {
+        clearSwapSelection();
+        render();
+        return;
+      }
+      var faceletIndex = cubePieces[stickerIndex][3];
+      var pieceIdx = faceletToPieceIdx[faceletIndex];
+      if (pieceIdx == null) {
+        return;
+      }
+
+      if (swapSelection === pieceIdx) {
+        if (pieceKinds[pieceIdx] === "corner") {
+          flipCornerParity(pieceIdx);
+          clearSwapSelection();
+          render();
+          notifyState();
+        } else {
+          clearSwapSelection();
+          render();
+        }
+        return;
+      }
+
+      if (swapSelection == null) {
+        setSwapSelection(pieceIdx);
+        return;
+      }
+
+      if (pieceKinds[swapSelection] === pieceKinds[pieceIdx]) {
+        var selected = swapSelection;
+        swapPieces(selected, pieceIdx);
+        clearSwapSelection();
+        render();
+        notifyState();
+        return;
+      }
+
+      setSwapSelection(pieceIdx);
     }
 
     function centerInfo(faceletIndex) {
@@ -713,8 +874,12 @@
         render();
       }
       function pointerUp(x, y, shiftKey, ctrlKey) {
-        if (activeDragMode === "paint" && !didDrag && x != null && y != null) {
-          paintAt(x, y, shiftKey, ctrlKey);
+        if (!didDrag && x != null && y != null) {
+          if (activeDragMode === "paint") {
+            paintAt(x, y, shiftKey, ctrlKey);
+          } else if (mode === "swap") {
+            swapAt(x, y);
+          }
         }
         endDrag();
       }
@@ -960,10 +1125,17 @@
       getCenterTargets: getCenterTargets,
       setMode: function(nextMode) {
         mode = nextMode;
+        if (mode === "swap") {
+          clearCenterTargetPick();
+          clearLastLayerCenterMarks();
+        } else {
+          clearSwapSelection();
+        }
         if (canvas) {
           canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
           container.style.cursor = mode === "pan" ? "grab" : "crosshair";
         }
+        render();
       },
       setColor: function(color) {
         selectedColor = color;
@@ -983,6 +1155,7 @@
       },
       resetPuzzle: function() {
         clearCenterTargetPick();
+        clearSwapSelection();
         moveQueue = [];
         animating = false;
         moveHistory = [];

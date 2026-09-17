@@ -7,7 +7,7 @@ export type FtoViewerApi = {
   getFacelets(): number[];
   getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
-  setMode(mode: "pan" | "paint"): void;
+  setMode(mode: "pan" | "paint" | "swap"): void;
   setColor(color: number): void;
   setLastLayerMode(enabled: boolean): void;
   resetPuzzle(): void;
@@ -61,7 +61,7 @@ function FtoViewer({
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
-  const [mode, setModeState] = useState<"pan" | "paint">("pan");
+  const [mode, setModeState] = useState<"pan" | "paint" | "swap">("pan");
   const [selectedColor, setSelectedColorState] = useState(0);
 
   useEffect(() => {
@@ -116,6 +116,10 @@ function FtoViewer({
     setModeState("pan");
   }
 
+  function setSwapMode() {
+    setModeState("swap");
+  }
+
   function selectColor(color: number) {
     setSelectedColorState(color);
     setModeState("paint");
@@ -160,6 +164,7 @@ function FtoViewer({
             );
           })}
           <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
+          <button className={mode === "swap" ? "selected" : ""} onClick={setSwapMode}>Swap</button>
           <button onClick={resetView}>View</button>
           <button onClick={resetPuzzle}>Reset</button>
         </div>
