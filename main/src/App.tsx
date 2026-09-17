@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import AlgCombiner from "./AlgCombiner";
 import FtoViewer, { type CenterTargets } from "./FtoViewer";
 
 type CubieState = {
@@ -197,6 +198,7 @@ function InstanceSetupModal({
 }
 
 function App() {
+  const [mode, setMode] = useState<"solver" | "combiner">("solver");
   const [boot] = useState(bootstrapInstances);
   const [instances, setInstances] = useState<Instance[]>(boot.instances);
   const [activeId, setActiveId] = useState(boot.activeId);
@@ -439,59 +441,79 @@ function App() {
     <main>
       <header className="app-header">
         <div>
-          <h1>FTO Alg Finder</h1>
+          <h1>{mode === "combiner" ? "FTO Alg Combiner" : "FTO Alg Finder"}</h1>
           <p>By Abid Ibn Ashraf</p>
         </div>
         <div className="topbar-right">
-          <div className="status-strip">
-            <span className={`pill ${running ? "pill-running" : ""}`}>{status}</span>
-            <span className={`pill ${stateError ? "pill-bad" : "pill-good"}`}>{stateLabel}</span>
-            <span className="pill">
-              {allowedMoves.length}/{activeInstance.moves.length} moves
-            </span>
-            {result ? <span className="pill">{result.nodes.toLocaleString()} nodes</span> : null}
-          </div>
-          <div className="instance-menu">
-            <button className="instance-trigger" onClick={() => setMenuOpen((open) => !open)}>
-              <span className="instance-trigger-name">{activeInstance.name}</span>
-              <span className="instance-caret">▾</span>
+          <div className="mode-switch">
+            <button
+              type="button"
+              className={mode === "solver" ? "active" : ""}
+              onClick={() => setMode("solver")}
+            >
+              Solver
             </button>
-            {menuOpen ? (
-              <>
-                <div className="menu-backdrop" onClick={closeOverlays} />
-                <div className="instance-menu-panel">
-                  <div className="instance-menu-label">Instances</div>
-                  {instances.map((instance) => (
-                    <button
-                      key={instance.id}
-                      className={instance.id === activeId ? "instance-item active" : "instance-item"}
-                      onClick={() => {
-                        setActiveId(instance.id);
-                        setMenuOpen(false);
-                      }}
-                      onContextMenu={(event) => openContextMenu(instance.id, event)}
-                      title="Right-click to delete"
-                    >
-                      <span className="instance-item-name">{instance.name}</span>
-                      <span className="instance-item-count">{instance.moves.length} moves</span>
-                    </button>
-                  ))}
-                  <div className="instance-menu-divider" />
-                  <button
-                    className="instance-item new"
-                    onClick={() => {
-                      setSetupModal({ kind: "new" });
-                      setMenuOpen(false);
-                    }}
-                  >
-                    + New instance
-                  </button>
-                </div>
-              </>
-            ) : null}
+            <button
+              type="button"
+              className={mode === "combiner" ? "active" : ""}
+              onClick={() => setMode("combiner")}
+            >
+              Combiner
+            </button>
           </div>
+          {mode === "solver" ? (
+            <>
+              <div className="status-strip">
+                <span className={`pill ${running ? "pill-running" : ""}`}>{status}</span>
+                <span className={`pill ${stateError ? "pill-bad" : "pill-good"}`}>{stateLabel}</span>
+                <span className="pill">
+                  {allowedMoves.length}/{activeInstance.moves.length} moves
+                </span>
+                {result ? <span className="pill">{result.nodes.toLocaleString()} nodes</span> : null}
+              </div>
+              <div className="instance-menu">
+                <button className="instance-trigger" onClick={() => setMenuOpen((open) => !open)}>
+                  <span className="instance-trigger-name">{activeInstance.name}</span>
+                  <span className="instance-caret">▾</span>
+                </button>
+                {menuOpen ? (
+                  <>
+                    <div className="menu-backdrop" onClick={closeOverlays} />
+                    <div className="instance-menu-panel">
+                      <div className="instance-menu-label">Instances</div>
+                      {instances.map((instance) => (
+                        <button
+                          key={instance.id}
+                          className={instance.id === activeId ? "instance-item active" : "instance-item"}
+                          onClick={() => {
+                            setActiveId(instance.id);
+                            setMenuOpen(false);
+                          }}
+                          onContextMenu={(event) => openContextMenu(instance.id, event)}
+                          title="Right-click to delete"
+                        >
+                          <span className="instance-item-name">{instance.name}</span>
+                          <span className="instance-item-count">{instance.moves.length} moves</span>
+                        </button>
+                      ))}
+                      <div className="instance-menu-divider" />
+                      <button
+                        className="instance-item new"
+                        onClick={() => {
+                          setSetupModal({ kind: "new" });
+                          setMenuOpen(false);
+                        }}
+                      >
+                        + New instance
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </div>
-        {contextMenu ? (
+        {mode === "solver" && contextMenu ? (
           <>
             <div className="menu-backdrop" onClick={closeOverlays} />
             <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
@@ -510,7 +532,7 @@ function App() {
         ) : null}
       </header>
 
-      {setupModal ? (
+      {mode === "solver" && setupModal ? (
         setupModal.kind === "first" ? (
           <InstanceSetupModal
             title="Set up your default instance"
@@ -540,7 +562,8 @@ function App() {
         )
       ) : null}
 
-      <section className="workspace">
+      {mode === "solver" ? (
+        <section className="workspace">
         <div className="input-pane">
           <div className="setup-row">
             <label className="field">
@@ -673,7 +696,10 @@ function App() {
             {stateError ? <div className="state-error">{stateError}</div> : <div className="state-ok">valid FTO state</div>}
           </section>
         </div>
-      </section>
+        </section>
+      ) : (
+        <AlgCombiner />
+      )}
     </main>
   );
 }

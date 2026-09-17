@@ -393,6 +393,66 @@
       return faceletColors.slice();
     }
 
+    // Pure color-state helpers for the combination search. The FTO is rendered
+    // as a fixed set of 72 facelet slots whose colors are permuted by moves, so
+    // each move is fully described by a 72-entry transition table:
+    //   next[j] = state[transition[j]]
+    function identityFacelets() {
+      var t = new Array(72);
+      for (var fi = 0; fi < 72; fi++) {
+        t[fi] = fi;
+      }
+      return t;
+    }
+
+    function faceletTransitionForMove(axis, pow) {
+      var idx = puzzle.getTwistyIdx(axis);
+      if (idx == -1) {
+        return null;
+      }
+      var perm = puzzle.moveTable[idx];
+      var maxPow = puzzle.twistyDetails[idx][1];
+      var p = ((pow % maxPow) + maxPow) % maxPow;
+      var t = new Array(72);
+      for (var i = 0; i < perm.length; i++) {
+        var val = i;
+        for (var j = 0; j < p; j++) {
+          val = perm[val] < 0 ? val : perm[val];
+        }
+        var sticker = cubePieces[i];
+        var source = cubePieces[val];
+        if (sticker && source) {
+          t[sticker[3]] = source[3];
+        }
+      }
+      for (var fi = 0; fi < 72; fi++) {
+        if (t[fi] == null) {
+          t[fi] = fi;
+        }
+      }
+      return t;
+    }
+
+    function getFaceletTransition(algorithm) {
+      var parsed = parseAlgorithm(algorithm);
+      if (parsed.length === 0) {
+        return null;
+      }
+      var t = identityFacelets();
+      for (var i = 0; i < parsed.length; i++) {
+        var move = faceletTransitionForMove(parsed[i][0], parsed[i][1]);
+        if (move == null) {
+          return null;
+        }
+        var next = new Array(72);
+        for (var fi = 0; fi < 72; fi++) {
+          next[fi] = t[move[fi]];
+        }
+        t = next;
+      }
+      return t;
+    }
+
     function centerInfo(faceletIndex) {
       var ufSlot = ufCenterFacelets.indexOf(faceletIndex);
       if (ufSlot !== -1) {
@@ -577,7 +637,7 @@
         .replace(/(^|\s)E'(?=\s|$)/g, "$1Uw U'")
         .replace(/(^|\s)Ei(?=\s|$)/g, "$1Uw U'")
         .replace(/(^|\s)E(?=\s|$)/g, "$1Uw' U")
-        .replace(/\b([A-Z])w\b/g, "2$1");
+        .replace(/\b([A-Z])w(?=\d|'|\s|$)/g, "2$1");
       return puzzle.parser.parseScramble(expanded);
     }
 
@@ -896,6 +956,7 @@
       applyAlgorithmInstant: applyAlgorithmInstant,
       queueMove: queueMove,
       getFacelets: getFacelets,
+      getFaceletTransition: getFaceletTransition,
       getCenterTargets: getCenterTargets,
       setMode: function(nextMode) {
         mode = nextMode;

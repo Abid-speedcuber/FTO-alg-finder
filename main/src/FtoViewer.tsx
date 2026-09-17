@@ -1,10 +1,11 @@
-import type { ReactNode } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
-type FtoViewerApi = {
+export type FtoViewerApi = {
   applyAlgorithm(algorithm: string): void;
   applyAlgorithmInstant(algorithm: string): void;
   getFacelets(): number[];
+  getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
   setMode(mode: "pan" | "paint"): void;
   setColor(color: number): void;
@@ -42,12 +43,22 @@ type Props = {
   lastLayerMode: boolean;
   onFacelets: (facelets: number[]) => void;
   onCenterTargets: (targets: CenterTargets) => void;
+  viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
 };
 
 const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
-function FtoViewer({ setup, inputMode, applySignal, lastLayerMode, onFacelets, onCenterTargets, footer }: Props) {
+function FtoViewer({
+  setup,
+  inputMode,
+  applySignal,
+  lastLayerMode,
+  onFacelets,
+  onCenterTargets,
+  viewerApiRef,
+  footer,
+}: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [mode, setModeState] = useState<"pan" | "paint">("pan");
@@ -63,12 +74,18 @@ function FtoViewer({ setup, inputMode, applySignal, lastLayerMode, onFacelets, o
       onCenterTargets,
     });
     viewerRef.current = viewer;
+    if (viewerApiRef) {
+      viewerApiRef.current = viewer;
+    }
 
     return () => {
       viewer.dispose();
       viewerRef.current = null;
+      if (viewerApiRef && viewerApiRef.current === viewer) {
+        viewerApiRef.current = null;
+      }
     };
-  }, [onFacelets, onCenterTargets]);
+  }, [onFacelets, onCenterTargets, viewerApiRef]);
 
   useEffect(() => {
     viewerRef.current?.setMode(mode);
