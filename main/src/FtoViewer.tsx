@@ -138,7 +138,7 @@ function FtoViewer({
       <div className="fto-stage">
         <div ref={hostRef} className="fto-canvas-host" />
         <div className="viewer-controls viewer-controls-left">
-          {colorHex.slice(0, 5).map((hex, index) => (
+          {colorHex.slice(0, 6).map((hex, index) => (
             <button
               key={hex}
               className={`swatch ${mode === "paint" && selectedColor === index ? "selected" : ""}`}
@@ -150,8 +150,8 @@ function FtoViewer({
           ))}
         </div>
         <div className="viewer-controls viewer-controls-right">
-          {colorHex.slice(5).map((hex, offset) => {
-            const index = offset + 5;
+          {colorHex.slice(6).map((hex, offset) => {
+            const index = offset + 6;
             return (
               <button
                 key={hex}

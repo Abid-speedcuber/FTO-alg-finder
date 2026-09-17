@@ -139,7 +139,7 @@
         if (poly.area < 0.001) {
           return;
         }
-        var borderPoly = poly.trim(0.012) || poly;
+        var borderPoly = poly.trim(-0.004) || poly;
         var colorPoly = poly.trim(0.055) || borderPoly;
         var borderCords = borderPoly.projection(puzzle.faceUVs[face]);
         var cords = colorPoly.projection(puzzle.faceUVs[face]);
