@@ -1,5 +1,6 @@
 trivials/
 main/cache/
+main/src-tauri/cache/
 main/target/
 main/node_modules/
 main/dist/
