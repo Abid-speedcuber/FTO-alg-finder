@@ -3,7 +3,7 @@ use crate::{
     search::{format_solution, SearchConfig, SearchResult},
     FtoCubie,
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, thread};
 
 const UNVISITED: u8 = u8::MAX;
 const INVALID_TRANSITION: u32 = u32::MAX;
@@ -58,6 +58,15 @@ pub struct PartialProblem {
 
 #[must_use]
 pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchResult {
+    solve_partial_threads(problem, config, 1)
+}
+
+#[must_use]
+pub fn solve_partial_threads(
+    problem: &PartialProblem,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
     let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
     pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
     eprintln!(
@@ -84,7 +93,7 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
     });
     for depth in start_depth..=config.max_depth {
         eprintln!("searching depth {depth}...");
-        let depth_result = search_indexed(problem, &pruning, config, depth);
+        let depth_result = search_indexed_threads(problem, &pruning, config, depth, threads);
         let depth_nodes = depth_result.nodes;
         total.nodes += depth_nodes;
         total.solutions.extend(depth_result.solutions);
@@ -94,6 +103,120 @@ pub fn solve_partial(problem: &PartialProblem, config: &SearchConfig) -> SearchR
             break;
         }
     }
+    total
+}
+
+fn search_indexed_threads(
+    problem: &PartialProblem,
+    pruning: &DynamicPruning,
+    config: &SearchConfig,
+    depth: u8,
+    threads: usize,
+) -> SearchResult {
+    if threads <= 1 || depth <= 1 {
+        return search_indexed(problem, pruning, config, depth);
+    }
+
+    let moves = move_cubies();
+    let commute = move_commutation();
+    let child_depth = depth - 1;
+    let mut roots = Vec::new();
+    let mut root_nodes = 0_u64;
+
+    for (prefix, start, last_move) in
+        partial_start_states(problem.cubie, &moves, config.free_u_ends)
+    {
+        root_nodes += 1;
+        let start_indices = pruning.indices_of_state(&start);
+        if adjusted_pruning_value(
+            pruning.heuristic_for_indices(&start, &start_indices),
+            config.free_u_ends,
+        ) > depth
+        {
+            continue;
+        }
+
+        for &mv in &config.allowed_moves {
+            if config.free_u_ends && is_u_turn(mv) {
+                continue;
+            }
+            if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
+                continue;
+            }
+            let next_cubie = start.compose(&moves[mv.idx()]);
+            let next_indices = pruning.move_indices(&next_cubie, &start_indices, mv);
+            if adjusted_pruning_value(
+                pruning.heuristic_for_indices(&next_cubie, &next_indices),
+                config.free_u_ends,
+            ) > child_depth
+            {
+                continue;
+            }
+            roots.push((
+                prefix,
+                mv,
+                IndexedPartialState {
+                    cubie: next_cubie,
+                    indices: next_indices,
+                },
+            ));
+        }
+    }
+
+    if roots.is_empty() {
+        return SearchResult {
+            solutions: Vec::new(),
+            nodes: root_nodes,
+        };
+    }
+
+    let worker_count = threads.min(roots.len());
+    let chunk_size = roots.len().div_ceil(worker_count);
+    let mut total = SearchResult {
+        solutions: Vec::new(),
+        nodes: root_nodes,
+    };
+
+    thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in roots.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let mut ctx = IndexedPartialSearchContext {
+                    problem,
+                    pruning,
+                    config,
+                    moves,
+                    commute,
+                    path: Vec::with_capacity(depth as usize),
+                    free_prefix: None,
+                    solutions: Vec::new(),
+                    nodes: 0,
+                };
+                for (prefix, mv, state) in chunk {
+                    ctx.free_prefix = *prefix;
+                    ctx.path.push(*mv);
+                    ctx.dfs(state.clone(), child_depth, Some(*mv));
+                    ctx.path.pop();
+                    ctx.free_prefix = None;
+                    if !config.find_all && !ctx.solutions.is_empty() {
+                        break;
+                    }
+                }
+                SearchResult {
+                    solutions: ctx.solutions,
+                    nodes: ctx.nodes,
+                }
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.join().expect("partial search worker panicked");
+            total.nodes += result.nodes;
+            total.solutions.extend(result.solutions);
+        }
+    });
+
+    dedup_solutions(&mut total.solutions);
     total
 }
 

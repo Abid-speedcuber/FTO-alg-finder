@@ -330,6 +330,7 @@ fn run() -> Result<(), String> {
             max_depth,
             exact_depth,
             find_all,
+            threads,
             allowed_moves,
             last_layer_mode,
         );
@@ -422,6 +423,7 @@ fn solve_partial_input(
     max_depth: Option<u8>,
     exact_depth: bool,
     find_all: bool,
+    threads: usize,
     allowed_moves: Vec<Move>,
     last_layer_mode: bool,
 ) -> search::SearchResult {
@@ -437,7 +439,7 @@ fn solve_partial_input(
         free_u_ends: last_layer_mode,
         cancel: None,
     };
-    partial::solve_partial(problem, &config)
+    partial::solve_partial_threads(problem, &config, threads)
 }
 
 fn solve_once(
