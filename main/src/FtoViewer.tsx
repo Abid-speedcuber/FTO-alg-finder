@@ -5,6 +5,8 @@ export type FtoViewerApi = {
   applyAlgorithm(algorithm: string): void;
   applyAlgorithmInstant(algorithm: string): void;
   getFacelets(): number[];
+  setFacelets(facelets: number[]): void;
+  setKeyboardEnabled(enabled: boolean): void;
   getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
   setMode(mode: "pan" | "paint" | "swap"): void;
@@ -45,6 +47,7 @@ type Props = {
   onCenterTargets: (targets: CenterTargets) => void;
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
+  active?: boolean;
 };
 
 const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
@@ -58,11 +61,14 @@ function FtoViewer({
   onCenterTargets,
   viewerApiRef,
   footer,
+  active = true,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
   const [mode, setModeState] = useState<"pan" | "paint" | "swap">("pan");
   const [selectedColor, setSelectedColorState] = useState(0);
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   useEffect(() => {
     if (!hostRef.current || !window.createFtoViewer) {
@@ -74,6 +80,7 @@ function FtoViewer({
       onCenterTargets,
     });
     viewerRef.current = viewer;
+    viewer.setKeyboardEnabled(activeRef.current);
     if (viewerApiRef) {
       viewerApiRef.current = viewer;
     }
@@ -98,6 +105,14 @@ function FtoViewer({
   useEffect(() => {
     viewerRef.current?.setLastLayerMode(lastLayerMode);
   }, [lastLayerMode]);
+
+  // Only the visible tab's viewer listens to the keyboard; refit on show.
+  useEffect(() => {
+    viewerRef.current?.setKeyboardEnabled(active);
+    if (active) {
+      window.dispatchEvent(new Event("resize"));
+    }
+  }, [active]);
 
   const applyStateRef = useRef({ setup, inputMode });
   applyStateRef.current = { setup, inputMode };

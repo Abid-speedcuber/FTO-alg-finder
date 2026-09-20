@@ -475,6 +475,56 @@ h2 {
   gap: 13px;
 }
 
+.chevron-toggle {
+  min-height: 26px;
+  padding: 2px 9px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ll-group {
+  display: grid;
+  gap: 7px;
+}
+
+.ll-group-title {
+  color: #7b8794;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ll-option-grid,
+.ll-auf {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.ll-option {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-height: 0;
+  padding: 5px 4px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.ll-option.selected {
+  border-color: #2478ac;
+  background: #e7eef4;
+  color: #155e8a;
+  font-weight: 650;
+}
+
+.ll-thumb {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .search-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

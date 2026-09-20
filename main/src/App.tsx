@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import AlgCombiner from "./AlgCombiner";
-import FtoViewer, { type CenterTargets } from "./FtoViewer";
+import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
+import LlSetupSection from "./LlSetupSection";
 
 type CubieState = {
   cp: number[];
@@ -219,6 +220,7 @@ function App() {
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
   const [lastLayerMode, setLastLayerMode] = useState(false);
+  const viewerApiRef = useRef<FtoViewerApi | null>(null);
   const [threads, setThreads] = useState("1");
   const [status, setStatus] = useState("Idle");
   const [result, setResult] = useState<SolveResult | null>(null);
@@ -562,7 +564,7 @@ function App() {
         )
       ) : null}
 
-      {mode === "solver" ? (
+      <div hidden={mode !== "solver"}>
         <section className="workspace">
         <div className="input-pane">
           <div className="setup-row">
@@ -595,6 +597,8 @@ function App() {
           </div>
 
           <FtoViewer
+            viewerApiRef={viewerApiRef}
+            active={mode === "solver"}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
@@ -642,6 +646,12 @@ function App() {
               </div>
             )}
           </section>
+
+          <LlSetupSection
+            facelets={facelets}
+            viewerApiRef={viewerApiRef}
+            lastLayerMode={lastLayerMode}
+          />
 
           <section className="tool-section solve-options">
             <div className="section-heading">
@@ -697,9 +707,10 @@ function App() {
           </section>
         </div>
         </section>
-      ) : (
-        <AlgCombiner />
-      )}
+      </div>
+      <div hidden={mode !== "combiner"}>
+        <AlgCombiner active={mode === "combiner"} />
+      </div>
     </main>
   );
 }

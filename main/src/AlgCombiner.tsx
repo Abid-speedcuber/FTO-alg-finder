@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import FtoViewer, { type FtoViewerApi } from "./FtoViewer";
+import LlSetupSection from "./LlSetupSection";
 import { DEFAULT_INTERMEDIATE_ALGS } from "./algs";
 import {
   MoveEngine,
@@ -26,7 +27,7 @@ type Solution = {
   moves: number;
 };
 
-function AlgCombiner() {
+function AlgCombiner({ active = true }: { active?: boolean }) {
   const [scramble, setScramble] = useState("");
   const [scrambleSignal, setScrambleSignal] = useState(0);
   const [algText, setAlgText] = useState(() => serializeIntermediateAlgs(DEFAULT_INTERMEDIATE_ALGS));
@@ -46,7 +47,8 @@ function AlgCombiner() {
   const algNames = useMemo(() => Object.keys(algs), [algs]);
   const counts = useMemo(() => countCombinations(algNames.length, useTriples), [algNames.length, useTriples]);
 
-  const handleFacelets = useCallback(() => {}, []);
+  const [facelets, setFacelets] = useState<number[]>([]);
+  const handleFacelets = useCallback((next: number[]) => setFacelets(next), []);
   const handleCenterTargets = useCallback(() => {}, []);
 
   const appendLine = useCallback((kind: string, text: string) => {
@@ -228,6 +230,7 @@ function AlgCombiner() {
             onFacelets={handleFacelets}
             onCenterTargets={handleCenterTargets}
             viewerApiRef={apiRef}
+            active={active}
             footer={
               <div className="terminal" ref={terminalRef}>
                 {terminal.length === 0 ? (
@@ -265,6 +268,8 @@ function AlgCombiner() {
               after each alg automatically.
             </div>
           </section>
+
+          <LlSetupSection facelets={facelets} viewerApiRef={apiRef} />
 
           <section className="tool-section solve-options">
             <div className="section-heading">

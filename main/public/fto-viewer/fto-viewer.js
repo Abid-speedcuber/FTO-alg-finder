@@ -770,6 +770,49 @@
       }
     }
 
+    function applyLastLayerMarksBySlot() {
+      var fixedSlotByColor = [null, 3, 8, 10];
+      lastLayerCenterMarks = new Array(12).fill(null);
+      centerTargets.rlTopSources = [[], [], [], []];
+      for (var color = 1; color <= 3; color++) {
+        var fixedSlot = fixedSlotByColor[color];
+        lastLayerCenterMarks[fixedSlot] = "fixed";
+        centerTargets.rl[color] = fixedSlot;
+        centerTargets.rlSources[color] = fixedSlot;
+        for (var slot = 0; slot < rlCenterFacelets.length; slot++) {
+          if (Math.floor(slot / 3) !== color || slot === fixedSlot) {
+            continue;
+          }
+          lastLayerCenterMarks[slot] = "top";
+          centerTargets.rlTopSources[color].push(slot);
+        }
+      }
+      for (var i = 0; i < rlCenterFacelets.length; i++) {
+        refreshStickerDisplayByFacelet(rlCenterFacelets[i]);
+      }
+    }
+
+    function setFacelets(colors) {
+      if (!colors || colors.length !== 72) {
+        return;
+      }
+      clearCenterTargetPick();
+      clearSwapSelection();
+      for (var f = 0; f < 72; f++) {
+        var stickerIndex = faceletToSticker[f];
+        if (stickerIndex == null || colors[f] == null) {
+          continue;
+        }
+        setStickerColor(stickerIndex, colors[f]);
+      }
+      if (lastLayerMode) {
+        applyLastLayerMarksBySlot();
+      }
+      render();
+      notifyState();
+      notifyCenterTargets();
+    }
+
     function canMarkLastLayerCenter(faceletIndex) {
       var info = centerInfo(faceletIndex);
       return lastLayerMode
@@ -1110,7 +1153,12 @@
     container.style.userSelect = "none";
     container.appendChild(canvas);
     var mouseCleanup = setupMouseControls(canvas);
-    var unbindKeyboard = options.keyboard === false ? function() {} : bindKeyboard();
+    var unbindKeyboard = function() {};
+    function setKeyboardEnabled(enabled) {
+      unbindKeyboard();
+      unbindKeyboard = enabled ? bindKeyboard() : function() {};
+    }
+    setKeyboardEnabled(options.keyboard !== false);
     window.addEventListener("resize", resize);
     resize();
     notifyState();
@@ -1121,6 +1169,8 @@
       applyAlgorithmInstant: applyAlgorithmInstant,
       queueMove: queueMove,
       getFacelets: getFacelets,
+      setFacelets: setFacelets,
+      setKeyboardEnabled: setKeyboardEnabled,
       getFaceletTransition: getFaceletTransition,
       getCenterTargets: getCenterTargets,
       setMode: function(nextMode) {
