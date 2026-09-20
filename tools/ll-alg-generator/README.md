@@ -14,9 +14,12 @@ The output is one algorithm per line.
 
 Rules baked in:
 
-- Moves are primitive only: `U U' F F' BR BR' BL BL' D D' B B' R R' L L'`.
-- Before the first `R`/`F` move, only `U U'` may appear.
-- The first non-`U`/`D` move must be `R`, `R'`, `F`, or `F'`.
+- Moves are primitive only:
+  `U U' F F' BR BR' BL BL' D D' B B' R R' L L' Uw Uw' Fw Fw' Rw Rw' Lw Lw'`.
+- Before the first counted move, only `U U'` may appear.
+- The first counted move must be `R`, `R'`, `F`, `F'`, `Uw`, `Uw'`, `Fw`,
+  `Fw'`, `Rw`, `Rw'`, `Lw`, or `Lw'`.
+- `Uw`/`Uw'` are normal counted moves, not free AUF.
 - Final `U`/`U'` is omitted by default because LL AUF is free.
 - Same-face repeats and commuting move-order duplicates are skipped.
 - If two algs are identical after stripping leading/trailing `U`/`U'`, only

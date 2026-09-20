@@ -18,7 +18,7 @@ use fto_core::{
     FtoCubie,
 };
 
-const PRIMITIVE_MOVES: [Move; 16] = [
+const PRIMITIVE_MOVES: [Move; 24] = [
     Move::U,
     Move::Up,
     Move::F,
@@ -35,6 +35,14 @@ const PRIMITIVE_MOVES: [Move; 16] = [
     Move::Rp,
     Move::L,
     Move::Lp,
+    Move::Uw,
+    Move::Uwp,
+    Move::Fw,
+    Move::Fwp,
+    Move::Rw,
+    Move::Rwp,
+    Move::Lw,
+    Move::Lwp,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -469,7 +477,21 @@ fn first_non_ud_status(passed_first_non_ud: bool, mv: Move) -> FirstNonUd {
         if is_u(mv) {
             return FirstNonUd::Allowed(false);
         }
-    if matches!(mv, Move::R | Move::Rp | Move::F | Move::Fp) {
+    if matches!(
+        mv,
+        Move::R
+            | Move::Rp
+            | Move::F
+            | Move::Fp
+            | Move::Uw
+            | Move::Uwp
+            | Move::Fw
+            | Move::Fwp
+            | Move::Rw
+            | Move::Rwp
+            | Move::Lw
+            | Move::Lwp
+    ) {
         return FirstNonUd::Allowed(true);
     }
     FirstNonUd::Rejected
@@ -607,9 +629,9 @@ Options:\n\
   --help                 Show this help\n\
 \n\
 Canonical rules:\n\
-  - primitive moves only: U U' F F' BR BR' BL BL' D D' B B' R R' L L'\n\
-  - before the first R/F move, only U U' are allowed\n\
-  - the first non-U/D move must be R, R', F, or F'\n\
+  - primitive moves only: U U' F F' BR BR' BL BL' D D' B B' R R' L L' Uw Uw' Fw Fw' Rw Rw' Lw Lw'\n\
+  - before the first counted move, only U U' are allowed\n\
+  - the first counted move must be R, R', F, F', Uw, Uw', Fw, Fw', Rw, Rw', Lw, or Lw'\n\
   - by default, final U/U' is omitted because last-layer AUF is free\n\
   - algs with the same text after trimming leading/trailing U/U' are deduped\n\
   - U-conjugate cases are also deduped, so U alg U' variants are not printed"
