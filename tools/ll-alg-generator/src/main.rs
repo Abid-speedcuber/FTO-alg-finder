@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env,
-    fs::File,
+    fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
     path::PathBuf,
     process,
@@ -11,6 +11,7 @@ use std::{
     },
     thread,
     time::Instant,
+    collections::VecDeque,
 };
 
 use fto_core::{
@@ -18,7 +19,7 @@ use fto_core::{
     FtoCubie,
 };
 
-const PRIMITIVE_MOVES: [Move; 24] = [
+const FACE_MOVES: [Move; 16] = [
     Move::U,
     Move::Up,
     Move::F,
@@ -35,6 +36,9 @@ const PRIMITIVE_MOVES: [Move; 24] = [
     Move::Rp,
     Move::L,
     Move::Lp,
+];
+
+const WIDE_MOVES: [Move; 8] = [
     Move::Uw,
     Move::Uwp,
     Move::Fw,
@@ -44,6 +48,13 @@ const PRIMITIVE_MOVES: [Move; 24] = [
     Move::Lw,
     Move::Lwp,
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WideMode {
+    Include,
+    Exclude,
+    Only,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CenterMode {
@@ -61,6 +72,9 @@ struct Config {
     progress_nodes: u64,
     threads: usize,
     split_depth: usize,
+    resume: bool,
+    seed_paths: Vec<PathBuf>,
+    wide_mode: WideMode,
 }
 
 impl Default for Config {
@@ -74,8 +88,16 @@ impl Default for Config {
             progress_nodes: 10_000_000,
             threads: thread::available_parallelism().map_or(1, usize::from),
             split_depth: 4,
+            resume: false,
+            seed_paths: Vec::new(),
+            wide_mode: WideMode::Include,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct MoveSet {
+    moves: Vec<Move>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,13 +111,16 @@ struct LlMask {
 #[derive(Debug)]
 struct Search {
     config: Config,
+    move_set: MoveSet,
     move_cubies: [FtoCubie; MOVE_COUNT],
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    pruning: PruningTables,
     ll_mask: LlMask,
     writer: Arc<Mutex<BufWriter<File>>>,
     seen_trimmed_algs: Arc<Mutex<HashSet<Vec<u8>>>>,
     seen_cases: Arc<Mutex<HashSet<Vec<u8>>>>,
     nodes: Arc<AtomicU64>,
+    pruned: Arc<AtomicU64>,
     written: Arc<AtomicU64>,
     started: Instant,
 }
@@ -111,16 +136,27 @@ struct Task {
 
 struct Worker<'a> {
     config: &'a Config,
+    move_set: &'a MoveSet,
     move_cubies: &'a [FtoCubie; MOVE_COUNT],
     commute: &'a [[bool; MOVE_COUNT]; MOVE_COUNT],
+    pruning: &'a PruningTables,
     ll_mask: LlMask,
     writer: Arc<Mutex<BufWriter<File>>>,
     seen_trimmed_algs: Arc<Mutex<HashSet<Vec<u8>>>>,
     seen_cases: Arc<Mutex<HashSet<Vec<u8>>>>,
     nodes: Arc<AtomicU64>,
+    pruned: Arc<AtomicU64>,
     written: Arc<AtomicU64>,
     started: Instant,
     path: Vec<Move>,
+}
+
+#[derive(Clone, Debug)]
+struct PruningTables {
+    corner: [[u8; 12]; 6],
+    edge: [[u8; 12]; 12],
+    uf_center: [[u8; 12]; 12],
+    rl_center: [[u8; 12]; 12],
 }
 
 fn main() {
@@ -130,30 +166,48 @@ fn main() {
     }
 }
 
+fn open_output(config: &Config) -> Result<File, String> {
+    if config.resume {
+        return OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&config.out)
+            .map_err(|error| format!("failed to open {} for append: {error}", config.out.display()));
+    }
+    File::create(&config.out)
+        .map_err(|error| format!("failed to create {}: {error}", config.out.display()))
+}
+
 fn run() -> Result<(), String> {
     let config = parse_args()?;
-    let file = File::create(&config.out)
-        .map_err(|error| format!("failed to create {}: {error}", config.out.display()))?;
+    let file = open_output(&config)?;
     let move_cubies = move_cubies();
+    let move_set = move_set(config.wide_mode);
     let ll_mask = ll_mask_from_u(&move_cubies);
+    let pruning = build_pruning_tables(&move_cubies, &move_set);
     let mut search = Search {
         config,
+        move_set,
         move_cubies,
         commute: move_commutation(&move_cubies),
+        pruning,
         ll_mask,
         writer: Arc::new(Mutex::new(BufWriter::new(file))),
         seen_trimmed_algs: Arc::new(Mutex::new(HashSet::new())),
         seen_cases: Arc::new(Mutex::new(HashSet::new())),
         nodes: Arc::new(AtomicU64::new(0)),
+        pruned: Arc::new(AtomicU64::new(0)),
         written: Arc::new(AtomicU64::new(0)),
         started: Instant::now(),
     };
+    seed_existing_algs(&search.config, &search.move_cubies, &search.seen_trimmed_algs, &search.seen_cases)?;
 
     eprintln!(
-        "writing {}; max_depth={} center_mode={:?} trailing_u={} threads={}",
+        "writing {}; max_depth={} center_mode={:?} wide_mode={:?} trailing_u={} threads={}",
         search.config.out.display(),
         search.config.max_depth,
         search.config.center_mode,
+        search.config.wide_mode,
         if search.config.allow_trailing_u {
             "allowed"
         } else {
@@ -182,6 +236,44 @@ fn run() -> Result<(), String> {
         search.nodes.load(Ordering::Relaxed),
         search.started.elapsed().as_secs_f64()
     );
+    eprintln!("pruned {} branches", search.pruned.load(Ordering::Relaxed));
+    Ok(())
+}
+
+fn seed_existing_algs(
+    config: &Config,
+    moves: &[FtoCubie; MOVE_COUNT],
+    seen_trimmed_algs: &Arc<Mutex<HashSet<Vec<u8>>>>,
+    seen_cases: &Arc<Mutex<HashSet<Vec<u8>>>>,
+) -> Result<(), String> {
+    let mut seed_paths = config.seed_paths.clone();
+    if config.resume && config.out.exists() {
+        seed_paths.push(config.out.clone());
+    }
+    for path in seed_paths {
+        let text = fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read seed file {}: {error}", path.display()))?;
+        let mut seeded = 0_u64;
+        for (line_no, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path_moves = parse_alg_line(trimmed)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), line_no + 1))?;
+            seen_trimmed_algs
+                .lock()
+                .expect("trimmed-alg lock poisoned")
+                .insert(trimmed_auf_path_key(&path_moves));
+            let cubie = apply_path(&path_moves, moves);
+            seen_cases
+                .lock()
+                .expect("seen-case lock poisoned")
+                .insert(canonical_u_conjugate_key(&cubie, moves));
+            seeded += 1;
+        }
+        eprintln!("seeded {seeded} existing algs from {}", path.display());
+    }
     Ok(())
 }
 
@@ -207,8 +299,10 @@ impl Search {
         let tasks = Arc::new(tasks);
         let worker_count = self.config.threads.max(1).min(tasks.len());
         let config = &self.config;
+        let move_set = &self.move_set;
         let move_cubies = &self.move_cubies;
         let commute = &self.commute;
+        let pruning = &self.pruning;
         let ll_mask = self.ll_mask;
         let started = self.started;
         thread::scope(|scope| {
@@ -218,18 +312,22 @@ impl Search {
                 let seen_trimmed_algs = Arc::clone(&self.seen_trimmed_algs);
                 let seen_cases = Arc::clone(&self.seen_cases);
                 let nodes = Arc::clone(&self.nodes);
+                let pruned = Arc::clone(&self.pruned);
                 let written = Arc::clone(&self.written);
                 let next_task = &next_task;
                 scope.spawn(move || {
                     let mut worker = Worker {
                         config,
+                        move_set,
                         move_cubies,
                         commute,
+                        pruning,
                         ll_mask,
                         writer,
                         seen_trimmed_algs,
                         seen_cases,
                         nodes,
+                        pruned,
                         written,
                         started,
                         path: Vec::with_capacity(depth),
@@ -264,6 +362,12 @@ impl Search {
         split_left: usize,
         tasks: &mut Vec<Task>,
     ) {
+        if lower_bound_to_fix(&cubie, self.ll_mask, self.config.center_mode, &self.pruning)
+            > depth_left as u8
+        {
+            self.pruned.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         if split_left == 0 || depth_left == 0 {
             tasks.push(Task {
                 cubie,
@@ -275,11 +379,12 @@ impl Search {
             return;
         }
 
-        for mv in PRIMITIVE_MOVES {
+        let move_set = self.move_set.moves.clone();
+        for mv in move_set {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
-            let next_passed_first = match first_non_ud_status(passed_first_non_ud, mv) {
+            let next_passed_first = match first_non_ud_status(passed_first_non_ud, mv, self.config.wide_mode) {
                 FirstNonUd::Allowed(value) => value,
                 FirstNonUd::Rejected => continue,
             };
@@ -319,12 +424,20 @@ impl Worker<'_> {
         let nodes = self.nodes.fetch_add(1, Ordering::Relaxed) + 1;
         if self.config.progress_nodes != 0 && nodes % self.config.progress_nodes == 0 {
             eprintln!(
-                "progress: {} nodes, {} algs, current depth {}, elapsed {:.1}s",
+                "progress: {} nodes, {} pruned, {} algs, current depth {}, elapsed {:.1}s",
                 nodes,
+                self.pruned.load(Ordering::Relaxed),
                 self.written.load(Ordering::Relaxed),
                 self.path.len(),
                 self.started.elapsed().as_secs_f64()
             );
+        }
+
+        if lower_bound_to_fix(&cubie, self.ll_mask, self.config.center_mode, self.pruning)
+            > depth_left as u8
+        {
+            self.pruned.fetch_add(1, Ordering::Relaxed);
+            return;
         }
 
         if depth_left == 0 {
@@ -334,11 +447,11 @@ impl Worker<'_> {
             return;
         }
 
-        for mv in PRIMITIVE_MOVES {
+        for &mv in &self.move_set.moves {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
-            let next_passed_first = match first_non_ud_status(passed_first_non_ud, mv) {
+            let next_passed_first = match first_non_ud_status(passed_first_non_ud, mv, self.config.wide_mode) {
                 FirstNonUd::Allowed(value) => value,
                 FirstNonUd::Rejected => continue,
             };
@@ -417,11 +530,9 @@ impl Worker<'_> {
             line.push_str(mv.name());
         }
         line.push('\n');
-        self.writer
-            .lock()
-            .expect("writer lock poisoned")
-            .write_all(line.as_bytes())
-            .expect("failed to write alg");
+        let mut writer = self.writer.lock().expect("writer lock poisoned");
+        writer.write_all(line.as_bytes()).expect("failed to write alg");
+        writer.flush().expect("failed to flush alg");
         self.written.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -436,6 +547,48 @@ fn trimmed_auf_path_key(path: &[Move]) -> Vec<u8> {
         end -= 1;
     }
     path[start..end].iter().map(|mv| mv.idx() as u8).collect()
+}
+
+fn parse_alg_line(line: &str) -> Result<Vec<Move>, String> {
+    line.split_whitespace().map(move_from_name).collect()
+}
+
+fn move_from_name(name: &str) -> Result<Move, String> {
+    match name {
+        "U" => Ok(Move::U),
+        "U'" => Ok(Move::Up),
+        "F" => Ok(Move::F),
+        "F'" => Ok(Move::Fp),
+        "BR" => Ok(Move::BR),
+        "BR'" => Ok(Move::BRp),
+        "BL" => Ok(Move::BL),
+        "BL'" => Ok(Move::BLp),
+        "D" => Ok(Move::D),
+        "D'" => Ok(Move::Dp),
+        "B" => Ok(Move::B),
+        "B'" => Ok(Move::Bp),
+        "R" => Ok(Move::R),
+        "R'" => Ok(Move::Rp),
+        "L" => Ok(Move::L),
+        "L'" => Ok(Move::Lp),
+        "Uw" => Ok(Move::Uw),
+        "Uw'" => Ok(Move::Uwp),
+        "Fw" => Ok(Move::Fw),
+        "Fw'" => Ok(Move::Fwp),
+        "Rw" => Ok(Move::Rw),
+        "Rw'" => Ok(Move::Rwp),
+        "Lw" => Ok(Move::Lw),
+        "Lw'" => Ok(Move::Lwp),
+        _ => Err(format!("unknown move '{name}'")),
+    }
+}
+
+fn apply_path(path: &[Move], moves: &[FtoCubie; MOVE_COUNT]) -> FtoCubie {
+    let mut cubie = FtoCubie::solved();
+    for &mv in path {
+        cubie = cubie.compose(&moves[mv.idx()]);
+    }
+    cubie
 }
 
 fn canonical_u_conjugate_key(cubie: &FtoCubie, moves: &[FtoCubie; MOVE_COUNT]) -> Vec<u8> {
@@ -470,35 +623,44 @@ enum FirstNonUd {
     Rejected,
 }
 
-fn first_non_ud_status(passed_first_non_ud: bool, mv: Move) -> FirstNonUd {
+fn first_non_ud_status(passed_first_non_ud: bool, mv: Move, wide_mode: WideMode) -> FirstNonUd {
     if passed_first_non_ud {
         return FirstNonUd::Allowed(true);
     }
-        if is_u(mv) {
-            return FirstNonUd::Allowed(false);
-        }
-    if matches!(
-        mv,
-        Move::R
-            | Move::Rp
-            | Move::F
-            | Move::Fp
-            | Move::Uw
-            | Move::Uwp
-            | Move::Fw
-            | Move::Fwp
-            | Move::Rw
-            | Move::Rwp
-            | Move::Lw
-            | Move::Lwp
-    ) {
+    if is_u(mv) {
+        return FirstNonUd::Allowed(false);
+    }
+    if is_allowed_first_counted_move(mv, wide_mode) {
         return FirstNonUd::Allowed(true);
     }
     FirstNonUd::Rejected
 }
 
+fn is_allowed_first_counted_move(mv: Move, wide_mode: WideMode) -> bool {
+    if matches!(mv, Move::R | Move::Rp | Move::F | Move::Fp) {
+        return wide_mode != WideMode::Only;
+    }
+    matches!(
+        mv,
+        Move::Uw | Move::Uwp | Move::Fw | Move::Fwp | Move::Rw | Move::Rwp | Move::Lw | Move::Lwp
+    ) && wide_mode != WideMode::Exclude
+}
+
 fn is_u(mv: Move) -> bool {
     matches!(mv, Move::U | Move::Up)
+}
+
+fn move_set(wide_mode: WideMode) -> MoveSet {
+    let mut moves = Vec::new();
+    if wide_mode != WideMode::Only {
+        moves.extend_from_slice(&FACE_MOVES);
+    } else {
+        moves.extend_from_slice(&[Move::U, Move::Up]);
+    }
+    if wide_mode != WideMode::Exclude {
+        moves.extend_from_slice(&WIDE_MOVES);
+    }
+    MoveSet { moves }
 }
 
 fn ll_mask_from_u(moves: &[FtoCubie; MOVE_COUNT]) -> LlMask {
@@ -530,6 +692,161 @@ fn move_commutation(moves: &[FtoCubie; MOVE_COUNT]) -> [[bool; MOVE_COUNT]; MOVE
         }
     }
     commute
+}
+
+fn build_pruning_tables(moves: &[FtoCubie; MOVE_COUNT], move_set: &MoveSet) -> PruningTables {
+    PruningTables {
+        corner: build_corner_piece_distances(moves, move_set),
+        edge: build_orbit_piece_distances(moves, move_set, Orbit::Edge),
+        uf_center: build_orbit_piece_distances(moves, move_set, Orbit::UfCenter),
+        rl_center: build_orbit_piece_distances(moves, move_set, Orbit::RlCenter),
+    }
+}
+
+fn lower_bound_to_fix(
+    cubie: &FtoCubie,
+    ll_mask: LlMask,
+    center_mode: CenterMode,
+    pruning: &PruningTables,
+) -> u8 {
+    let mut bound = 0_u8;
+
+    for home in 0..6 {
+        if ll_mask.cp[home] {
+            continue;
+        }
+        let Some((pos, ori)) = corner_pos(cubie, home as u8) else {
+            return u8::MAX;
+        };
+        bound = bound.max(pruning.corner[home][pos * 2 + usize::from(ori)]);
+    }
+
+    for home in 0..12 {
+        if !ll_mask.ep[home] {
+            let Some(pos) = piece_pos(&cubie.ep, home as u8) else {
+                return u8::MAX;
+            };
+            bound = bound.max(pruning.edge[home][pos]);
+        }
+    }
+
+    if center_mode == CenterMode::ExactPieces {
+        for home in 0..12 {
+            if !ll_mask.uf[home] {
+                let Some(pos) = piece_pos(&cubie.uf, home as u8) else {
+                    return u8::MAX;
+                };
+                bound = bound.max(pruning.uf_center[home][pos]);
+            }
+            if !ll_mask.rl[home] {
+                let Some(pos) = piece_pos(&cubie.rl, home as u8) else {
+                    return u8::MAX;
+                };
+                bound = bound.max(pruning.rl_center[home][pos]);
+            }
+        }
+    }
+
+    bound
+}
+
+fn corner_pos(cubie: &FtoCubie, piece: u8) -> Option<(usize, u8)> {
+    for pos in 0..6 {
+        if cubie.cp[pos] == piece {
+            return Some((pos, cubie.co[pos]));
+        }
+    }
+    None
+}
+
+fn piece_pos(perm: &[u8; 12], piece: u8) -> Option<usize> {
+    perm.iter().position(|&value| value == piece)
+}
+
+fn build_corner_piece_distances(
+    moves: &[FtoCubie; MOVE_COUNT],
+    move_set: &MoveSet,
+) -> [[u8; 12]; 6] {
+    let mut distances = [[u8::MAX; 12]; 6];
+    for home in 0..6 {
+        let mut queue = VecDeque::new();
+        let start = home * 2;
+        distances[home][start] = 0;
+        queue.push_back(start);
+
+        while let Some(state) = queue.pop_front() {
+            let pos = state / 2;
+            let ori = (state % 2) as u8;
+            let distance = distances[home][state];
+            for &mv in &move_set.moves {
+                let (next_pos, next_ori) = move_corner_piece(pos, ori, &moves[mv.idx()]);
+                let next = next_pos * 2 + usize::from(next_ori);
+                if distances[home][next] == u8::MAX {
+                    distances[home][next] = distance + 1;
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    distances
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Orbit {
+    Edge,
+    UfCenter,
+    RlCenter,
+}
+
+fn build_orbit_piece_distances(
+    moves: &[FtoCubie; MOVE_COUNT],
+    move_set: &MoveSet,
+    orbit: Orbit,
+) -> [[u8; 12]; 12] {
+    let mut distances = [[u8::MAX; 12]; 12];
+    for home in 0..12 {
+        let mut queue = VecDeque::new();
+        distances[home][home] = 0;
+        queue.push_back(home);
+
+        while let Some(pos) = queue.pop_front() {
+            let distance = distances[home][pos];
+            for &mv in &move_set.moves {
+                let next = move_orbit_piece(pos, orbit_perm(&moves[mv.idx()], orbit));
+                if distances[home][next] == u8::MAX {
+                    distances[home][next] = distance + 1;
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    distances
+}
+
+fn move_corner_piece(pos: usize, ori: u8, mv: &FtoCubie) -> (usize, u8) {
+    for dst in 0..6 {
+        if mv.cp[dst] as usize == pos {
+            return (dst, ori ^ mv.co[dst]);
+        }
+    }
+    unreachable!("corner move permutation missing source position")
+}
+
+fn move_orbit_piece(pos: usize, perm: &[u8; 12]) -> usize {
+    for dst in 0..12 {
+        if perm[dst] as usize == pos {
+            return dst;
+        }
+    }
+    unreachable!("orbit move permutation missing source position")
+}
+
+fn orbit_perm(cubie: &FtoCubie, orbit: Orbit) -> &[u8; 12] {
+    match orbit {
+        Orbit::Edge => &cubie.ep,
+        Orbit::UfCenter => &cubie.uf,
+        Orbit::RlCenter => &cubie.rl,
+    }
 }
 
 fn parse_args() -> Result<Config, String> {
@@ -575,6 +892,19 @@ fn parse_args() -> Result<Config, String> {
                 i += 1;
                 config.split_depth = parse_usize(args.get(i), "--split-depth")?;
             }
+            "--resume" => config.resume = true,
+            "--seed" => {
+                i += 1;
+                config
+                    .seed_paths
+                    .push(PathBuf::from(args.get(i).ok_or("--seed needs a path")?));
+            }
+            "--wide-moves" => {
+                i += 1;
+                config.wide_mode = parse_wide_mode(args.get(i).ok_or("--wide-moves needs a value")?)?;
+            }
+            "--no-wide-moves" => config.wide_mode = WideMode::Exclude,
+            "--only-wide-moves" => config.wide_mode = WideMode::Only,
             "--help" | "-h" => {
                 print_help();
                 process::exit(0);
@@ -610,6 +940,17 @@ fn parse_u64(value: Option<&String>, name: &str) -> Result<u64, String> {
         .map_err(|_| format!("{name} must be a non-negative integer"))
 }
 
+fn parse_wide_mode(value: &str) -> Result<WideMode, String> {
+    match value {
+        "include" => Ok(WideMode::Include),
+        "exclude" => Ok(WideMode::Exclude),
+        "only" => Ok(WideMode::Only),
+        other => Err(format!(
+            "--wide-moves must be include, exclude, or only, got '{other}'"
+        )),
+    }
+}
+
 fn print_help() {
     println!(
         "Generate primitive FTO algorithms that only affect U-layer pieces.\n\
@@ -626,6 +967,11 @@ Options:\n\
   --progress-nodes N     Print progress every N nodes; 0 disables (default: 10000000)\n\
   --threads N            Worker threads (default: available CPU parallelism)\n\
   --split-depth N        Prefix depth used to split worker tasks (default: 4)\n\
+  --resume               Append to --out and seed dedupe from existing output\n\
+  --seed PATH            Seed dedupe from an existing output file; repeatable\n\
+  --wide-moves MODE      include, exclude, or only (default: include)\n\
+  --no-wide-moves        Alias for --wide-moves exclude\n\
+  --only-wide-moves      Alias for --wide-moves only\n\
   --help                 Show this help\n\
 \n\
 Canonical rules:\n\
