@@ -1,6 +1,6 @@
 use crate::{coord::FtoCoord, moves::Move};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FtoCubie {
     pub cp: [u8; 6],
     pub co: [u8; 6],

@@ -57,6 +57,238 @@ pub struct BidirectionalConfig {
     pub allowed_moves: Vec<Move>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BidirectionalChoice {
+    Use {
+        estimated_ida_nodes: u128,
+        estimated_bidir_nodes: u128,
+        estimated_stored_paths: u128,
+    },
+    Skip {
+        estimated_ida_nodes: u128,
+        estimated_bidir_nodes: u128,
+        estimated_stored_paths: u128,
+    },
+}
+
+#[must_use]
+pub fn should_use_bidirectional_exact(
+    depth: u8,
+    allowed_moves: &[Move],
+    max_stored_paths: usize,
+    endpoint_count: usize,
+) -> BidirectionalChoice {
+    let commute = move_commutation();
+    let first = allowed_moves.len() as u128;
+    let avg_follow = if allowed_moves.is_empty() {
+        0.0
+    } else {
+        let total: usize = allowed_moves
+            .iter()
+            .map(|&last| {
+                allowed_moves
+                    .iter()
+                    .filter(|&&mv| !should_skip_after(&commute, last, mv))
+                    .count()
+            })
+            .sum();
+        total as f64 / allowed_moves.len() as f64
+    };
+    let tree = |target_depth: u8| -> TreeEstimate {
+        if target_depth == 0 {
+            return TreeEstimate { nodes: 1, leaves: 1 };
+        }
+        let mut nodes = 1_u128;
+        let mut layer = first.max(1);
+        for ply in 1..=target_depth {
+            nodes = nodes.saturating_add(layer);
+            if ply != target_depth {
+                layer = ((layer as f64) * avg_follow).ceil() as u128;
+            }
+        }
+        TreeEstimate { nodes, leaves: layer }
+    };
+    let fwd_depth = depth / 2;
+    let back_depth = depth - fwd_depth;
+    let estimated_ida_nodes = tree(depth).nodes;
+    let endpoint_count = endpoint_count.max(1) as u128;
+    let forward = tree(fwd_depth);
+    let backward = tree(back_depth);
+    choose_bidirectional(
+        estimated_ida_nodes,
+        forward.nodes.saturating_add(endpoint_count.saturating_mul(backward.nodes)),
+        endpoint_count.saturating_mul(backward.leaves),
+        max_stored_paths,
+    )
+}
+
+#[must_use]
+pub fn should_use_bidirectional_exact_with_pruning(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    depth: u8,
+    allowed_moves: &[Move],
+    max_stored_paths: usize,
+    endpoint_count: usize,
+) -> BidirectionalChoice {
+    let start = SearchState::from_coord(coord);
+    let solved = SearchState::from_coord(FtoCoord::solved());
+    let fwd_depth = depth / 2;
+    let back_depth = depth - fwd_depth;
+    let endpoint_count = endpoint_count.max(1) as u128;
+
+    let ida = estimate_pruned_tree(start, tables, pruning, depth, 0, allowed_moves);
+    let forward = estimate_pruned_tree(start, tables, pruning, fwd_depth, back_depth, allowed_moves);
+    let backward = estimate_pruned_tree(solved, tables, None, back_depth, fwd_depth, allowed_moves);
+
+    choose_bidirectional(
+        ida.nodes,
+        forward.nodes.saturating_add(endpoint_count.saturating_mul(backward.nodes)),
+        endpoint_count.saturating_mul(backward.leaves),
+        max_stored_paths,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TreeEstimate {
+    nodes: u128,
+    leaves: u128,
+}
+
+fn choose_bidirectional(
+    estimated_ida_nodes: u128,
+    estimated_bidir_nodes: u128,
+    estimated_stored_paths: u128,
+    max_stored_paths: usize,
+) -> BidirectionalChoice {
+    let wins = estimated_bidir_nodes < estimated_ida_nodes
+        && estimated_stored_paths <= max_stored_paths as u128;
+    if wins {
+        BidirectionalChoice::Use {
+            estimated_ida_nodes,
+            estimated_bidir_nodes,
+            estimated_stored_paths,
+        }
+    } else {
+        BidirectionalChoice::Skip {
+            estimated_ida_nodes,
+            estimated_bidir_nodes,
+            estimated_stored_paths,
+        }
+    }
+}
+
+fn estimate_pruned_tree(
+    start: SearchState,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    depth: u8,
+    goal_slack: u8,
+    allowed_moves: &[Move],
+) -> TreeEstimate {
+    const PROBE_DEPTH: u8 = 8;
+    const MAX_PROBE_STATES: usize = 200_000;
+
+    let commute = move_commutation();
+    let root_bound = goal_slack.saturating_add(depth);
+    if pruning_value_for_state(start, pruning) > root_bound {
+        return TreeEstimate { nodes: 1, leaves: 0 };
+    }
+    if depth == 0 {
+        return TreeEstimate { nodes: 1, leaves: 1 };
+    }
+
+    let mut nodes = 1_u128;
+    let mut current = vec![(start, None, depth)];
+    let mut current_count = 1_u128;
+    let mut observed_branch = 0.0_f64;
+    let mut remaining_depth = depth;
+    let probe_depth = depth.min(PROBE_DEPTH);
+
+    for _ in 0..probe_depth {
+        let mut next = Vec::new();
+        let mut next_count = 0_u128;
+        for &(state, last_move, depth_left) in &current {
+            let child_depth = depth_left - 1;
+            for &mv in allowed_moves {
+                if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
+                    continue;
+                }
+                let pruning_child = state.apply_pruning(tables, mv);
+                if pruning_value_for_child(pruning_child, pruning) > goal_slack + child_depth {
+                    continue;
+                }
+                next_count += 1;
+                if next.len() < MAX_PROBE_STATES {
+                    next.push((
+                        state.apply_with_pruning_child(tables, mv, pruning_child),
+                        Some(mv),
+                        child_depth,
+                    ));
+                }
+            }
+        }
+        remaining_depth = remaining_depth.saturating_sub(1);
+        nodes = nodes.saturating_add(next_count);
+        if next_count == 0 {
+            return TreeEstimate { nodes, leaves: 0 };
+        }
+        observed_branch = next_count as f64 / current_count.max(1) as f64;
+        current_count = next_count;
+        if next.len() as u128 != next_count {
+            break;
+        }
+        current = next;
+        if current.first().is_some_and(|&(_, _, depth_left)| depth_left == 0) {
+            return TreeEstimate {
+                nodes,
+                leaves: current_count,
+            };
+        }
+    }
+
+    if remaining_depth == 0 {
+        return TreeEstimate {
+            nodes,
+            leaves: current_count,
+        };
+    }
+    let mut layer = current_count;
+    for _ in 0..remaining_depth {
+        layer = scaled_ceil(layer, observed_branch);
+        nodes = nodes.saturating_add(layer);
+        if layer == 0 {
+            break;
+        }
+    }
+    TreeEstimate { nodes, leaves: layer }
+}
+
+fn scaled_ceil(value: u128, factor: f64) -> u128 {
+    if value == 0 || factor <= 0.0 {
+        return 0;
+    }
+    let scaled = (value as f64 * factor).ceil();
+    if scaled >= u128::MAX as f64 {
+        u128::MAX
+    } else {
+        scaled as u128
+    }
+}
+
+fn pruning_value_for_state(state: SearchState, pruning: Option<&SolverPruning>) -> u8 {
+    pruning
+        .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+        .unwrap_or(0)
+}
+
+fn pruning_value_for_child(child: PruningChild, pruning: Option<&SolverPruning>) -> u8 {
+    pruning
+        .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+        .unwrap_or(0)
+}
+
 #[must_use]
 pub fn solve(coord: FtoCoord, tables: &TransitionTables, config: &SearchConfig) -> SearchResult {
     solve_with_pruning(coord, tables, None, config)
@@ -494,6 +726,71 @@ pub fn solve_bidirectional(
     };
     matcher.search(start, fwd_depth, None);
 
+    Ok(SearchResult {
+        solutions: matcher.solutions,
+        nodes: matcher.nodes,
+    })
+}
+
+pub fn solve_last_layer_bidirectional(
+    cubie: FtoCubie,
+    config: &BidirectionalConfig,
+) -> Result<SearchResult, String> {
+    let fwd_depth = config.depth / 2;
+    let back_depth = config.depth - fwd_depth;
+    let moves = move_cubies();
+    let commute = move_commutation();
+    let allowed_moves = config.allowed_moves.as_slice();
+    let endpoints = last_layer_goal_cubies();
+    let mut back = CubieBackwardBuilder {
+        moves,
+        commute,
+        allowed_moves,
+        max_stored_paths: config.max_stored_paths,
+        stored_paths: 0,
+        nodes: 0,
+        paths: HashMap::new(),
+    };
+    for endpoint in endpoints {
+        back.build(endpoint, back_depth, None, 0)?;
+    }
+
+    let mut matcher = CubieForwardMatcher {
+        moves,
+        commute,
+        allowed_moves,
+        back_paths: &back.paths,
+        find_all: config.find_all,
+        solutions: Vec::new(),
+        nodes: back.nodes,
+        path: Vec::with_capacity(config.depth as usize),
+        reject_u_ends: true,
+    };
+    for (prefix, start, last_move) in [
+        (None, cubie, None),
+        (
+            Some(Move::U),
+            cubie.compose(&moves[Move::U.idx()]),
+            Some(Move::U),
+        ),
+        (
+            Some(Move::Up),
+            cubie.compose(&moves[Move::Up.idx()]),
+            Some(Move::Up),
+        ),
+    ] {
+        if let Some(prefix) = prefix {
+            matcher.path.push(prefix);
+        }
+        matcher.search(start, fwd_depth, last_move);
+        if prefix.is_some() {
+            matcher.path.pop();
+        }
+        if !config.find_all && !matcher.solutions.is_empty() {
+            break;
+        }
+    }
+    dedup_solutions(&mut matcher.solutions);
     Ok(SearchResult {
         solutions: matcher.solutions,
         nodes: matcher.nodes,
@@ -1151,6 +1448,188 @@ impl ForwardMatcher<'_> {
             .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
             .unwrap_or(0)
     }
+}
+
+struct CubieBackwardBuilder<'a> {
+    moves: [FtoCubie; MOVE_COUNT],
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    allowed_moves: &'a [Move],
+    max_stored_paths: usize,
+    stored_paths: usize,
+    nodes: u64,
+    paths: HashMap<FtoCubie, Vec<u64>>,
+}
+
+impl CubieBackwardBuilder<'_> {
+    fn build(
+        &mut self,
+        state: FtoCubie,
+        depth_left: u8,
+        last_move: Option<Move>,
+        encoded_path: u64,
+    ) -> Result<(), String> {
+        self.nodes += 1;
+        if depth_left == 0 {
+            self.paths.entry(state).or_default().push(encoded_path);
+            self.stored_paths += 1;
+            if self.stored_paths > self.max_stored_paths {
+                return Err(format!(
+                    "bidirectional table exceeded cap of {} stored paths",
+                    self.max_stored_paths
+                ));
+            }
+            return Ok(());
+        }
+        for &mv in self.allowed_moves {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let next = state.compose(&self.moves[mv.idx()]);
+            self.build(
+                next,
+                depth_left - 1,
+                Some(mv),
+                encoded_path * MOVE_COUNT as u64 + mv.idx() as u64 + 1,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+struct CubieForwardMatcher<'a> {
+    moves: [FtoCubie; MOVE_COUNT],
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    allowed_moves: &'a [Move],
+    back_paths: &'a HashMap<FtoCubie, Vec<u64>>,
+    find_all: bool,
+    solutions: Vec<Vec<Move>>,
+    nodes: u64,
+    path: Vec<Move>,
+    reject_u_ends: bool,
+}
+
+impl CubieForwardMatcher<'_> {
+    fn search(&mut self, state: FtoCubie, depth_left: u8, last_move: Option<Move>) {
+        self.nodes += 1;
+        if depth_left == 0 {
+            if let Some(back_paths) = self.back_paths.get(&state) {
+                for &encoded_back in back_paths {
+                    let suffix = decode_inverse_path(encoded_back);
+                    if self.reject_u_ends
+                        && (ends_in_u_or_up(&self.path)
+                            || matches!(suffix.last(), Some(&Move::U) | Some(&Move::Up)))
+                    {
+                        continue;
+                    }
+                    if let (Some(&last), Some(&first)) = (self.path.last(), suffix.first()) {
+                        if should_skip_after(&self.commute, last, first) {
+                            continue;
+                        }
+                    }
+                    let mut solution = self.path.clone();
+                    solution.extend(suffix);
+                    self.solutions.push(solution);
+                    if !self.find_all {
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+        for &mv in self.allowed_moves {
+            if self.reject_u_ends && self.path.is_empty() && is_u_turn(mv) {
+                continue;
+            }
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            self.path.push(mv);
+            self.search(state.compose(&self.moves[mv.idx()]), depth_left - 1, Some(mv));
+            self.path.pop();
+            if !self.find_all && !self.solutions.is_empty() {
+                return;
+            }
+        }
+    }
+}
+
+fn last_layer_goal_cubies() -> Vec<FtoCubie> {
+    let mut goals = Vec::new();
+    let solved = FtoCubie::solved();
+    let mut uf = solved.uf;
+    let mut rl = solved.rl;
+    permute_center_colors(&mut uf, 0, &mut |uf| {
+        permute_last_layer_rl(&mut rl, 0, &mut |rl| {
+            let mut goal = solved;
+            goal.uf = *uf;
+            goal.rl = *rl;
+            goals.push(goal);
+        });
+    });
+    goals
+}
+
+fn permute_center_colors(centers: &mut [u8; 12], color: u8, emit: &mut impl FnMut(&[u8; 12])) {
+    if color == 4 {
+        emit(centers);
+        return;
+    }
+    let start = color as usize * 3;
+    permute_slice(centers, start, start + 3, &mut |centers| {
+        permute_center_colors(centers, color + 1, emit);
+    });
+}
+
+fn permute_last_layer_rl(centers: &mut [u8; 12], color: u8, emit: &mut impl FnMut(&[u8; 12])) {
+    if color == 4 {
+        emit(centers);
+        return;
+    }
+    const FIXED: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
+    let start = color as usize * 3;
+    if let Some(fixed) = FIXED[color as usize] {
+        let mut slots = Vec::new();
+        for pos in start..start + 3 {
+            if pos != fixed as usize {
+                slots.push(pos);
+            }
+        }
+        let a = slots[0];
+        let b = slots[1];
+        permute_last_layer_rl(centers, color + 1, emit);
+        centers.swap(a, b);
+        permute_last_layer_rl(centers, color + 1, emit);
+        centers.swap(a, b);
+    } else {
+        permute_slice(centers, start, start + 3, &mut |centers| {
+            permute_last_layer_rl(centers, color + 1, emit);
+        });
+    }
+}
+
+fn permute_slice(
+    values: &mut [u8; 12],
+    start: usize,
+    end: usize,
+    emit: &mut impl FnMut(&mut [u8; 12]),
+) {
+    fn rec(
+        values: &mut [u8; 12],
+        end: usize,
+        idx: usize,
+        emit: &mut impl FnMut(&mut [u8; 12]),
+    ) {
+        if idx == end {
+            emit(values);
+            return;
+        }
+        for swap in idx..end {
+            values.swap(idx, swap);
+            rec(values, end, idx + 1, emit);
+            values.swap(idx, swap);
+        }
+    }
+    rec(values, end, start, emit);
 }
 
 fn decode_inverse_path(mut encoded: u64) -> Vec<Move> {

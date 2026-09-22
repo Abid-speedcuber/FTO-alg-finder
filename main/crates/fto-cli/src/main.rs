@@ -12,7 +12,7 @@ use fto_core::{
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
     pruning::{self, SolverPruning, PruningStats},
-    search::{self, BidirectionalConfig, SearchConfig},
+    search::{self, BidirectionalChoice, BidirectionalConfig, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
 };
@@ -36,7 +36,7 @@ fn run() -> Result<(), String> {
     let mut threads = 1_usize;
     let mut force_bidirectional = false;
     let mut disable_bidirectional = false;
-    let mut bidirectional_threshold = 19_u8;
+    let mut bidirectional_threshold = 0_u8;
     let mut bidirectional_max_mib = 3072_usize;
     let mut bidirectional_start_pruning = false;
     let mut restricted_pruning = false;
@@ -327,12 +327,15 @@ fn run() -> Result<(), String> {
     if let InputState::Partial(problem) = input_state {
         let result = solve_partial_input(
             &problem,
+            &tables,
             max_depth,
             exact_depth,
             find_all,
             threads,
             allowed_moves,
             last_layer_mode,
+            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_max_mib,
         );
         println!("nodes: {}", result.nodes);
         println!("solutions: {}", result.solutions.len());
@@ -420,12 +423,15 @@ fn run() -> Result<(), String> {
 
 fn solve_partial_input(
     problem: &PartialProblem,
+    tables: &TransitionTables,
     max_depth: Option<u8>,
     exact_depth: bool,
     find_all: bool,
     threads: usize,
     allowed_moves: Vec<Move>,
     last_layer_mode: bool,
+    bidirectional_threshold: Option<u8>,
+    bidirectional_max_mib: usize,
 ) -> search::SearchResult {
     let config = SearchConfig {
         min_depth: if exact_depth {
@@ -435,10 +441,49 @@ fn solve_partial_input(
         },
         max_depth: max_depth.unwrap_or(u8::MAX),
         find_all,
-        allowed_moves,
+        allowed_moves: allowed_moves.clone(),
         free_u_ends: last_layer_mode,
         cancel: None,
     };
+    if exact_depth && !last_layer_mode && problem.mask.is_full() {
+        if let Some(depth) = max_depth {
+            let max_paths = bidirectional_max_paths(bidirectional_max_mib);
+            if should_try_bidirectional(
+                bidirectional_threshold,
+                depth,
+                search::should_use_bidirectional_exact_with_pruning(
+                    problem.cubie.coord(),
+                    tables,
+                    None,
+                    depth,
+                    &allowed_moves,
+                    max_paths,
+                    1,
+                ),
+                max_paths,
+            ) {
+                eprintln!("using bidirectional exact-depth search for full partial mask");
+                return search::solve_bidirectional(
+                    problem.cubie.coord(),
+                    tables,
+                    None,
+                    &BidirectionalConfig {
+                        depth,
+                        find_all,
+                        max_stored_paths: max_paths,
+                        threads,
+                        use_start_pruning: false,
+                        progress_interval: 0,
+                        allowed_moves,
+                    },
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("bidirectional search declined: {error}");
+                    partial::solve_partial_threads(problem, &config, threads)
+                });
+            }
+        }
+    }
     partial::solve_partial_threads(problem, &config, threads)
 }
 
@@ -459,6 +504,35 @@ fn solve_once(
 ) -> Result<search::SearchResult, String> {
     let coord = cubie.coord();
     if last_layer_mode {
+        if exact_depth {
+            let max_paths = bidirectional_max_paths(bidirectional_max_mib);
+            let endpoint_count = last_layer_endpoint_count();
+            if should_try_bidirectional(
+                bidirectional_threshold,
+                max_depth,
+                search::should_use_bidirectional_exact(
+                    max_depth,
+                    &allowed_moves,
+                    max_paths,
+                    endpoint_count,
+                ),
+                max_paths,
+            ) {
+                eprintln!("using bidirectional exact-depth last-layer search");
+                return search::solve_last_layer_bidirectional(
+                    cubie,
+                    &BidirectionalConfig {
+                        depth: max_depth,
+                        find_all,
+                        max_stored_paths: max_paths,
+                        threads,
+                        use_start_pruning: false,
+                        progress_interval,
+                        allowed_moves,
+                    },
+                );
+            }
+        }
         return Ok(search::solve_last_layer_with_pruning_threads(
             cubie,
             tables,
@@ -476,7 +550,20 @@ fn solve_once(
     }
     if exact_depth
         && !last_layer_mode
-        && bidirectional_threshold.is_some_and(|threshold| max_depth >= threshold)
+        && should_try_bidirectional(
+            bidirectional_threshold,
+            max_depth,
+            search::should_use_bidirectional_exact_with_pruning(
+                coord,
+                tables,
+                pruning,
+                max_depth,
+                &allowed_moves,
+                bidirectional_max_paths(bidirectional_max_mib),
+                1,
+            ),
+            bidirectional_max_paths(bidirectional_max_mib),
+        )
     {
         eprintln!("using bidirectional exact-depth search");
         return search::solve_bidirectional(
@@ -523,6 +610,46 @@ fn bidirectional_policy(force: bool, disable: bool, threshold: u8) -> Option<u8>
 
 fn bidirectional_max_paths(max_mib: usize) -> usize {
     max_mib.saturating_mul(1024 * 1024) / 96
+}
+
+fn should_try_bidirectional(
+    threshold: Option<u8>,
+    depth: u8,
+    choice: BidirectionalChoice,
+    max_stored_paths: usize,
+) -> bool {
+    let Some(threshold) = threshold else {
+        return false;
+    };
+    if depth < threshold {
+        return false;
+    }
+    match choice {
+        BidirectionalChoice::Use {
+            estimated_ida_nodes,
+            estimated_bidir_nodes,
+            estimated_stored_paths,
+        } => {
+            eprintln!(
+                "bidirectional estimate wins: ida~{estimated_ida_nodes}, bidir~{estimated_bidir_nodes}, stored~{estimated_stored_paths}/{max_stored_paths}"
+            );
+            true
+        }
+        BidirectionalChoice::Skip {
+            estimated_ida_nodes,
+            estimated_bidir_nodes,
+            estimated_stored_paths,
+        } => {
+            eprintln!(
+                "keeping IDA*: ida~{estimated_ida_nodes}, bidir~{estimated_bidir_nodes}, stored~{estimated_stored_paths}/{max_stored_paths}"
+            );
+            false
+        }
+    }
+}
+
+fn last_layer_endpoint_count() -> usize {
+    6_usize.pow(4) * 6 * 2_usize.pow(3)
 }
 
 fn run_solve_benchmark(
@@ -1252,7 +1379,8 @@ fn print_help() {
   fto-cli --auto-pruning --max-pruning-mib 1024 --keep-all-pruning-pdbs
 
 If no depth is provided, search starts at the pruning lower bound and increases until a solution is found.
-Exact searches at depth 19+ use bidirectional search unless --no-bidirectional is used.
+Exact searches use a node/memory estimate to choose bidirectional search unless --no-bidirectional is used.
+--bidir-threshold still sets a minimum depth gate before the estimator can choose bidirectional search.
 --last-layer treats leading/trailing U or U' as free and keeps fixed RL last-layer centers distinct.
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
 --ban removes moves from search. --moves replaces the search move set.
