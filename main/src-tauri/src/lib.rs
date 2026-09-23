@@ -93,6 +93,7 @@ struct SolveRequest {
     max_depth: Option<u8>,
     find_all: bool,
     restricted_pruning: bool,
+    mini_pruning: bool,
     last_layer_mode: bool,
     threads: usize,
 }
@@ -329,6 +330,9 @@ fn run_release_cli(
     }
     if request.restricted_pruning {
         args.push("--restricted-pruning".to_owned());
+    }
+    if request.mini_pruning {
+        args.push("--mini-pruning".to_owned());
     }
     if request.last_layer_mode {
         args.push("--last-layer".to_owned());

@@ -8,6 +8,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
+    hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -55,6 +56,194 @@ pub struct BidirectionalConfig {
     pub use_start_pruning: bool,
     pub progress_interval: usize,
     pub allowed_moves: Vec<Move>,
+}
+
+const MAX_MINI_TABLES: usize = 8;
+const INVALID_MINI_TRANSITION: u32 = u32::MAX;
+
+#[derive(Clone, Debug)]
+pub struct MiniPruning {
+    tables: Vec<MiniTable>,
+}
+
+impl MiniPruning {
+    pub fn build_restricted(tables: &TransitionTables, moves: &[Move]) -> Self {
+        let specs = [
+            MiniSpec::corner(),
+            MiniSpec::edge_choice(0),
+            MiniSpec::edge_choice(1),
+            MiniSpec::edge_choice(2),
+            MiniSpec::edge_choice(3),
+            MiniSpec::edge3(),
+            MiniSpec::uf3(),
+        ];
+        let tables = specs
+            .into_iter()
+            .map(|spec| MiniTable::build(spec, tables, moves))
+            .collect();
+        Self { tables }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tables.len()
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.tables.iter().map(MiniTable::bytes).sum()
+    }
+
+    #[must_use]
+    fn heuristic(&self, indices: &[usize; MAX_MINI_TABLES]) -> u8 {
+        self.tables
+            .iter()
+            .enumerate()
+            .map(|(idx, table)| table.value(indices[idx]))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn indices_of_state(&self, state: SearchState) -> [usize; MAX_MINI_TABLES] {
+        let mut indices = [0_usize; MAX_MINI_TABLES];
+        for (idx, table) in self.tables.iter().enumerate() {
+            indices[idx] = table.spec.index_of_state(state);
+        }
+        indices
+    }
+
+    fn move_indices(
+        &self,
+        indices: &[usize; MAX_MINI_TABLES],
+        mv: Move,
+    ) -> [usize; MAX_MINI_TABLES] {
+        let mut next = [0_usize; MAX_MINI_TABLES];
+        for (idx, table) in self.tables.iter().enumerate() {
+            next[idx] = table.next_index(indices[idx], mv);
+        }
+        next
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MiniTable {
+    spec: MiniSpec,
+    table: Vec<u8>,
+    transitions: Vec<[u32; MOVE_COUNT]>,
+}
+
+impl MiniTable {
+    fn build(spec: MiniSpec, tables: &TransitionTables, moves: &[Move]) -> Self {
+        let size = spec.size();
+        let mut table = vec![u8::MAX; size];
+        let mut transitions = vec![[INVALID_MINI_TRANSITION; MOVE_COUNT]; size];
+        let solved = spec.solved_index();
+        table[solved] = 0;
+        let mut queue = std::collections::VecDeque::from([solved]);
+        while let Some(idx) = queue.pop_front() {
+            let depth = table[idx];
+            for &mv in moves {
+                let next = spec.next_index(idx, mv, tables);
+                transitions[idx][mv.idx()] = next as u32;
+                if table[next] == u8::MAX {
+                    table[next] = depth + 1;
+                    queue.push_back(next);
+                }
+            }
+        }
+        Self {
+            spec,
+            table,
+            transitions,
+        }
+    }
+
+    fn value(&self, idx: usize) -> u8 {
+        self.table[idx]
+    }
+
+    fn next_index(&self, idx: usize, mv: Move) -> usize {
+        let cached = self.transitions[idx][mv.idx()];
+        debug_assert_ne!(cached, INVALID_MINI_TRANSITION);
+        cached as usize
+    }
+
+    fn bytes(&self) -> usize {
+        self.table.len() + self.transitions.len() * MOVE_COUNT * std::mem::size_of::<u32>()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MiniSpec {
+    kind: MiniKind,
+}
+
+impl MiniSpec {
+    const fn corner() -> Self {
+        Self {
+            kind: MiniKind::Corner,
+        }
+    }
+
+    const fn edge_choice(choice: u8) -> Self {
+        Self {
+            kind: MiniKind::EdgeChoice(choice),
+        }
+    }
+
+    const fn edge3() -> Self {
+        Self {
+            kind: MiniKind::Edge3,
+        }
+    }
+
+    const fn uf3() -> Self {
+        Self {
+            kind: MiniKind::Uf3,
+        }
+    }
+
+    fn size(self) -> usize {
+        match self.kind {
+            MiniKind::Corner => crate::coord::CORNER_COUNT,
+            MiniKind::EdgeChoice(_) => crate::coord::EDGE_CHOICE_COUNT,
+            MiniKind::Edge3 => crate::coord::EDGE3_COUNT,
+            MiniKind::Uf3 => crate::coord::CENTER3_COUNT,
+        }
+    }
+
+    fn solved_index(self) -> usize {
+        self.index_of_state(SearchState::from_coord(FtoCoord::solved()))
+    }
+
+    fn index_of_state(self, state: SearchState) -> usize {
+        match self.kind {
+            MiniKind::Corner => usize::from(state.corner),
+            MiniKind::EdgeChoice(0) => usize::from(state.edge.e0),
+            MiniKind::EdgeChoice(1) => usize::from(state.edge.e1),
+            MiniKind::EdgeChoice(2) => usize::from(state.edge.e2),
+            MiniKind::EdgeChoice(_) => usize::from(state.edge.e3),
+            MiniKind::Edge3 => usize::from(state.edge3),
+            MiniKind::Uf3 => usize::from(state.uf3),
+        }
+    }
+
+    fn next_index(self, idx: usize, mv: Move, tables: &TransitionTables) -> usize {
+        match self.kind {
+            MiniKind::Corner => usize::from(tables.corner_move(idx as u16, mv)),
+            MiniKind::EdgeChoice(_) => usize::from(tables.edge_choice_move(idx as u16, mv)),
+            MiniKind::Edge3 => usize::from(tables.edge3_move(idx as u16, mv)),
+            MiniKind::Uf3 => usize::from(tables.uf_center3_move(idx as u16, mv)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MiniKind {
+    Corner,
+    EdgeChoice(u8),
+    Edge3,
+    Uf3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,7 +501,19 @@ pub fn solve_with_pruning_threads(
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
-    solve_with_pruning_threads_impl(coord, tables, pruning, config, threads, None)
+    solve_with_pruning_threads_impl(coord, tables, pruning, None, config, threads, None)
+}
+
+#[must_use]
+pub fn solve_with_pruning_and_mini_threads(
+    coord: FtoCoord,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
+    solve_with_pruning_threads_impl(coord, tables, pruning, mini, config, threads, None)
 }
 
 #[must_use]
@@ -324,7 +525,7 @@ pub fn solve_with_pruning_threads_reporting(
     threads: usize,
     report: impl Fn(u8) + Send + Sync,
 ) -> SearchResult {
-    solve_with_pruning_threads_impl(coord, tables, pruning, config, threads, Some(&report))
+    solve_with_pruning_threads_impl(coord, tables, pruning, None, config, threads, Some(&report))
 }
 
 #[must_use]
@@ -517,15 +718,16 @@ fn solve_with_pruning_threads_impl(
     coord: FtoCoord,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     config: &SearchConfig,
     threads: usize,
     report: Option<&DepthReporter<'_>>,
 ) -> SearchResult {
     if threads <= 1 || config.max_depth <= 1 {
-        return solve_with_pruning_single(coord, tables, pruning, config, report);
+        return solve_with_pruning_single(coord, tables, pruning, mini, config, report);
     }
 
-    let root = SearchState::from_coord(coord);
+    let root = SearchState::from_coord(coord).with_mini_indices(mini);
     let solved = SearchState::from_coord(FtoCoord::solved());
     let solved_u = SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord());
     let solved_up = SearchState::from_coord(FtoCubie::solved().apply(Move::Up).coord());
@@ -586,7 +788,19 @@ fn solve_with_pruning_threads_impl(
                 if pruning_value > child_depth {
                     continue;
                 }
-                let state = start.apply_with_pruning_child(tables, mv, pruning_child);
+                let state =
+                    start.apply_with_pruning_child_and_mini(tables, mv, pruning_child, mini);
+                let mini_pruning_value = mini
+                    .map(|mini| {
+                        adjusted_pruning_value(
+                            mini.heuristic(&state.mini_indices),
+                            config.free_u_ends,
+                        )
+                    })
+                    .unwrap_or(0);
+                if mini_pruning_value > child_depth {
+                    continue;
+                }
                 roots.push((prefix, mv, state));
             }
         }
@@ -609,6 +823,7 @@ fn solve_with_pruning_threads_impl(
                     let mut ctx = SearchContext {
                         tables,
                         pruning,
+                        mini,
                         commute,
                         config,
                         solved,
@@ -873,12 +1088,14 @@ fn solve_with_pruning_single(
     coord: FtoCoord,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     config: &SearchConfig,
     report: Option<&DepthReporter<'_>>,
 ) -> SearchResult {
     let mut ctx = SearchContext {
         tables,
         pruning,
+        mini,
         commute: move_commutation(),
         config,
         solved: SearchState::from_coord(FtoCoord::solved()),
@@ -888,7 +1105,7 @@ fn solve_with_pruning_single(
         path: Vec::with_capacity(config.max_depth as usize),
         nodes: 0,
     };
-    let state = SearchState::from_coord(coord);
+    let state = SearchState::from_coord(coord).with_mini_indices(mini);
 
     for depth in config.min_depth..=config.max_depth {
         if is_cancelled(config) {
@@ -923,6 +1140,7 @@ fn solve_with_pruning_single(
 struct SearchContext<'a> {
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
+    mini: Option<&'a MiniPruning>,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     config: &'a SearchConfig,
     solved: SearchState,
@@ -1092,7 +1310,20 @@ impl SearchContext<'_> {
             if pruning_value > child_depth {
                 continue;
             }
-            let next = state.apply_with_pruning_child(self.tables, mv, pruning_child);
+            let next =
+                state.apply_with_pruning_child_and_mini(self.tables, mv, pruning_child, self.mini);
+            let mini_pruning_value = self
+                .mini
+                .map(|mini| {
+                    adjusted_pruning_value(
+                        mini.heuristic(&next.mini_indices),
+                        self.config.free_u_ends,
+                    )
+                })
+                .unwrap_or(0);
+            if mini_pruning_value > child_depth {
+                continue;
+            }
             children[child_count] = (pruning_value, mv, next);
             child_count += 1;
         }
@@ -1115,12 +1346,17 @@ impl SearchContext<'_> {
     }
 
     fn pruning_value(&self, state: SearchState) -> u8 {
-        adjusted_pruning_value(
+        let base = adjusted_pruning_value(
             self.pruning
-            .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
                 .unwrap_or(0),
             self.config.free_u_ends,
-        )
+        );
+        let mini = self
+            .mini
+            .map(|mini| adjusted_pruning_value(mini.heuristic(&state.mini_indices), self.config.free_u_ends))
+            .unwrap_or(0);
+        base.max(mini)
     }
 
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
@@ -1671,7 +1907,7 @@ fn move_commutation() -> [[bool; MOVE_COUNT]; MOVE_COUNT] {
     commute
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct SearchState {
     corner: u16,
     edge: EdgeCoord,
@@ -1681,6 +1917,31 @@ struct SearchState {
     rl_center: u32,
     edge3_uf3_idx: usize,
     corner_uf3_idx: usize,
+    mini_indices: [usize; MAX_MINI_TABLES],
+}
+
+impl PartialEq for SearchState {
+    fn eq(&self, other: &Self) -> bool {
+        self.corner == other.corner
+            && self.edge == other.edge
+            && self.edge3 == other.edge3
+            && self.uf_center == other.uf_center
+            && self.uf3 == other.uf3
+            && self.rl_center == other.rl_center
+    }
+}
+
+impl Eq for SearchState {}
+
+impl Hash for SearchState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.corner.hash(state);
+        self.edge.hash(state);
+        self.edge3.hash(state);
+        self.uf_center.hash(state);
+        self.uf3.hash(state);
+        self.rl_center.hash(state);
+    }
 }
 
 impl SearchState {
@@ -1694,7 +1955,15 @@ impl SearchState {
             rl_center: coord.rl_center,
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(coord.edge3, coord.uf_center3),
             corner_uf3_idx: SolverPruning::corner_uf3_index(coord.corner, coord.uf_center3),
+            mini_indices: [0; MAX_MINI_TABLES],
         }
+    }
+
+    fn with_mini_indices(mut self, mini: Option<&MiniPruning>) -> Self {
+        if let Some(mini) = mini {
+            self.mini_indices = mini.indices_of_state(self);
+        }
+        self
     }
 
     fn apply_pruning(self, tables: &TransitionTables, mv: Move) -> PruningChild {
@@ -1730,7 +1999,22 @@ impl SearchState {
             rl_center: tables.rl_center_move(self.rl_center, mv),
             edge3_uf3_idx: pruning_child.edge3_uf3_idx,
             corner_uf3_idx: pruning_child.corner_uf3_idx,
+            mini_indices: self.mini_indices,
         }
+    }
+
+    fn apply_with_pruning_child_and_mini(
+        self,
+        tables: &TransitionTables,
+        mv: Move,
+        pruning_child: PruningChild,
+        mini: Option<&MiniPruning>,
+    ) -> Self {
+        let mut next = self.apply_with_pruning_child(tables, mv, pruning_child);
+        if let Some(mini) = mini {
+            next.mini_indices = mini.move_indices(&self.mini_indices, mv);
+        }
+        next
     }
 }
 

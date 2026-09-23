@@ -12,7 +12,7 @@ use fto_core::{
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
     pruning::{self, SolverPruning, PruningStats},
-    search::{self, BidirectionalChoice, BidirectionalConfig, SearchConfig},
+    search::{self, BidirectionalChoice, BidirectionalConfig, MiniPruning, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
 };
@@ -40,6 +40,7 @@ fn run() -> Result<(), String> {
     let mut bidirectional_max_mib = 3072_usize;
     let mut bidirectional_start_pruning = false;
     let mut restricted_pruning = false;
+    let mut mini_pruning = false;
     let mut last_layer_mode = false;
     let mut allowed_moves = Move::ALL.to_vec();
     let mut instance_moves: Option<Vec<Move>> = None;
@@ -77,6 +78,7 @@ fn run() -> Result<(), String> {
             "--no-bidirectional" => disable_bidirectional = true,
             "--bidir-start-pruning" => bidirectional_start_pruning = true,
             "--restricted-pruning" => restricted_pruning = true,
+            "--mini-pruning" => mini_pruning = true,
             "--last-layer" => last_layer_mode = true,
             "--no-pruning" => use_solver_pruning = false,
             "--keep-all-pruning-pdbs" => keep_all_pruning_pdbs = true,
@@ -362,11 +364,25 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let mini_tables = if mini_pruning && !last_layer_mode {
+        let start = Instant::now();
+        let mini = MiniPruning::build_restricted(&tables, &allowed_moves);
+        eprintln!(
+            "using {} restricted mini pruning tables ({:.1} MiB, built in {:.3}s)",
+            mini.len(),
+            mini.bytes() as f64 / (1024.0 * 1024.0),
+            start.elapsed().as_secs_f64()
+        );
+        Some(mini)
+    } else {
+        None
+    };
     if benchmark {
         run_solve_benchmark(
             cubie,
             &tables,
             pruning_tables.as_ref(),
+            mini_tables.as_ref(),
             max_depth,
             exact_depth,
             find_all,
@@ -386,6 +402,7 @@ fn run() -> Result<(), String> {
             cubie,
             &tables,
             pruning_tables.as_ref(),
+            mini_tables.as_ref(),
             max_depth,
             exact_depth,
             find_all,
@@ -402,6 +419,7 @@ fn run() -> Result<(), String> {
             cubie,
             &tables,
             pruning_tables.as_ref(),
+            mini_tables.as_ref(),
             find_all,
             threads,
             bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
@@ -491,6 +509,7 @@ fn solve_once(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     max_depth: u8,
     exact_depth: bool,
     find_all: bool,
@@ -582,10 +601,11 @@ fn solve_once(
         );
     }
 
-    Ok(search::solve_with_pruning_threads(
+    Ok(search::solve_with_pruning_and_mini_threads(
         coord,
         tables,
         pruning,
+        mini,
         &SearchConfig {
             min_depth: if exact_depth { max_depth } else { 0 },
             max_depth,
@@ -656,6 +676,7 @@ fn run_solve_benchmark(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     max_depth: Option<u8>,
     exact_depth: bool,
     find_all: bool,
@@ -675,6 +696,7 @@ fn run_solve_benchmark(
             cubie,
             tables,
             pruning,
+            mini,
             max_depth,
             exact_depth,
             find_all,
@@ -698,6 +720,7 @@ fn run_solve_benchmark(
             cubie,
             tables,
             pruning,
+            mini,
             max_depth,
             exact_depth,
             find_all,
@@ -747,6 +770,7 @@ fn benchmark_solve_once(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     max_depth: Option<u8>,
     exact_depth: bool,
     find_all: bool,
@@ -763,6 +787,7 @@ fn benchmark_solve_once(
             cubie,
             tables,
             pruning,
+            mini,
             max_depth,
             exact_depth,
             find_all,
@@ -779,6 +804,7 @@ fn benchmark_solve_once(
             cubie,
             tables,
             pruning,
+            mini,
             find_all,
             threads,
             bidirectional_threshold,
@@ -909,6 +935,7 @@ fn solve_incrementally(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     find_all: bool,
     threads: usize,
     bidirectional_threshold: Option<u8>,
@@ -930,6 +957,7 @@ fn solve_incrementally(
             cubie,
             tables,
             pruning,
+            mini,
             depth,
             true,
             find_all,
@@ -955,6 +983,7 @@ fn solve_incrementally_quiet(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
     find_all: bool,
     threads: usize,
     bidirectional_threshold: Option<u8>,
@@ -975,6 +1004,7 @@ fn solve_incrementally_quiet(
             cubie,
             tables,
             pruning,
+            mini,
             depth,
             true,
             find_all,
@@ -1365,6 +1395,7 @@ fn print_help() {
   fto-cli --json state.json --depth 4 --exact --last-layer
   fto-cli --scramble \"R U R'\" --depth 10 --ban \"Dp F Fp\"
   fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --restricted-pruning
+  fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --mini-pruning
   fto-cli --scramble \"R U R'\" --depth 10 --moves \"R Rp U Up\" --instance-moves \"R Rp U Up F Fp\"
   fto-cli --scramble \"R U R'\" --depth 6
   fto-cli --scramble \"R U R'\" --depth 6 --no-pruning
@@ -1385,6 +1416,7 @@ Exact searches use a node/memory estimate to choose bidirectional search unless 
 --bidir-start-pruning builds temporary start-centered tables for the backward half.
 --ban removes moves from search. --moves replaces the search move set.
 --instance-moves sets the instance's base move set used to select/build its base pruning table.
+--mini-pruning builds small in-memory restricted PDBs for the exact solve move set.
 Both take a space/comma/semicolon-separated list of move identifiers (Rust enum names, e.g. R, Rp, Brp, RURp) rather than display notation, since display notation like (R U R') contains spaces.
 Pruning table selection is automatic: the smallest cached move set that covers the search move set wins (cached restricted tables are shared across instances). --restricted-pruning additionally builds/loads a pruning table for exactly the search move set.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.

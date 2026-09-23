@@ -219,6 +219,7 @@ function App() {
   const [depth, setDepth] = useState("");
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
+  const [miniPruning, setMiniPruning] = useState(false);
   const [lastLayerMode, setLastLayerMode] = useState(false);
   const viewerApiRef = useRef<FtoViewerApi | null>(null);
   const [threads, setThreads] = useState("1");
@@ -419,6 +420,7 @@ function App() {
           maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
           findAll: all,
           restrictedPruning,
+          miniPruning,
           lastLayerMode,
           threads: Number(threads),
         },
@@ -692,6 +694,14 @@ function App() {
                 onChange={(event) => setRestrictedPruning(event.target.checked)}
               />
               Restricted pruning
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={miniPruning}
+                onChange={(event) => setMiniPruning(event.target.checked)}
+              />
+              Mini pruning
             </label>
             </div>
             <div className="actions-row">
