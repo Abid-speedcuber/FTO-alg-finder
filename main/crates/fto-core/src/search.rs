@@ -1153,6 +1153,9 @@ fn is_u_turn(mv: Move) -> bool {
 }
 
 fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
+    if value == u8::MAX {
+        return value;
+    }
     if free_u_ends {
         value.saturating_sub(1)
     } else {

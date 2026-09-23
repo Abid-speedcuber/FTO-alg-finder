@@ -416,6 +416,9 @@ fn center_piece_is_solved_by_color(orbit: &[u8; 12], piece: u8) -> bool {
 }
 
 fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
+    if value == UNVISITED {
+        return value;
+    }
     if free_u_ends {
         value.saturating_sub(1)
     } else {
@@ -704,7 +707,7 @@ impl DynamicTable {
     fn value_for_index(&self, idx: usize) -> u8 {
         let value = self.table[idx];
         if value == UNVISITED {
-            0
+            UNVISITED
         } else {
             value
         }

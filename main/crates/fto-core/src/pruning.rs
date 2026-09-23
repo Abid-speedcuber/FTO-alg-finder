@@ -65,7 +65,7 @@ impl PatternDatabase {
     pub fn value(&self, coord: FtoCoord) -> u8 {
         let value = self.table[self.spec.index_of_coord(coord)];
         if value == UNVISITED {
-            0
+            UNVISITED
         } else {
             value
         }
@@ -238,7 +238,7 @@ impl SolverPruning {
 
 const fn live_depth(value: u8) -> u8 {
     if value == UNVISITED {
-        0
+        UNVISITED
     } else {
         value
     }
