@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  var faceColors = [0xffff00, 0x0000ff, 0xff0000, 0x800080, 0xffffff, 0x00a050, 0x808080, 0xff8800];
+  var defaultFaceColors = [0xffff00, 0x0000ff, 0xff0000, 0x800080, 0xffffff, 0x00a050, 0x808080, 0xff8800];
   var ignoredColor = 8;
   var ignoredColorHex = 0x050505;
   var pieceFacelets = [
@@ -39,17 +39,13 @@
   var rlCenterFacelets = [38, 41, 43, 47, 50, 52, 65, 68, 70, 56, 59, 61];
   var rlFaceColorToCenterGroup = [0, 1, 3, 2];
   var lastLayerUniqueCenterSlot = [null, 3, 8, 10];
-  var lastLayerCenterColors = {
-    5: { affected: 0x51e86f, fixed: 0x009245 },
-    6: { affected: 0xb8b8b8, fixed: 0x707070 },
-    7: { affected: 0xffb34a, fixed: 0xff7800 },
-  };
   var targetHighlightHex = 0xf4ff62;
   var swapHighlightHex = 0xff80d4;
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
   function createFtoViewer(container, options) {
     options = options || {};
+    var faceColors = defaultFaceColors.slice();
     var scene;
     var camera;
     var renderer;
@@ -184,17 +180,56 @@
       if (color === ignoredColor) {
         return ignoredColorHex;
       }
-      if (lastLayerMode && lastLayerCenterColors[color]) {
+      if (lastLayerMode && isLastLayerCenterColor(color)) {
         var info = centerInfo(faceletIndex);
         if (info && info.orbit === "rl") {
           return lastLayerCenterMarks[info.slot] === "fixed"
-            ? lastLayerCenterColors[color].fixed
+            ? lastLayerVariantColor(color, "fixed")
             : lastLayerCenterMarks[info.slot] === "top"
-            ? lastLayerCenterColors[color].affected
+            ? lastLayerVariantColor(color, "top")
             : faceColors[color];
         }
       }
       return faceColors[color];
+    }
+
+    function applyFaceColors(colors, refresh) {
+      if (!colors || colors.length < faceColors.length) {
+        return;
+      }
+      for (var i = 0; i < faceColors.length; i++) {
+        var value = colors[i];
+        if (typeof value === "string") {
+          value = parseInt(value.replace("#", ""), 16);
+        }
+        if (Number.isFinite(value)) {
+          faceColors[i] = value;
+        }
+      }
+      if (refresh) {
+        refreshAllStickerDisplays();
+      }
+    }
+
+    function isLastLayerCenterColor(color) {
+      return color >= 5 && color <= 7;
+    }
+
+    function lastLayerVariantColor(color, role) {
+      return mixHex(faceColors[color], role === "fixed" ? 0x000000 : 0xffffff, role === "fixed" ? 0.22 : 0.32);
+    }
+
+    function mixHex(base, target, amount) {
+      var br = (base >> 16) & 255;
+      var bg = (base >> 8) & 255;
+      var bb = base & 255;
+      var tr = (target >> 16) & 255;
+      var tg = (target >> 8) & 255;
+      var tb = target & 255;
+      var r = Math.round(br + (tr - br) * amount);
+      var g = Math.round(bg + (tg - bg) * amount);
+      var b = Math.round(bb + (tb - bb) * amount);
+      return (r << 16) | (g << 8) | b;
     }
 
     function setStickerDisplayColor(stickerIndex, color) {
@@ -268,7 +303,7 @@
       }
       setStickerColor(stickerIndex, color);
       var info = centerInfo(sticker[3]);
-      if (lastLayerMode && info && info.orbit === "rl" && lastLayerCenterColors[color]) {
+      if (lastLayerMode && info && info.orbit === "rl" && isLastLayerCenterColor(color)) {
         lastLayerCenterMarks[info.slot] = role;
         refreshStickerDisplayByFacelet(sticker[3]);
       }
@@ -1203,6 +1238,7 @@
       render();
     }
 
+    applyFaceColors(options.faceColors, false);
     initPuzzle();
     setupCamera();
     renderer = new THREE.CanvasRenderer();
@@ -1255,19 +1291,7 @@
         selectedColor = color;
       },
       setFaceColors: function(colors) {
-        if (!colors || colors.length < faceColors.length) {
-          return;
-        }
-        for (var i = 0; i < faceColors.length; i++) {
-          var value = colors[i];
-          if (typeof value === "string") {
-            value = parseInt(value.replace("#", ""), 16);
-          }
-          if (Number.isFinite(value)) {
-            faceColors[i] = value;
-          }
-        }
-        refreshAllStickerDisplays();
+        applyFaceColors(colors, true);
       },
       setLastLayerMode: function(enabled) {
         lastLayerMode = !!enabled;

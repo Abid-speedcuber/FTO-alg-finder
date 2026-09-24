@@ -24,6 +24,7 @@ declare global {
       container: HTMLElement,
       options?: {
         keyboard?: boolean;
+        faceColors?: string[];
         onFacelets?: (facelets: number[]) => void;
         onCenterTargets?: (targets: CenterTargets) => void;
       },
@@ -81,6 +82,7 @@ function FtoViewer({
     }
 
     const viewer = window.createFtoViewer(hostRef.current, {
+      faceColors,
       onFacelets,
       onCenterTargets,
     });

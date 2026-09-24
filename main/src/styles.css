@@ -398,6 +398,64 @@ main {
   padding: 0;
 }
 
+.settings-swatch-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-color-swatch {
+  width: 38px;
+  height: 34px;
+  min-height: 34px;
+  border: 1px solid #c7cdd4;
+  border-radius: 7px;
+  padding: 0;
+  background: var(--swatch);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.settings-color-swatch.active {
+  border-color: #2478ac;
+  box-shadow: 0 0 0 2px #cde4f1;
+}
+
+.simple-color-picker {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #d7dce2;
+  border-radius: 7px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.simple-color-preview {
+  grid-row: span 4;
+  width: 52px;
+  height: 52px;
+  border: 1px solid #c7cdd4;
+  border-radius: 7px;
+  background: var(--swatch);
+}
+
+.simple-color-picker label {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #59636e;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.simple-color-picker input[type="text"],
+.simple-color-picker input:not([type]) {
+  min-height: 30px;
+}
+
 .modal-toggle {
   border: 1px solid #d7dce2;
   border-radius: 7px;
@@ -860,6 +918,9 @@ h2 {
 
 .viewer-controls .swatch {
   position: relative;
+  width: 42px;
+  height: 36px;
+  min-height: 36px;
   min-width: 36px;
   padding: 0;
   background:
@@ -905,6 +966,22 @@ h2 {
 
 .terminal-progress {
   color: #9bbbe8;
+}
+
+.terminal-progress-track {
+  width: min(360px, 100%);
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #2b333d;
+  overflow: hidden;
+}
+
+.terminal-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #7fb4f0;
+  transition: width 160ms ease;
 }
 
 .terminal-search {

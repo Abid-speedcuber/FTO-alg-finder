@@ -530,12 +530,17 @@ fn load_solver_pruning(
 
     let progress_app = app.clone();
     let progress = move |event: pruning::PruningProgress| {
+        let percent = if event.total == 0 {
+            0.0
+        } else {
+            (event.reached as f64 * 100.0) / event.total as f64
+        };
         emit_line(
             &progress_app,
             "progress",
             &format!(
-                "  {}: expanded {}, reached {}, depth {}",
-                event.name, event.expanded, event.reached, event.depth
+                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
+                event.name, event.reached, event.total, event.depth, event.expanded
             ),
         );
     };

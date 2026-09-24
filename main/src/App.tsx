@@ -88,6 +88,35 @@ function newInstanceId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function pruningProgressPercent(text: string): number {
+  const match = text.match(/\((\d+(?:\.\d+)?)%\)/);
+  if (!match) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Number(match[1])));
+}
+
+function normalizeHexColor(value: string): string | null {
+  const trimmed = value.trim();
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(trimmed);
+  return match ? `#${match[1].toLowerCase()}` : null;
+}
+
+function hexToRgb(value: string): { r: number; g: number; b: number } {
+  const normalized = normalizeHexColor(value) ?? "#000000";
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b]
+    .map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
 function bootstrapInstances(): { instances: Instance[]; activeId: string; firstRun: boolean } {
   try {
     const raw = localStorage.getItem(INSTANCES_KEY);
@@ -238,6 +267,7 @@ function App() {
     }
     return defaultFaceColors;
   });
+  const [colorEditorIndex, setColorEditorIndex] = useState<number | null>(null);
   const [cacheStatus, setCacheStatus] = useState<PruningCacheStatus>({ hasTables: false, hasPruning: false });
   const [pruningTables, setPruningTables] = useState<PruningTableInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -308,8 +338,14 @@ function App() {
     const currentDepth = [...terminal]
       .reverse()
       .find((line) => line.kind === "search" && line.text.startsWith("searching depth"));
+    const currentProgress = [...terminal]
+      .reverse()
+      .find((line) => line.kind === "progress" && line.text.startsWith("pruning progress:"));
     if (!currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
       lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
+    }
+    if (!currentDepth && currentProgress) {
+      lines.push(currentProgress);
     }
     if (currentDepth) {
       lines.push(currentDepth);
@@ -566,12 +602,23 @@ function App() {
   }
 
   function updateFaceColor(index: number, color: string) {
-    setFaceColors((colors) => colors.map((current, i) => (i === index ? color : current)));
+    const normalized = normalizeHexColor(color);
+    if (!normalized) {
+      return;
+    }
+    setFaceColors((colors) => colors.map((current, i) => (i === index ? normalized : current)));
+  }
+
+  function updateFaceRgb(index: number, channel: "r" | "g" | "b", value: number) {
+    const current = hexToRgb(faceColors[index]);
+    current[channel] = value;
+    updateFaceColor(index, rgbToHex(current.r, current.g, current.b));
   }
 
   const contextInstance = contextMenu
     ? instances.find((instance) => instance.id === contextMenu.id)
     : undefined;
+  const editedColor = colorEditorIndex == null ? null : hexToRgb(faceColors[colorEditorIndex]);
 
   return (
     <main>
@@ -663,18 +710,44 @@ function App() {
             </label>
             <div className="settings-group">
               <h3>Face colors</h3>
-              <div className="color-settings-grid">
+              <div className="settings-swatch-grid">
                 {faceColors.map((color, index) => (
-                  <label key={index} className="color-setting">
-                    <span>Face {index + 1}</span>
-                    <input
-                      type="color"
-                      value={color}
-                      onChange={(event) => updateFaceColor(index, event.target.value)}
-                    />
-                  </label>
+                  <button
+                    key={index}
+                    type="button"
+                    className={colorEditorIndex === index ? "settings-color-swatch active" : "settings-color-swatch"}
+                    style={{ ["--swatch" as string]: color }}
+                    aria-label={`Face ${index + 1} color`}
+                    title={`Face ${index + 1}`}
+                    onClick={() => setColorEditorIndex(index)}
+                  />
                 ))}
               </div>
+              {colorEditorIndex != null && editedColor ? (
+                <div className="simple-color-picker">
+                  <div className="simple-color-preview" style={{ ["--swatch" as string]: faceColors[colorEditorIndex] }} />
+                  <label>
+                    Hex
+                    <input
+                      value={faceColors[colorEditorIndex]}
+                      onChange={(event) => updateFaceColor(colorEditorIndex, event.target.value)}
+                      spellCheck={false}
+                    />
+                  </label>
+                  {(["r", "g", "b"] as const).map((channel) => (
+                    <label key={channel}>
+                      {channel.toUpperCase()}
+                      <input
+                        type="range"
+                        min="0"
+                        max="255"
+                        value={editedColor[channel]}
+                        onChange={(event) => updateFaceRgb(colorEditorIndex, channel, Number(event.target.value))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <button
               className="secondary"
@@ -821,6 +894,14 @@ function App() {
                   displayTerminal.map((line) => (
                     <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
                       {line.text}
+                      {line.kind === "progress" ? (
+                        <div className="terminal-progress-track">
+                          <div
+                            className="terminal-progress-fill"
+                            style={{ width: `${pruningProgressPercent(line.text)}%` }}
+                          />
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 )}

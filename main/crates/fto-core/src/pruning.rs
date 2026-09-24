@@ -22,6 +22,7 @@ pub struct PruningProgress {
     pub depth: usize,
     pub expanded: usize,
     pub reached: usize,
+    pub total: usize,
 }
 
 pub type PruningReporter<'a> = dyn Fn(PruningProgress) + Send + Sync + 'a;
@@ -694,6 +695,7 @@ fn build_pruning_table_from_index(
                         depth: depth.into(),
                         expanded,
                         reached,
+                        total: size,
                     });
                 }
                 next_progress = next_progress.saturating_add(progress_interval);
