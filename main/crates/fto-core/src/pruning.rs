@@ -2,7 +2,8 @@ use std::{
     fs::File,
     io::{self, BufReader, BufWriter, Read, Write},
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    thread,
 };
 
 use crate::{
@@ -130,11 +131,22 @@ impl SolverPruning {
         progress_interval: usize,
         moves: &[Move],
     ) -> Result<Self, String> {
+        Self::load_or_build_with_moves_threaded(tables, out_dir, progress_interval, moves, 1)
+    }
+
+    pub fn load_or_build_with_moves_threaded(
+        tables: &TransitionTables,
+        out_dir: &Path,
+        progress_interval: usize,
+        moves: &[Move],
+        threads: usize,
+    ) -> Result<Self, String> {
         Self::load_or_build_with_moves_reporting(
             tables,
             out_dir,
             progress_interval,
             moves,
+            threads,
             None,
             None,
         )
@@ -145,6 +157,7 @@ impl SolverPruning {
         out_dir: &Path,
         progress_interval: usize,
         moves: &[Move],
+        threads: usize,
         cancel: Option<&AtomicBool>,
         report: Option<&PruningReporter<'_>>,
     ) -> Result<Self, String> {
@@ -171,6 +184,7 @@ impl SolverPruning {
             progress_interval,
             edge_path,
             moves,
+            threads,
             cancel,
             report,
         )?;
@@ -180,6 +194,7 @@ impl SolverPruning {
             progress_interval,
             corner_path,
             moves,
+            threads,
             cancel,
             report,
         )?;
@@ -207,12 +222,23 @@ impl SolverPruning {
         progress_interval: usize,
         moves: &[Move],
     ) -> Result<Self, String> {
+        Self::build_from_coord_with_moves_threaded(root, tables, progress_interval, moves, 1)
+    }
+
+    pub fn build_from_coord_with_moves_threaded(
+        root: FtoCoord,
+        tables: &TransitionTables,
+        progress_interval: usize,
+        moves: &[Move],
+        threads: usize,
+    ) -> Result<Self, String> {
         let edge3_uf3 = build_solver_table_from_root(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             root,
             tables,
             progress_interval,
             moves,
+            threads,
         )?;
         let corner_uf3 = build_solver_table_from_root(
             CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
@@ -220,6 +246,7 @@ impl SolverPruning {
             tables,
             progress_interval,
             moves,
+            threads,
         )?;
         Ok(Self {
             edge3_uf3,
@@ -270,6 +297,7 @@ fn load_or_build_solver_table(
     progress_interval: usize,
     path: impl AsRef<Path>,
     moves: &[Move],
+    threads: usize,
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<Vec<u8>, String> {
@@ -282,12 +310,13 @@ fn load_or_build_solver_table(
     match read_table(path, spec.size().unwrap_or(0)) {
         Ok(table) => Ok(table),
         Err(_) => {
-            let (_, table) = build_pruning_table_with_moves(
+            let (_, table) = build_pruning_table_with_moves_threaded(
                 &spec,
                 tables,
                 usize::MAX,
                 progress_interval,
                 moves,
+                threads,
                 cancel,
                 report,
             )?;
@@ -303,15 +332,17 @@ fn build_solver_table_from_root(
     tables: &TransitionTables,
     progress_interval: usize,
     moves: &[Move],
+    threads: usize,
 ) -> Result<Vec<u8>, String> {
     let root_index = spec.index_of_coord(root);
-    let (_, table) = build_pruning_table_from_index(
+    let (_, table) = build_pruning_table_from_index_threaded(
         &spec,
         tables,
         usize::MAX,
         progress_interval,
         root_index,
         moves,
+        threads,
         None,
         None,
     )?;
@@ -634,7 +665,76 @@ fn build_pruning_table_with_moves(
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
     let solved = spec.solved_index();
-    build_pruning_table_from_index(spec, tables, max_entries, progress_interval, solved, moves, cancel, report)
+    build_pruning_table_from_index(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        solved,
+        moves,
+        cancel,
+        report,
+    )
+}
+
+fn build_pruning_table_with_moves_threaded(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    moves: &[Move],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
+) -> Result<(PruningStats, Vec<u8>), String> {
+    let solved = spec.solved_index();
+    build_pruning_table_from_index_threaded(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        solved,
+        moves,
+        threads,
+        cancel,
+        report,
+    )
+}
+
+fn build_pruning_table_from_index_threaded(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    root_index: usize,
+    moves: &[Move],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
+) -> Result<(PruningStats, Vec<u8>), String> {
+    if threads <= 1 {
+        return build_pruning_table_from_index(
+            spec,
+            tables,
+            max_entries,
+            progress_interval,
+            root_index,
+            moves,
+            cancel,
+            report,
+        );
+    }
+    build_pruning_table_from_index_parallel(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        root_index,
+        moves,
+        threads,
+        cancel,
+        report,
+    )
 }
 
 fn build_pruning_table_from_index(
@@ -748,6 +848,184 @@ fn build_pruning_table_from_index(
         }
     }
 
+    let stats = PruningStats {
+        name: spec.name(),
+        table_entries: size,
+        table_bytes: size,
+        reached,
+        max_depth,
+        average_depth_milli: ((depth_sum * 1000) / reached as u64) as u32,
+        histogram,
+    };
+    Ok((stats, table))
+}
+
+fn build_pruning_table_from_index_parallel(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    root_index: usize,
+    moves: &[Move],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
+) -> Result<(PruningStats, Vec<u8>), String> {
+    let size = spec
+        .size()
+        .ok_or_else(|| format!("{} size overflows usize", spec.name()))?;
+    if size > max_entries {
+        return Err(format!(
+            "{} has {size} entries, above cap {max_entries}",
+            spec.name()
+        ));
+    }
+
+    let table = (0..size)
+        .map(|_| AtomicU8::new(UNVISITED))
+        .collect::<Vec<_>>();
+    table[root_index].store(0, Ordering::Relaxed);
+
+    let worker_count = threads.min(size).max(1);
+    let chunk_size = size.div_ceil(worker_count);
+    let mut reached = 1_usize;
+    let mut histogram = vec![1_usize];
+    let mut depth_sum = 0_u64;
+    let mut max_depth = 0_u8;
+    let mut expanded = 0_usize;
+    let mut next_progress = progress_interval;
+    let mut empty_depths = 0_usize;
+
+    for depth in 0..u8::MAX {
+        if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+            return Err(CANCELLED.to_owned());
+        }
+
+        let next_depth = depth + 1;
+        let mut depth_expanded = 0_usize;
+        let mut next_frontier = 0_usize;
+        let mut depth_sum_delta = 0_u64;
+
+        thread::scope(|scope| -> Result<(), String> {
+            let mut handles = Vec::with_capacity(worker_count);
+            for worker in 0..worker_count {
+                let start = worker * chunk_size;
+                let end = ((worker + 1) * chunk_size).min(size);
+                if start >= end {
+                    continue;
+                }
+                let table = &table;
+                handles.push(scope.spawn(move || {
+                    let mut values = vec![0; spec.components.len()];
+                    let mut next_values = vec![0; spec.components.len()];
+                    let mut local_expanded = 0_usize;
+                    let mut local_reached = 0_usize;
+                    let mut local_depth_sum = 0_u64;
+                    for idx in start..end {
+                        if table[idx].load(Ordering::Relaxed) != depth {
+                            continue;
+                        }
+                        local_expanded += 1;
+                        if (local_expanded & 8191) == 0
+                            && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+                        {
+                            return Err(CANCELLED.to_owned());
+                        }
+                        for &mv in moves {
+                            let next =
+                                spec.next_index(idx, mv, tables, &mut values, &mut next_values);
+                            if table[next]
+                                .compare_exchange(
+                                    UNVISITED,
+                                    next_depth,
+                                    Ordering::Relaxed,
+                                    Ordering::Relaxed,
+                                )
+                                .is_ok()
+                            {
+                                local_reached += 1;
+                                local_depth_sum += u64::from(next_depth);
+                            }
+                        }
+                    }
+                    Ok((local_expanded, local_reached, local_depth_sum))
+                }));
+            }
+
+            for handle in handles {
+                let (local_expanded, local_reached, local_depth_sum) = handle
+                    .join()
+                    .map_err(|_| "parallel pruning worker panicked".to_owned())??;
+                depth_expanded += local_expanded;
+                next_frontier += local_reached;
+                depth_sum_delta += local_depth_sum;
+            }
+            Ok(())
+        })?;
+
+        expanded += depth_expanded;
+        reached += next_frontier;
+        depth_sum += depth_sum_delta;
+        if next_frontier > 0 {
+            max_depth = max_depth.max(next_depth);
+            let hist_idx = usize::from(next_depth);
+            if histogram.len() <= hist_idx {
+                histogram.resize(hist_idx + 1, 0);
+            }
+            histogram[hist_idx] = next_frontier;
+        }
+
+        if progress_interval > 0 && expanded >= next_progress {
+            eprintln!(
+                "  {}: expanded {}, reached {}, depth {}",
+                spec.name(),
+                expanded,
+                reached,
+                depth
+            );
+            if let Some(report) = report {
+                report(PruningProgress {
+                    name: spec.name(),
+                    depth: depth.into(),
+                    expanded,
+                    reached,
+                    total: size,
+                });
+            }
+            next_progress = expanded
+                .saturating_add(progress_interval)
+                .max(next_progress.saturating_add(progress_interval));
+        }
+
+        if progress_interval > 0 {
+            eprintln!(
+                "  {}: finished depth {}, new {}, reached {}",
+                spec.name(),
+                depth,
+                next_frontier,
+                reached
+            );
+        }
+        if next_frontier == 0 {
+            empty_depths += 1;
+            if empty_depths >= 2 {
+                if progress_interval > 0 {
+                    eprintln!(
+                        "  {}: no new states for two consecutive depths, done",
+                        spec.name()
+                    );
+                }
+                break;
+            }
+        } else {
+            empty_depths = 0;
+        }
+    }
+
+    let table = table
+        .into_iter()
+        .map(|value| value.into_inner())
+        .collect::<Vec<_>>();
     let stats = PruningStats {
         name: spec.name(),
         table_entries: size,

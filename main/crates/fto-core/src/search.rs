@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread,
@@ -61,6 +61,24 @@ impl Default for SearchConfig {
 pub struct SearchResult {
     pub solutions: Vec<Vec<Move>>,
     pub nodes: u64,
+}
+
+#[derive(Clone)]
+struct ParallelSearchRoot {
+    path: Vec<Move>,
+    state: SearchState,
+    depth_left: u8,
+    last_move: Option<Move>,
+}
+
+#[derive(Clone)]
+struct ParallelLastLayerRoot {
+    free_prefix: Option<Move>,
+    path: Vec<Move>,
+    cubie: FtoCubie,
+    state: SearchState,
+    depth_left: u8,
+    last_move: Option<Move>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -617,38 +635,33 @@ fn solve_last_layer_impl(
             continue;
         }
 
-        let child_depth = depth - 1;
-        let mut roots = Vec::new();
+        let split_ply = parallel_split_ply(depth, threads);
+        let mut collector = LastLayerRootCollector {
+            tables,
+            pruning,
+            moves,
+            commute,
+            config,
+            split_ply,
+            roots: Vec::new(),
+            nodes: 0,
+        };
         for (prefix, start_cubie, start_state, last_move) in
             last_layer_start_states(cubie, state, tables, &moves)
         {
-            for &mv in &config.allowed_moves {
-                if is_u_turn(mv) {
-                    continue;
-                }
-                if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
-                    continue;
-                }
-                let pruning_child = start_state.apply_pruning(tables, mv);
-                let pruning_value = adjusted_pruning_value(
-                    pruning
-                        .map(|pdb| {
-                            pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx)
-                        })
-                        .unwrap_or(0),
-                    true,
-                );
-                if pruning_value > child_depth {
-                    continue;
-                }
-                roots.push((
-                    prefix,
-                    mv,
-                    start_cubie.compose(&moves[mv.idx()]),
-                    start_state.apply_with_pruning_child(tables, mv, pruning_child),
-                ));
-            }
+            let mut path = Vec::with_capacity(depth as usize);
+            collector.collect(
+                prefix,
+                start_cubie,
+                start_state,
+                depth,
+                last_move,
+                &mut path,
+                0,
+                false,
+            );
         }
+        let roots = collector.roots;
 
         if roots.is_empty() {
             total.nodes += 1;
@@ -656,22 +669,31 @@ fn solve_last_layer_impl(
         }
 
         let worker_count = threads.min(roots.len());
-        let chunk_size = roots.len().div_ceil(worker_count);
+        let next_root = AtomicUsize::new(0);
         let mut depth_result = SearchResult {
             solutions: Vec::new(),
-            nodes: 1,
+            nodes: collector.nodes,
         };
 
         thread::scope(|scope| {
             let mut handles = Vec::new();
-            for chunk in roots.chunks(chunk_size) {
+            for _ in 0..worker_count {
+                let roots = &roots;
+                let next_root = &next_root;
                 handles.push(scope.spawn(move || {
                     let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
-                    for &(prefix, mv, next_cubie, next_state) in chunk {
-                        ctx.free_prefix = prefix;
-                        ctx.path.push(mv);
-                        ctx.dfs(next_cubie, next_state, child_depth, Some(mv), true);
-                        ctx.path.pop();
+                    loop {
+                        if is_cancelled(config) {
+                            break;
+                        }
+                        let root_idx = next_root.fetch_add(1, Ordering::Relaxed);
+                        let Some(root) = roots.get(root_idx) else {
+                            break;
+                        };
+                        ctx.free_prefix = root.free_prefix;
+                        ctx.path.clear();
+                        ctx.path.extend_from_slice(&root.path);
+                        ctx.dfs(root.cubie, root.state, root.depth_left, root.last_move, true);
                         ctx.free_prefix = None;
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
@@ -790,56 +812,42 @@ fn solve_with_pruning_threads_impl(
             continue;
         }
 
-        let child_depth = depth - 1;
-        let mut roots = Vec::new();
+        let split_ply = parallel_split_ply(depth, threads);
+        let mut collector = SearchRootCollector {
+            tables,
+            pruning,
+            mini,
+            commute,
+            config,
+            split_ply,
+            roots: Vec::new(),
+            nodes: 0,
+        };
         for (prefix, start, last_move) in exact_start_states(root, tables, config.free_u_ends) {
-            for &mv in &config.allowed_moves {
-                if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
-                    continue;
-                }
-                let pruning_child = start.apply_pruning(tables, mv);
-                let pruning_value = adjusted_pruning_value(
-                    pruning
-                        .map(|pdb| {
-                            pdb.heuristic(pruning_child.edge3_uf3_idx, pruning_child.corner_uf3_idx)
-                        })
-                        .unwrap_or(0),
-                    config.free_u_ends,
-                );
-                if pruning_value > child_depth {
-                    continue;
-                }
-                let state =
-                    start.apply_with_pruning_child_and_mini(tables, mv, pruning_child, mini);
-                let mini_pruning_value = mini
-                    .map(|mini| {
-                        adjusted_pruning_value(
-                            mini.heuristic(&state.mini_indices),
-                            config.free_u_ends,
-                        )
-                    })
-                    .unwrap_or(0);
-                if mini_pruning_value > child_depth {
-                    continue;
-                }
-                roots.push((prefix, mv, state));
+            let mut path = Vec::with_capacity(depth as usize + usize::from(prefix.is_some()));
+            if let Some(prefix) = prefix {
+                path.push(prefix);
             }
+            collector.collect(start, depth, last_move, &mut path, 0, false);
         }
+        let roots = collector.roots;
         if roots.is_empty() {
             total.nodes += 1;
             continue;
         }
 
         let worker_count = threads.min(roots.len());
-        let chunk_size = roots.len().div_ceil(worker_count);
+        let next_root = AtomicUsize::new(0);
         let mut depth_result = SearchResult {
             solutions: Vec::new(),
-            nodes: 1,
+            nodes: collector.nodes,
         };
 
         thread::scope(|scope| {
             let mut handles = Vec::new();
-            for chunk in roots.chunks(chunk_size) {
+            for _ in 0..worker_count {
+                let roots = &roots;
+                let next_root = &next_root;
                 handles.push(scope.spawn(move || {
                     let mut ctx = SearchContext {
                         tables,
@@ -854,19 +862,17 @@ fn solve_with_pruning_threads_impl(
                         path: Vec::with_capacity(config.max_depth as usize),
                         nodes: 0,
                     };
-                    for &(prefix, mv, state) in chunk {
+                    loop {
                         if is_cancelled(config) {
                             break;
                         }
-                        if let Some(prefix) = prefix {
-                            ctx.path.push(prefix);
-                        }
-                        ctx.path.push(mv);
-                        ctx.dfs(state, child_depth, Some(mv), true);
-                        ctx.path.pop();
-                        if prefix.is_some() {
-                            ctx.path.pop();
-                        }
+                        let root_idx = next_root.fetch_add(1, Ordering::Relaxed);
+                        let Some(root) = roots.get(root_idx) else {
+                            break;
+                        };
+                        ctx.path.clear();
+                        ctx.path.extend_from_slice(&root.path);
+                        ctx.dfs(root.state, root.depth_left, root.last_move, true);
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
                         }
@@ -909,11 +915,12 @@ pub fn solve_bidirectional(
     let allowed_moves = config.allowed_moves.as_slice();
     let start_pruning = if config.use_start_pruning {
         eprintln!("building temporary start-centered bidirectional pruning tables...");
-        Some(SolverPruning::build_from_coord_with_moves(
+        Some(SolverPruning::build_from_coord_with_moves_threaded(
             coord,
             tables,
             config.progress_interval,
             allowed_moves,
+            config.threads,
         )?)
     } else {
         None
@@ -1421,6 +1428,211 @@ fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
         value.saturating_sub(1)
     } else {
         value
+    }
+}
+
+fn parallel_split_ply(depth: u8, threads: usize) -> u8 {
+    if depth <= 1 {
+        return 1;
+    }
+    if threads >= 48 {
+        depth.min(5)
+    } else if threads >= 16 {
+        depth.min(4)
+    } else if threads >= 4 {
+        depth.min(3)
+    } else {
+        depth.min(2)
+    }
+}
+
+struct SearchRootCollector<'a> {
+    tables: &'a TransitionTables,
+    pruning: Option<&'a SolverPruning>,
+    mini: Option<&'a MiniPruning>,
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    config: &'a SearchConfig,
+    split_ply: u8,
+    roots: Vec<ParallelSearchRoot>,
+    nodes: u64,
+}
+
+impl SearchRootCollector<'_> {
+    fn collect(
+        &mut self,
+        state: SearchState,
+        depth_left: u8,
+        last_move: Option<Move>,
+        path: &mut Vec<Move>,
+        ply: u8,
+        pruning_checked: bool,
+    ) {
+        if is_cancelled(self.config) {
+            return;
+        }
+        if !pruning_checked && self.pruning_value(state) > depth_left {
+            return;
+        }
+        if depth_left == 0 || ply >= self.split_ply {
+            self.roots.push(ParallelSearchRoot {
+                path: path.clone(),
+                state,
+                depth_left,
+                last_move,
+            });
+            return;
+        }
+
+        self.nodes += 1;
+        let child_depth = depth_left - 1;
+        for &mv in &self.config.allowed_moves {
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let pruning_child = state.apply_pruning(self.tables, mv);
+            let pruning_value = self.pruning_value_for_child(pruning_child);
+            if pruning_value > child_depth {
+                continue;
+            }
+            let next = state.apply_with_pruning_child_and_mini(
+                self.tables,
+                mv,
+                pruning_child,
+                self.mini,
+            );
+            let mini_pruning_value = self
+                .mini
+                .map(|mini| {
+                    adjusted_pruning_value(
+                        mini.heuristic(&next.mini_indices),
+                        self.config.free_u_ends,
+                    )
+                })
+                .unwrap_or(0);
+            if mini_pruning_value > child_depth {
+                continue;
+            }
+            path.push(mv);
+            self.collect(next, child_depth, Some(mv), path, ply + 1, true);
+            path.pop();
+        }
+    }
+
+    fn pruning_value(&self, state: SearchState) -> u8 {
+        let base = adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .unwrap_or(0),
+            self.config.free_u_ends,
+        );
+        let mini = self
+            .mini
+            .map(|mini| {
+                adjusted_pruning_value(
+                    mini.heuristic(&state.mini_indices),
+                    self.config.free_u_ends,
+                )
+            })
+            .unwrap_or(0);
+        base.max(mini)
+    }
+
+    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+        adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+                .unwrap_or(0),
+            self.config.free_u_ends,
+        )
+    }
+}
+
+struct LastLayerRootCollector<'a> {
+    tables: &'a TransitionTables,
+    pruning: Option<&'a SolverPruning>,
+    moves: [FtoCubie; MOVE_COUNT],
+    commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
+    config: &'a SearchConfig,
+    split_ply: u8,
+    roots: Vec<ParallelLastLayerRoot>,
+    nodes: u64,
+}
+
+impl LastLayerRootCollector<'_> {
+    fn collect(
+        &mut self,
+        free_prefix: Option<Move>,
+        cubie: FtoCubie,
+        state: SearchState,
+        depth_left: u8,
+        last_move: Option<Move>,
+        path: &mut Vec<Move>,
+        ply: u8,
+        pruning_checked: bool,
+    ) {
+        if is_cancelled(self.config) {
+            return;
+        }
+        if !pruning_checked && self.pruning_value(state) > depth_left {
+            return;
+        }
+        if depth_left == 0 || ply >= self.split_ply {
+            self.roots.push(ParallelLastLayerRoot {
+                free_prefix,
+                path: path.clone(),
+                cubie,
+                state,
+                depth_left,
+                last_move,
+            });
+            return;
+        }
+
+        self.nodes += 1;
+        let child_depth = depth_left - 1;
+        for &mv in &self.config.allowed_moves {
+            if ply == 0 && is_u_turn(mv) {
+                continue;
+            }
+            if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
+                continue;
+            }
+            let pruning_child = state.apply_pruning(self.tables, mv);
+            let pruning_value = self.pruning_value_for_child(pruning_child);
+            if pruning_value > child_depth {
+                continue;
+            }
+            path.push(mv);
+            self.collect(
+                free_prefix,
+                cubie.compose(&self.moves[mv.idx()]),
+                state.apply_with_pruning_child(self.tables, mv, pruning_child),
+                child_depth,
+                Some(mv),
+                path,
+                ply + 1,
+                true,
+            );
+            path.pop();
+        }
+    }
+
+    fn pruning_value(&self, state: SearchState) -> u8 {
+        adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .unwrap_or(0),
+            true,
+        )
+    }
+
+    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+        adjusted_pruning_value(
+            self.pruning
+                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+                .unwrap_or(0),
+            true,
+        )
     }
 }
 

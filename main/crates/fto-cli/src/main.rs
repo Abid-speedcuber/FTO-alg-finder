@@ -360,6 +360,7 @@ fn run() -> Result<(), String> {
             &allowed_moves,
             &instance_moves,
             restricted_pruning,
+            threads,
         )?)
     } else {
         None
@@ -827,9 +828,16 @@ fn load_solver_pruning(
     allowed_moves: &[Move],
     instance_moves: &[Move],
     restricted_pruning: bool,
+    threads: usize,
 ) -> Result<SolverPruning, String> {
     let target = select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
-    let pruning = SolverPruning::load_or_build_with_moves(tables, out_dir, progress_interval, &target)?;
+    let pruning = SolverPruning::load_or_build_with_moves_threaded(
+        tables,
+        out_dir,
+        progress_interval,
+        &target,
+        threads,
+    )?;
     eprintln!(
         "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({:.1} MiB)",
         target

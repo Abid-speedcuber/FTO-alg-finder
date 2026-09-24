@@ -436,6 +436,7 @@ fn run_in_process_solve(
         &allowed_moves,
         &instance_moves,
         request.restricted_pruning,
+        request.threads.max(1),
         cancel,
         app,
     )?);
@@ -514,6 +515,7 @@ fn load_solver_pruning(
     allowed_moves: &[Move],
     instance_moves: &[Move],
     restricted_pruning: bool,
+    threads: usize,
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
 ) -> Result<Arc<SolverPruning>, String> {
@@ -550,6 +552,7 @@ fn load_solver_pruning(
             out_dir,
             progress_interval,
             &target,
+            threads,
             Some(cancel),
             Some(&progress),
         )
