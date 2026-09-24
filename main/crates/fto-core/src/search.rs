@@ -1,5 +1,4 @@
 use crate::{
-    coord::EdgeCoord,
     moves::{move_cubies, Move, MOVE_COUNT},
     pruning::SolverPruning,
     tables::TransitionTables,
@@ -121,10 +120,10 @@ impl MiniPruning {
             .unwrap_or(0)
     }
 
-    fn indices_of_state(&self, state: SearchState) -> [usize; MAX_MINI_TABLES] {
+    fn indices_of_coord(&self, coord: FtoCoord) -> [usize; MAX_MINI_TABLES] {
         let mut indices = [0_usize; MAX_MINI_TABLES];
         for (idx, table) in self.tables.iter().enumerate() {
-            indices[idx] = table.spec.index_of_state(state);
+            indices[idx] = table.spec.index_of_coord(coord);
         }
         indices
     }
@@ -230,18 +229,18 @@ impl MiniSpec {
     }
 
     fn solved_index(self) -> usize {
-        self.index_of_state(SearchState::from_coord(FtoCoord::solved()))
+        self.index_of_coord(FtoCoord::solved())
     }
 
-    fn index_of_state(self, state: SearchState) -> usize {
+    fn index_of_coord(self, coord: FtoCoord) -> usize {
         match self.kind {
-            MiniKind::Corner => usize::from(state.corner),
-            MiniKind::EdgeChoice(0) => usize::from(state.edge.e0),
-            MiniKind::EdgeChoice(1) => usize::from(state.edge.e1),
-            MiniKind::EdgeChoice(2) => usize::from(state.edge.e2),
-            MiniKind::EdgeChoice(_) => usize::from(state.edge.e3),
-            MiniKind::Edge3 => usize::from(state.edge3),
-            MiniKind::Uf3 => usize::from(state.uf3),
+            MiniKind::Corner => usize::from(coord.corner),
+            MiniKind::EdgeChoice(0) => usize::from(coord.edge.e0),
+            MiniKind::EdgeChoice(1) => usize::from(coord.edge.e1),
+            MiniKind::EdgeChoice(2) => usize::from(coord.edge.e2),
+            MiniKind::EdgeChoice(_) => usize::from(coord.edge.e3),
+            MiniKind::Edge3 => usize::from(coord.edge3),
+            MiniKind::Uf3 => usize::from(coord.uf_center3),
         }
     }
 
@@ -748,7 +747,7 @@ fn solve_with_pruning_threads_impl(
         return solve_with_pruning_single(coord, tables, pruning, mini, config, report);
     }
 
-    let root = SearchState::from_coord(coord).with_mini_indices(mini);
+    let root = SearchState::from_coord(coord).with_mini_indices(coord, mini);
     let solved = SearchState::from_coord(FtoCoord::solved());
     let solved_u = SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord());
     let solved_up = SearchState::from_coord(FtoCubie::solved().apply(Move::Up).coord());
@@ -1127,7 +1126,7 @@ fn solve_with_pruning_single(
         path: Vec::with_capacity(config.max_depth as usize),
         nodes: 0,
     };
-    let state = SearchState::from_coord(coord).with_mini_indices(mini);
+    let state = SearchState::from_coord(coord).with_mini_indices(coord, mini);
 
     for depth in config.min_depth..=config.max_depth {
         if is_cancelled(config) {
@@ -1942,7 +1941,8 @@ fn move_commutation() -> [[bool; MOVE_COUNT]; MOVE_COUNT] {
 #[derive(Clone, Copy, Debug)]
 struct SearchState {
     corner: u16,
-    edge: EdgeCoord,
+    edge0: u16,
+    edge1: u16,
     edge3: u16,
     uf_center: u32,
     uf3: u16,
@@ -1955,7 +1955,8 @@ struct SearchState {
 impl PartialEq for SearchState {
     fn eq(&self, other: &Self) -> bool {
         self.corner == other.corner
-            && self.edge == other.edge
+            && self.edge0 == other.edge0
+            && self.edge1 == other.edge1
             && self.edge3 == other.edge3
             && self.uf_center == other.uf_center
             && self.uf3 == other.uf3
@@ -1968,7 +1969,8 @@ impl Eq for SearchState {}
 impl Hash for SearchState {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.corner.hash(state);
-        self.edge.hash(state);
+        self.edge0.hash(state);
+        self.edge1.hash(state);
         self.edge3.hash(state);
         self.uf_center.hash(state);
         self.uf3.hash(state);
@@ -1980,7 +1982,8 @@ impl SearchState {
     fn from_coord(coord: FtoCoord) -> Self {
         Self {
             corner: coord.corner,
-            edge: coord.edge,
+            edge0: coord.edge.e0,
+            edge1: coord.edge.e1,
             edge3: coord.edge3,
             uf_center: coord.uf_center,
             uf3: coord.uf_center3,
@@ -1991,9 +1994,9 @@ impl SearchState {
         }
     }
 
-    fn with_mini_indices(mut self, mini: Option<&MiniPruning>) -> Self {
+    fn with_mini_indices(mut self, coord: FtoCoord, mini: Option<&MiniPruning>) -> Self {
         if let Some(mini) = mini {
-            self.mini_indices = mini.indices_of_state(self);
+            self.mini_indices = mini.indices_of_coord(coord);
         }
         self
     }
@@ -2019,12 +2022,8 @@ impl SearchState {
     ) -> Self {
         Self {
             corner: pruning_child.corner,
-            edge: EdgeCoord {
-                e0: tables.edge_choice_move(self.edge.e0, mv),
-                e1: tables.edge_choice_move(self.edge.e1, mv),
-                e2: tables.edge_choice_move(self.edge.e2, mv),
-                e3: tables.edge_choice_move(self.edge.e3, mv),
-            },
+            edge0: tables.edge_choice_move(self.edge0, mv),
+            edge1: tables.edge_choice_move(self.edge1, mv),
             edge3: pruning_child.edge3,
             uf_center: tables.uf_center_move(self.uf_center, mv),
             uf3: pruning_child.uf3,
@@ -2068,9 +2067,17 @@ pub const RAW_BRANCHING_FACTOR: usize = MOVE_COUNT;
 
 #[cfg(test)]
 mod tests {
-    use crate::{moves::Move, search::SearchConfig, tables::TransitionTables, FtoCubie};
+    use std::time::Instant;
 
-    use super::{format_solution, solve};
+    use crate::{
+        coord::EdgeCoord,
+        moves::Move,
+        search::{SearchConfig, SearchState},
+        tables::TransitionTables,
+        FtoCubie,
+    };
+
+    use super::{format_solution, solve, PruningChild, SolverPruning, MOVE_COUNT};
 
     #[test]
     #[ignore = "builds full center transition tables"]
@@ -2092,5 +2099,177 @@ mod tests {
         );
 
         assert_eq!(format_solution(&result.solutions[0]), "U' R'");
+    }
+
+    #[derive(Clone, Copy)]
+    struct FullEdgeState {
+        corner: u16,
+        edge: EdgeCoord,
+        edge3: u16,
+        uf_center: u32,
+        uf3: u16,
+        rl_center: u32,
+        edge3_uf3_idx: usize,
+        corner_uf3_idx: usize,
+    }
+
+    impl FullEdgeState {
+        fn from_state(state: SearchState, edge: EdgeCoord) -> Self {
+            Self {
+                corner: state.corner,
+                edge,
+                edge3: state.edge3,
+                uf_center: state.uf_center,
+                uf3: state.uf3,
+                rl_center: state.rl_center,
+                edge3_uf3_idx: state.edge3_uf3_idx,
+                corner_uf3_idx: state.corner_uf3_idx,
+            }
+        }
+
+        fn apply_pruning(self, tables: &TransitionTables, mv: Move) -> PruningChild {
+            let corner = tables.corner_move(self.corner, mv);
+            let edge3 = tables.edge3_move(self.edge3, mv);
+            let uf3 = tables.uf_center3_move(self.uf3, mv);
+            PruningChild {
+                corner,
+                edge3,
+                uf3,
+                edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
+                corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+            }
+        }
+
+        fn apply_with_pruning_child(
+            self,
+            tables: &TransitionTables,
+            mv: Move,
+            pruning_child: PruningChild,
+        ) -> Self {
+            Self {
+                corner: pruning_child.corner,
+                edge: EdgeCoord {
+                    e0: tables.edge_choice_move(self.edge.e0, mv),
+                    e1: tables.edge_choice_move(self.edge.e1, mv),
+                    e2: tables.edge_choice_move(self.edge.e2, mv),
+                    e3: tables.edge_choice_move(self.edge.e3, mv),
+                },
+                edge3: pruning_child.edge3,
+                uf_center: tables.uf_center_move(self.uf_center, mv),
+                uf3: pruning_child.uf3,
+                rl_center: tables.rl_center_move(self.rl_center, mv),
+                edge3_uf3_idx: pruning_child.edge3_uf3_idx,
+                corner_uf3_idx: pruning_child.corner_uf3_idx,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct LeanEdgeState {
+        corner: u16,
+        edge0: u16,
+        edge1: u16,
+        edge3: u16,
+        uf_center: u32,
+        uf3: u16,
+        rl_center: u32,
+        edge3_uf3_idx: usize,
+        corner_uf3_idx: usize,
+    }
+
+    impl LeanEdgeState {
+        fn from_state(state: SearchState) -> Self {
+            Self {
+                corner: state.corner,
+                edge0: state.edge0,
+                edge1: state.edge1,
+                edge3: state.edge3,
+                uf_center: state.uf_center,
+                uf3: state.uf3,
+                rl_center: state.rl_center,
+                edge3_uf3_idx: state.edge3_uf3_idx,
+                corner_uf3_idx: state.corner_uf3_idx,
+            }
+        }
+
+        fn apply_pruning(self, tables: &TransitionTables, mv: Move) -> PruningChild {
+            let corner = tables.corner_move(self.corner, mv);
+            let edge3 = tables.edge3_move(self.edge3, mv);
+            let uf3 = tables.uf_center3_move(self.uf3, mv);
+            PruningChild {
+                corner,
+                edge3,
+                uf3,
+                edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
+                corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+            }
+        }
+
+        fn apply_with_pruning_child(
+            self,
+            tables: &TransitionTables,
+            mv: Move,
+            pruning_child: PruningChild,
+        ) -> Self {
+            Self {
+                corner: pruning_child.corner,
+                edge0: tables.edge_choice_move(self.edge0, mv),
+                edge1: tables.edge_choice_move(self.edge1, mv),
+                edge3: pruning_child.edge3,
+                uf_center: tables.uf_center_move(self.uf_center, mv),
+                uf3: pruning_child.uf3,
+                rl_center: tables.rl_center_move(self.rl_center, mv),
+                edge3_uf3_idx: pruning_child.edge3_uf3_idx,
+                corner_uf3_idx: pruning_child.corner_uf3_idx,
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "microbenchmarks current edge state against edge3+e0+e1"]
+    fn benchmark_lean_edge_state_transition() {
+        let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
+            .unwrap_or_else(|_| TransitionTables::build());
+        let coord = FtoCubie::solved()
+            .apply(Move::R)
+            .apply(Move::U)
+            .apply(Move::F)
+            .apply(Move::BR)
+            .coord();
+        let state = SearchState::from_coord(coord);
+        let mut full = FullEdgeState::from_state(state, coord.edge);
+        let mut lean = LeanEdgeState::from_state(state);
+        let moves = Move::ALL;
+        let iterations = 8_000_000_usize;
+
+        let start = Instant::now();
+        for i in 0..iterations {
+            let mv = moves[i % MOVE_COUNT];
+            let child = full.apply_pruning(&tables, mv);
+            full = full.apply_with_pruning_child(&tables, mv, child);
+            std::hint::black_box(full);
+            std::hint::black_box(full.edge3_uf3_idx ^ full.corner_uf3_idx);
+        }
+        let full_ns = start.elapsed().as_nanos();
+
+        let start = Instant::now();
+        for i in 0..iterations {
+            let mv = moves[i % MOVE_COUNT];
+            let child = lean.apply_pruning(&tables, mv);
+            lean = lean.apply_with_pruning_child(&tables, mv, child);
+            std::hint::black_box(lean);
+            std::hint::black_box(lean.edge3_uf3_idx ^ lean.corner_uf3_idx);
+        }
+        let lean_ns = start.elapsed().as_nanos();
+
+        println!("iterations: {iterations}");
+        println!("full_ns_per_transition: {:.2}", full_ns as f64 / iterations as f64);
+        println!("lean_ns_per_transition: {:.2}", lean_ns as f64 / iterations as f64);
+        println!(
+            "speedup: {:.2}%",
+            (1.0 - lean_ns as f64 / full_ns as f64) * 100.0
+        );
+        assert_ne!(full.edge3, u16::MAX);
+        assert_ne!(lean.edge3, u16::MAX);
     }
 }
