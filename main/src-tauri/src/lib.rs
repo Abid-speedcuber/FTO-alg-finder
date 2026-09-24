@@ -1,19 +1,21 @@
 use fto_core::{
     moves::Move,
+    partial::{self, PartialMask, PartialProblem},
+    pruning::{self, SolverPruning},
+    search::{self, MiniPruning, SearchConfig},
+    tables::TransitionTables,
     FtoCubie,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader, Write},
+    collections::HashSet,
+    fs,
     path::Path,
-    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc,
         Arc, Mutex,
     },
-    thread,
-    time::Duration,
+    time::Instant,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -107,18 +109,6 @@ struct CubieState {
     rl: [u8; 12],
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PartialMask {
-    corners: [bool; 6],
-    edges: [bool; 12],
-    uf_centers: [bool; 12],
-    rl_centers: [bool; 12],
-    uf_center_targets: [Option<u8>; 4],
-    rl_center_targets: [Option<u8>; 4],
-    last_layer_centers: bool,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CenterTargets {
@@ -146,9 +136,38 @@ struct SolveLine {
     text: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PruningCacheStatus {
+    has_tables: bool,
+    has_pruning: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PruningTableInfo {
+    id: String,
+    codename: String,
+    moves: Vec<String>,
+    files: Vec<String>,
+    bytes: u64,
+}
+
 #[derive(Default)]
 struct SolverState {
     current_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    cache: Arc<Mutex<SolverCache>>,
+}
+
+#[derive(Default)]
+struct SolverCache {
+    tables: Option<Arc<TransitionTables>>,
+    pruning: Option<CachedPruning>,
+}
+
+struct CachedPruning {
+    moves: Vec<Move>,
+    pruning: Arc<SolverPruning>,
 }
 
 #[tauri::command]
@@ -170,8 +189,9 @@ async fn solve_fto(
     }
 
     let cancels = solver_state.current_cancel.clone();
+    let cache = solver_state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = run_solve_blocking(&request, &cancel, &app, &cancels);
+        let response = run_solve_blocking(&request, &cancel, &app, &cancels, &cache);
         let _ = response;
     });
 
@@ -191,6 +211,58 @@ fn stop_solve(solver_state: tauri::State<'_, SolverState>) -> Result<(), String>
 }
 
 #[tauri::command]
+fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(), String> {
+    let mut cache = solver_state
+        .cache
+        .lock()
+        .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    cache.tables = None;
+    cache.pruning = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn pruning_cache_status(solver_state: tauri::State<'_, SolverState>) -> Result<PruningCacheStatus, String> {
+    let cache = solver_state
+        .cache
+        .lock()
+        .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    Ok(PruningCacheStatus {
+        has_tables: cache.tables.is_some(),
+        has_pruning: cache.pruning.is_some(),
+    })
+}
+
+#[tauri::command]
+fn list_pruning_tables() -> Result<Vec<PruningTableInfo>, String> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
+    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    discover_pruning_tables(&pruning_dir)
+}
+
+#[tauri::command]
+fn delete_pruning_table(id: String, solver_state: tauri::State<'_, SolverState>) -> Result<(), String> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
+    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    let tables = discover_pruning_tables(&pruning_dir)?;
+    let table = tables
+        .into_iter()
+        .find(|table| table.id == id)
+        .ok_or_else(|| "pruning table not found".to_owned())?;
+    for file in table.files {
+        let path = pruning_dir.join(file);
+        if path.exists() {
+            fs::remove_file(path).map_err(|error| error.to_string())?;
+        }
+    }
+    unload_pruning_table(solver_state)
+}
+
+#[tauri::command]
 fn validate_facelets(facelets: Vec<u8>) -> Result<CubieState, String> {
     cubie_from_facelets_for_solving(&facelets).map(cubie_to_state)
 }
@@ -200,8 +272,9 @@ fn run_solve_blocking(
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
     cancels: &Mutex<Option<Arc<AtomicBool>>>,
+    cache: &Mutex<SolverCache>,
 ) -> () {
-    let result = solve_fto_inner(request, cancel, app);
+    let result = solve_fto_inner(request, cancel, app, cache);
 
     if let Ok(mut current) = cancels.lock() {
         *current = None;
@@ -238,6 +311,7 @@ fn solve_fto_inner(
     request: &SolveRequest,
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
+    cache: &Mutex<SolverCache>,
 ) -> Result<SolveResponse, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -273,13 +347,31 @@ fn solve_fto_inner(
         (FtoCubie::solved(), None)
     };
 
-    run_release_cli(workspace_root, request, &allowed_moves, &instance_moves, cubie, partial_mask, cancel, app)
+    run_in_process_solve(
+        workspace_root,
+        request,
+        allowed_moves,
+        instance_moves,
+        cubie,
+        partial_mask,
+        cancel,
+        app,
+        cache,
+    )
 }
 
 pub fn run() {
     tauri::Builder::default()
         .manage(SolverState::default())
-        .invoke_handler(tauri::generate_handler![solve_fto, stop_solve, validate_facelets])
+        .invoke_handler(tauri::generate_handler![
+            solve_fto,
+            stop_solve,
+            unload_pruning_table,
+            pruning_cache_status,
+            list_pruning_tables,
+            delete_pruning_table,
+            validate_facelets
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri app");
 }
@@ -301,234 +393,461 @@ fn apply_sequence(mut cubie: FtoCubie, sequence: &str) -> Result<FtoCubie, Strin
     Ok(cubie)
 }
 
-fn run_release_cli(
+fn run_in_process_solve(
     workspace_root: &Path,
     request: &SolveRequest,
-    allowed_moves: &[Move],
-    instance_moves: &[Move],
+    allowed_moves: Vec<Move>,
+    instance_moves: Vec<Move>,
     cubie: FtoCubie,
     partial_mask: Option<PartialMask>,
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
+    cache: &Mutex<SolverCache>,
 ) -> Result<SolveResponse, String> {
-    let exe = workspace_root.join("target/release/fto-cli");
-    if !exe.exists() {
-        return Err(format!(
-            "release solver binary is missing: {}. Run `cargo build --release -p fto-cli` once.",
-            exe.display()
-        ));
+    let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
+    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    emit_line(app, "info", "loading pruning tables...");
+    let tables = load_transition_tables(cache, &tables_path)?;
+
+    if let Some(mask) = partial_mask {
+        let problem = PartialProblem { cubie, mask };
+        let reporter = solution_reporter(app.clone());
+        let config = SearchConfig {
+            min_depth: request.max_depth.unwrap_or(0),
+            max_depth: request.max_depth.unwrap_or(u8::MAX),
+            find_all: request.find_all,
+            allowed_moves: allowed_moves.clone(),
+            free_u_ends: request.last_layer_mode,
+            cancel: Some(cancel.clone()),
+            solution_reporter: Some(reporter),
+        };
+        emit_line(app, "info", "using dynamic partial pruning tables");
+        let result = partial::solve_partial_threads(&problem, &config, request.threads.max(1));
+        let solutions = format_solutions(&result.solutions);
+        emit_solve_summary(app, result.nodes, &solutions);
+        return Ok(SolveResponse { nodes: result.nodes, solutions });
     }
 
-    let mut args = Vec::new();
-    if let Some(depth) = request.max_depth {
-        args.push("--depth".to_owned());
-        args.push(depth.to_string());
-        args.push("--exact".to_owned());
-    }
-    if request.find_all {
-        args.push("--all".to_owned());
-    }
-    if request.restricted_pruning {
-        args.push("--restricted-pruning".to_owned());
-    }
-    if request.mini_pruning {
-        args.push("--mini-pruning".to_owned());
-    }
-    if request.last_layer_mode {
-        args.push("--last-layer".to_owned());
-    }
-    if request.threads > 1 {
-        args.push("--threads".to_owned());
-        args.push(request.threads.to_string());
-    }
-    if allowed_moves != Move::ALL.as_slice() {
-        args.push("--moves".to_owned());
-        args.push(
-            allowed_moves
-                .iter()
-                .map(|mv| format!("{mv:?}"))
-                .collect::<Vec<_>>()
-                .join(" "),
+    let pruning = Some(load_solver_pruning(
+        cache,
+        &tables,
+        &pruning_dir,
+        250_000,
+        &allowed_moves,
+        &instance_moves,
+        request.restricted_pruning,
+        cancel,
+        app,
+    )?);
+    let mini = if request.mini_pruning && !request.last_layer_mode {
+        let start = Instant::now();
+        let mini = MiniPruning::build_restricted(&tables, &allowed_moves);
+        emit_line(
+            app,
+            "info",
+            &format!(
+                "using {} restricted mini pruning tables ({:.1} MiB, built in {:.3}s)",
+                mini.len(),
+                mini.bytes() as f64 / (1024.0 * 1024.0),
+                start.elapsed().as_secs_f64()
+            ),
         );
-    }
-    if instance_moves != Move::ALL.as_slice() {
-        args.push("--instance-moves".to_owned());
-        args.push(
-            instance_moves
-                .iter()
-                .map(|mv| format!("{mv:?}"))
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-    }
-
-    emit_line(app, "info", &format!("running {}", exe.display()));
-    let mut child = Command::new(&exe)
-        .args(&args)
-        .current_dir(workspace_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to start release solver: {error}"))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(cubie_json_with_mask(cubie, partial_mask.as_ref()).as_bytes())
-            .map_err(|error| format!("failed to send state to solver: {error}"))?;
-    }
-
-    let stdout = child.stdout.take().ok_or("failed to capture solver stdout")?;
-    let stderr = child.stderr.take().ok_or("failed to capture solver stderr")?;
-    let (tx, rx) = mpsc::channel::<(String, String)>();
-
-    spawn_line_reader(stdout, "stdout", tx.clone());
-    spawn_line_reader(stderr, "stderr", tx);
-
-    let mut stdout_lines = Vec::new();
-    loop {
-        while let Ok((source, line)) = rx.try_recv() {
-            let kind = classify_cli_line(&line, &source);
-            emit_line(app, kind, &line);
-            if source == "stdout" {
-                stdout_lines.push(line);
-            }
-        }
-
-        if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("cancelled".to_owned());
-        }
-
-        match child.try_wait().map_err(|error| error.to_string())? {
-            Some(status) => {
-                while let Ok((source, line)) = rx.try_recv() {
-                    let kind = classify_cli_line(&line, &source);
-                    emit_line(app, kind, &line);
-                    if source == "stdout" {
-                        stdout_lines.push(line);
-                    }
-                }
-                if !status.success() {
-                    return Err(format!("release solver exited with {status}"));
-                }
-                return parse_cli_response(&stdout_lines);
-            }
-            None => thread::sleep(Duration::from_millis(25)),
-        }
-    }
-}
-
-fn spawn_line_reader<R>(stream: R, source: &'static str, tx: mpsc::Sender<(String, String)>)
-where
-    R: std::io::Read + Send + 'static,
-{
-    thread::spawn(move || {
-        for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            let _ = tx.send((source.to_owned(), line));
-        }
-    });
-}
-
-fn classify_cli_line(line: &str, source: &str) -> &'static str {
-    if line.starts_with("searching depth") {
-        "search"
-    } else if line.starts_with("loading") || line.starts_with("using") || line.starts_with("found solution") {
-        "info"
-    } else if line.starts_with("nodes:") || line.starts_with("solutions:") {
-        "done"
-    } else if source == "stderr" {
-        "progress"
+        Some(mini)
     } else {
-        "solution"
-    }
+        None
+    };
+
+    let result = if let Some(max_depth) = request.max_depth {
+        solve_once(
+            cubie,
+            &tables,
+            pruning.as_deref(),
+            mini.as_ref(),
+            max_depth,
+            true,
+            request.find_all,
+            request.threads.max(1),
+            allowed_moves.clone(),
+            request.last_layer_mode,
+            cancel,
+            app,
+        )?
+    } else {
+        solve_incrementally(
+            cubie,
+            &tables,
+            pruning.as_deref(),
+            mini.as_ref(),
+            request.find_all,
+            request.threads.max(1),
+            allowed_moves.clone(),
+            request.last_layer_mode,
+            cancel,
+            app,
+        )?
+    };
+    let solutions = format_solutions(&result.solutions);
+    emit_solve_summary(app, result.nodes, &solutions);
+    Ok(SolveResponse { nodes: result.nodes, solutions })
 }
 
-fn parse_cli_response(lines: &[String]) -> Result<SolveResponse, String> {
-    let mut nodes = 0_u64;
-    let mut solution_count = None;
-    let mut solutions = Vec::new();
-    for line in lines {
-        if let Some(rest) = line.strip_prefix("nodes:") {
-            nodes = rest.trim().parse().map_err(|_| "failed to parse solver node count")?;
-        } else if let Some(rest) = line.strip_prefix("solutions:") {
-            solution_count = Some(
-                rest.trim()
-                    .parse::<usize>()
-                    .map_err(|_| "failed to parse solver solution count")?,
-            );
-        } else if !line.trim().is_empty() {
-            solutions.push(line.clone());
+fn load_transition_tables(
+    cache: &Mutex<SolverCache>,
+    path: &Path,
+) -> Result<Arc<TransitionTables>, String> {
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    if let Some(tables) = cache.tables.as_ref() {
+        return Ok(tables.clone());
+    }
+    let tables = Arc::new(TransitionTables::load_or_build(path).map_err(|error| error.to_string())?);
+    cache.tables = Some(tables.clone());
+    Ok(tables)
+}
+
+fn load_solver_pruning(
+    cache: &Mutex<SolverCache>,
+    tables: &TransitionTables,
+    out_dir: &Path,
+    progress_interval: usize,
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<Arc<SolverPruning>, String> {
+    let target = select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+    {
+        let cache = cache
+            .lock()
+            .map_err(|_| "solver cache lock poisoned".to_owned())?;
+        if let Some(cached) = cache.pruning.as_ref().filter(|cached| cached.moves == target) {
+            emit_line(app, "info", "using cached pruning tables from RAM");
+            return Ok(cached.pruning.clone());
         }
     }
-    if solution_count == Some(0) {
-        solutions.clear();
-    }
-    Ok(SolveResponse { nodes, solutions })
-}
 
-fn cubie_json_with_mask(cubie: FtoCubie, mask: Option<&PartialMask>) -> String {
-    let mut out = format!(
-        "{{\"cp\":{},\"co\":{},\"ep\":{},\"uf\":{},\"rl\":{}",
-        json_array(&cubie.cp),
-        json_array(&cubie.co),
-        json_array(&cubie.ep),
-        json_array(&cubie.uf),
-        json_array(&cubie.rl),
+    let progress_app = app.clone();
+    let progress = move |event: pruning::PruningProgress| {
+        emit_line(
+            &progress_app,
+            "progress",
+            &format!(
+                "  {}: expanded {}, reached {}, depth {}",
+                event.name, event.expanded, event.reached, event.depth
+            ),
+        );
+    };
+    let pruning = Arc::new(
+        SolverPruning::load_or_build_with_moves_reporting(
+            tables,
+            out_dir,
+            progress_interval,
+            &target,
+            Some(cancel),
+            Some(&progress),
+        )
+        .map_err(|error| error.to_string())?,
     );
-    if let Some(mask) = mask {
-        out.push_str(",\"partialMask\":");
-        out.push_str(&partial_mask_json(mask));
+    emit_line(
+        app,
+        "info",
+        &format!(
+            "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({:.1} MiB)",
+            format_move_list(&target),
+            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+        ),
+    );
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    cache.pruning = Some(CachedPruning {
+        moves: target,
+        pruning: pruning.clone(),
+    });
+    Ok(pruning)
+}
+
+fn solve_once(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
+    max_depth: u8,
+    exact_depth: bool,
+    find_all: bool,
+    threads: usize,
+    allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<search::SearchResult, String> {
+    emit_line(app, "search", &format!("searching depth {max_depth}..."));
+    let reporter = solution_reporter(app.clone());
+    let config = SearchConfig {
+        min_depth: if exact_depth { max_depth } else { 0 },
+        max_depth,
+        find_all,
+        allowed_moves,
+        free_u_ends: last_layer_mode,
+        cancel: Some(cancel.clone()),
+        solution_reporter: Some(reporter),
+    };
+    let result = if last_layer_mode {
+        search::solve_last_layer_with_pruning_threads(cubie, tables, pruning, &config, threads)
+    } else {
+        search::solve_with_pruning_and_mini_threads(
+            cubie.coord(),
+            tables,
+            pruning,
+            mini,
+            &config,
+            threads,
+        )
+    };
+    if !result.solutions.is_empty() {
+        emit_line(app, "info", &format!("found solution at depth {max_depth}"));
     }
-    out.push('}');
-    out
+    Ok(result)
 }
 
-fn json_array<const N: usize>(values: &[u8; N]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn solve_incrementally(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    mini: Option<&MiniPruning>,
+    find_all: bool,
+    threads: usize,
+    allowed_moves: Vec<Move>,
+    last_layer_mode: bool,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<search::SearchResult, String> {
+    let coord = cubie.coord();
+    let start_depth = if last_layer_mode {
+        0
+    } else {
+        pruning
+            .map(|tables| tables.heuristic_for_coord(coord))
+            .unwrap_or(0)
+    };
+    let mut total_nodes = 0_u64;
+    for depth in start_depth..=u8::MAX {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        emit_line(app, "search", &format!("searching depth {depth}..."));
+        let reporter = solution_reporter(app.clone());
+        let config = SearchConfig {
+            min_depth: depth,
+            max_depth: depth,
+            find_all,
+            allowed_moves: allowed_moves.clone(),
+            free_u_ends: last_layer_mode,
+            cancel: Some(cancel.clone()),
+            solution_reporter: Some(reporter),
+        };
+        let mut result = if last_layer_mode {
+            search::solve_last_layer_with_pruning_threads(cubie, tables, pruning, &config, threads)
+        } else {
+            search::solve_with_pruning_and_mini_threads(
+                coord,
+                tables,
+                pruning,
+                mini,
+                &config,
+                threads,
+            )
+        };
+        total_nodes += result.nodes;
+        if !result.solutions.is_empty() {
+            result.nodes = total_nodes;
+            emit_line(app, "info", &format!("found solution at depth {depth}"));
+            return Ok(result);
+        }
+    }
+    Err("no solution found up to depth 255".to_owned())
 }
 
-fn partial_mask_json(mask: &PartialMask) -> String {
-    format!(
-        "{{\"corners\":{},\"edges\":{},\"ufCenters\":{},\"rlCenters\":{},\"ufCenterTargets\":{},\"rlCenterTargets\":{},\"lastLayerCenters\":{}}}",
-        bool_array(&mask.corners),
-        bool_array(&mask.edges),
-        bool_array(&mask.uf_centers),
-        bool_array(&mask.rl_centers),
-        option_u8_array(&mask.uf_center_targets),
-        option_u8_array(&mask.rl_center_targets),
-        mask.last_layer_centers,
-    )
+fn emit_solve_summary(app: &AppHandle, nodes: u64, solutions: &[String]) {
+    emit_line(app, "done", &format!("nodes: {nodes}"));
+    emit_line(app, "done", &format!("solutions: {}", solutions.len()));
+    for solution in solutions {
+        emit_line(app, "solution", solution);
+    }
 }
 
-fn bool_array<const N: usize>(values: &[bool; N]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn solution_reporter(app: AppHandle) -> Arc<search::SolutionReporter> {
+    Arc::new(move |solution| {
+        emit_line(&app, "solution", &search::format_solution(solution));
+    })
 }
 
-fn option_u8_array<const N: usize>(values: &[Option<u8>; N]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| value.map_or_else(|| "null".to_owned(), |value| value.to_string()))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn format_solutions(solutions: &[Vec<Move>]) -> Vec<String> {
+    solutions
+        .iter()
+        .map(|solution| search::format_solution(solution))
+        .collect()
+}
+
+fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, String> {
+    let mut tables = Vec::new();
+    let entries = match fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(tables),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(file_suffix_ref) = name
+            .strip_prefix("edge3__uf3__")
+            .and_then(|name| name.strip_suffix(".pdb"))
+        else {
+            continue;
+        };
+        let file_suffix = file_suffix_ref.to_owned();
+        let suffix = read_move_suffix(out_dir, &file_suffix).unwrap_or_else(|| file_suffix.to_owned());
+        let corner = format!("corner__uf3__{file_suffix}.pdb");
+        if !out_dir.join(&corner).exists() {
+            continue;
+        }
+        let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) else {
+            continue;
+        };
+        moves.sort_unstable_by_key(|mv| mv.idx());
+        let mut files = vec![name, corner];
+        let edge_meta = format!("edge3__uf3__{file_suffix}.moves");
+        let corner_meta = format!("corner__uf3__{file_suffix}.moves");
+        if out_dir.join(&edge_meta).exists() {
+            files.push(edge_meta);
+        }
+        if out_dir.join(&corner_meta).exists() {
+            files.push(corner_meta);
+        }
+        let bytes = files.iter().try_fold(0_u64, |total, file| {
+            fs::metadata(out_dir.join(file))
+                .map(|metadata| total + metadata.len())
+                .map_err(|error| error.to_string())
+        })?;
+        tables.push(PruningTableInfo {
+            id: file_suffix.clone(),
+            codename: pruning_codename(&file_suffix),
+            moves: moves.iter().map(|mv| format!("{mv:?}")).collect(),
+            files,
+            bytes,
+        });
+    }
+    tables.sort_by(|a, b| a.codename.cmp(&b.codename));
+    Ok(tables)
+}
+
+fn read_move_suffix(out_dir: &Path, file_suffix: &str) -> Option<String> {
+    fs::read_to_string(out_dir.join(format!("edge3__uf3__{file_suffix}.moves")))
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn pruning_codename(suffix: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    const NAMES: [&str; 16] = [
+        "Aster", "Boreal", "Cipher", "Drift", "Ember", "Fable", "Glint", "Halo",
+        "Ivory", "Jade", "Kestrel", "Lumen", "Morrow", "Nimbus", "Oracle", "Vesper",
+    ];
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    suffix.hash(&mut hasher);
+    let value = hasher.finish();
+    format!("{}-{:04X}", NAMES[value as usize % NAMES.len()], value as u16)
+}
+
+fn select_pruning_move_set(
+    out_dir: &Path,
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
+) -> Result<Vec<Move>, String> {
+    if allowed_moves.is_empty() {
+        return Err("at least one move must be allowed".to_owned());
+    }
+    let instance_set: HashSet<Move> = HashSet::from_iter(instance_moves.iter().copied());
+    if !allowed_moves.iter().all(|mv| instance_set.contains(mv)) {
+        return Err("the selected move set is not contained in this instance's move set".to_owned());
+    }
+
+    let mut candidates = Vec::<Vec<Move>>::new();
+    candidates.extend(discover_cached_move_sets(out_dir)?);
+    if restricted_pruning {
+        candidates.push(allowed_moves.to_vec());
+    }
+    candidates.push(instance_moves.to_vec());
+    if instance_moves != Move::ALL.as_slice() {
+        candidates.push(Move::ALL.to_vec());
+    }
+
+    let mut allowed_sorted = allowed_moves.to_vec();
+    allowed_sorted.sort_unstable_by_key(|mv| mv.idx());
+
+    let mut best: Option<&Vec<Move>> = None;
+    for candidate in &candidates {
+        let set: HashSet<Move> = HashSet::from_iter(candidate.iter().copied());
+        if !allowed_moves.iter().all(|mv| set.contains(mv)) {
+            continue;
+        }
+        let better = match best {
+            Some(current) => {
+                candidate.len() < current.len()
+                    || (candidate.len() == current.len()
+                        && candidate == &allowed_sorted
+                        && current != &allowed_sorted)
+            }
+            None => true,
+        };
+        if better {
+            best = Some(candidate);
+        }
+    }
+
+    best.cloned()
+        .ok_or_else(|| "no cached pruning table move set covers the solve move set".to_owned())
+}
+
+fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
+    let mut sets = Vec::<Vec<Move>>::new();
+    let entries = match fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(sets),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(file_suffix) = name
+            .strip_prefix("edge3__uf3__")
+            .and_then(|name| name.strip_suffix(".pdb"))
+        else {
+            continue;
+        };
+        if !out_dir.join(format!("corner__uf3__{file_suffix}.pdb")).exists() {
+            continue;
+        }
+        let suffix = read_move_suffix(out_dir, file_suffix).unwrap_or_else(|| file_suffix.to_owned());
+        if let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) {
+            moves.sort_unstable_by_key(|mv| mv.idx());
+            if !sets.contains(&moves) {
+                sets.push(moves);
+            }
+        }
+    }
+    Ok(sets)
+}
+
+fn format_move_list(moves: &[Move]) -> String {
+    moves
+        .iter()
+        .map(|mv| format!("{mv:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn cubie_from_facelets_for_solving(facelets: &[u8]) -> Result<FtoCubie, String> {

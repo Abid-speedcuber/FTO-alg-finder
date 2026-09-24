@@ -149,11 +149,26 @@ impl SolverPruning {
     ) -> Result<Self, String> {
         std::fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
         let suffix = move_set_suffix(moves);
+        let file_suffix = move_set_codename(&suffix);
+        let new_edge_path = out_dir.join(format!("edge3__uf3__{file_suffix}.pdb"));
+        let old_edge_path = out_dir.join(format!("edge3__uf3__{suffix}.pdb"));
+        let edge_path = if new_edge_path.exists() || !old_edge_path.exists() {
+            new_edge_path
+        } else {
+            old_edge_path
+        };
+        let new_corner_path = out_dir.join(format!("corner__uf3__{file_suffix}.pdb"));
+        let old_corner_path = out_dir.join(format!("corner__uf3__{suffix}.pdb"));
+        let corner_path = if new_corner_path.exists() || !old_corner_path.exists() {
+            new_corner_path
+        } else {
+            old_corner_path
+        };
         let edge3_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             tables,
             progress_interval,
-            out_dir.join(format!("edge3__uf3__{suffix}.pdb")),
+            edge_path,
             moves,
             cancel,
             report,
@@ -162,11 +177,15 @@ impl SolverPruning {
             CandidateSpec::new(vec![Component::Corner, Component::UfCenter3]),
             tables,
             progress_interval,
-            out_dir.join(format!("corner__uf3__{suffix}.pdb")),
+            corner_path,
             moves,
             cancel,
             report,
         )?;
+        std::fs::write(out_dir.join(format!("edge3__uf3__{file_suffix}.moves")), &suffix)
+            .map_err(|error| error.to_string())?;
+        std::fs::write(out_dir.join(format!("corner__uf3__{file_suffix}.moves")), &suffix)
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             edge3_uf3,
             corner_uf3,
@@ -309,6 +328,19 @@ pub fn move_set_suffix(moves: &[Move]) -> String {
         .map(|mv| format!("{mv:?}"))
         .collect::<Vec<_>>()
         .join("_")
+}
+
+pub fn move_set_codename(suffix: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    const NAMES: [&str; 16] = [
+        "aster", "boreal", "cipher", "drift", "ember", "fable", "glint", "halo",
+        "ivory", "jade", "kestrel", "lumen", "morrow", "nimbus", "oracle", "vesper",
+    ];
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    suffix.hash(&mut hasher);
+    let value = hasher.finish();
+    format!("{}-{:04x}", NAMES[value as usize % NAMES.len()], value as u16)
 }
 
 pub fn parse_move_set_suffix(suffix: &str) -> Option<Vec<Move>> {

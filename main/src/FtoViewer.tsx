@@ -11,6 +11,7 @@ export type FtoViewerApi = {
   getCenterTargets(): CenterTargets;
   setMode(mode: "pan" | "paint" | "swap"): void;
   setColor(color: number): void;
+  setFaceColors(colors: string[]): void;
   setLastLayerMode(enabled: boolean): void;
   resetPuzzle(): void;
   resetView(): void;
@@ -45,12 +46,13 @@ type Props = {
   lastLayerMode: boolean;
   onFacelets: (facelets: number[]) => void;
   onCenterTargets: (targets: CenterTargets) => void;
+  faceColors?: string[];
+  stateText?: string;
+  stateInvalid?: boolean;
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
   active?: boolean;
 };
-
-const colorHex = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
 function FtoViewer({
   setup,
@@ -59,6 +61,9 @@ function FtoViewer({
   lastLayerMode,
   onFacelets,
   onCenterTargets,
+  faceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"],
+  stateText,
+  stateInvalid = false,
   viewerApiRef,
   footer,
   active = true,
@@ -101,6 +106,10 @@ function FtoViewer({
   useEffect(() => {
     viewerRef.current?.setColor(selectedColor);
   }, [selectedColor]);
+
+  useEffect(() => {
+    viewerRef.current?.setFaceColors(faceColors);
+  }, [faceColors]);
 
   useEffect(() => {
     viewerRef.current?.setLastLayerMode(lastLayerMode);
@@ -152,8 +161,13 @@ function FtoViewer({
     <div className="fto-viewer-panel">
       <div className="fto-stage">
         <div ref={hostRef} className="fto-canvas-host" />
+        {stateText ? (
+          <div className={stateInvalid ? "viewer-state invalid" : "viewer-state"}>
+            {stateText}
+          </div>
+        ) : null}
         <div className="viewer-controls viewer-controls-left">
-          {colorHex.slice(0, 6).map((hex, index) => (
+          {faceColors.slice(0, 6).map((hex, index) => (
             <button
               key={hex}
               className={`swatch ${mode === "paint" && selectedColor === index ? "selected" : ""}`}
@@ -165,7 +179,7 @@ function FtoViewer({
           ))}
         </div>
         <div className="viewer-controls viewer-controls-right">
-          {colorHex.slice(6).map((hex, offset) => {
+          {faceColors.slice(6).map((hex, offset) => {
             const index = offset + 6;
             return (
               <button

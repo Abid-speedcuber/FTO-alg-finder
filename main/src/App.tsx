@@ -23,6 +23,19 @@ type SolveLine = {
   text: string;
 };
 
+type PruningCacheStatus = {
+  hasTables: boolean;
+  hasPruning: boolean;
+};
+
+type PruningTableInfo = {
+  id: string;
+  codename: string;
+  moves: string[];
+  files: string[];
+  bytes: number;
+};
+
 type TerminalLine = {
   id: number;
   kind: string;
@@ -38,6 +51,8 @@ const moves = [
 ];
 
 const INSTANCES_KEY = "fto.instances.v1";
+const FACE_COLORS_KEY = "fto.faceColors.v1";
+const defaultFaceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 
 type Instance = {
   id: string;
@@ -207,6 +222,24 @@ function App() {
     boot.firstRun ? { kind: "first", instance: boot.instances[0] } : null,
   );
   const [menuOpen, setMenuOpen] = useState(false);
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
+  const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [faceColors, setFaceColors] = useState<string[]>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(FACE_COLORS_KEY) || "null");
+      if (Array.isArray(parsed) && parsed.length === defaultFaceColors.length) {
+        return parsed.map(String);
+      }
+    } catch {
+      // fall through
+    }
+    return defaultFaceColors;
+  });
+  const [cacheStatus, setCacheStatus] = useState<PruningCacheStatus>({ hasTables: false, hasPruning: false });
+  const [pruningTables, setPruningTables] = useState<PruningTableInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const [setup, setSetup] = useState("");
@@ -237,7 +270,56 @@ function App() {
     () => activeInstance.moves.filter((move) => !bannedSet.has(move)),
     [activeInstance, bannedSet],
   );
-  const stateLabel = stateError ? "Invalid state" : "Valid state";
+  const displayTerminal = useMemo(() => {
+    if (showDebugInfo) {
+      return terminal;
+    }
+    const lastTerminalLine = terminal[terminal.length - 1];
+    if (!result?.solutions.length && lastTerminalLine?.kind === "cancel") {
+      return [lastTerminalLine];
+    }
+    if (result?.solutions.length) {
+      const foundLine = [...terminal]
+        .reverse()
+        .find((line) => /^found solution at depth \d+/.test(line.text));
+      const depth = foundLine?.text.match(/\d+/)?.[0];
+      const solutions = Array.from(
+        new Set(
+          terminal
+            .filter((line) => line.kind === "solution")
+            .map((line) => line.text)
+            .concat(result.solutions),
+        ),
+      );
+      return [
+        {
+          id: -2,
+          kind: "info",
+          text: depth ? `found solution at ${depth} depth` : "found solution",
+        },
+        ...solutions.map((solution, index) => ({
+          id: -1000 - index,
+          kind: "solution",
+          text: solution,
+        })),
+      ];
+    }
+    const lines: TerminalLine[] = [];
+    const currentDepth = [...terminal]
+      .reverse()
+      .find((line) => line.kind === "search" && line.text.startsWith("searching depth"));
+    if (!currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
+      lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
+    }
+    if (currentDepth) {
+      lines.push(currentDepth);
+    }
+    const streamedSolutions = terminal.filter((line) => line.kind === "solution");
+    if (streamedSolutions.length > 0) {
+      lines.push(...streamedSolutions);
+    }
+    return lines;
+  }, [result, showDebugInfo, terminal]);
 
   useEffect(() => {
     try {
@@ -246,6 +328,30 @@ function App() {
       // storage unavailable; keep in-memory instances
     }
   }, [instances, activeId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FACE_COLORS_KEY, JSON.stringify(faceColors));
+    } catch {
+      // storage unavailable; keep in-memory colors
+    }
+  }, [faceColors]);
+
+  const refreshCacheStatus = useCallback(() => {
+    invoke<PruningCacheStatus>("pruning_cache_status")
+      .then(setCacheStatus)
+      .catch(() => setCacheStatus({ hasTables: false, hasPruning: false }));
+  }, []);
+
+  const refreshPruningTables = useCallback(() => {
+    invoke<PruningTableInfo[]>("list_pruning_tables")
+      .then(setPruningTables)
+      .catch(() => setPruningTables([]));
+  }, []);
+
+  useEffect(() => {
+    refreshCacheStatus();
+  }, [refreshCacheStatus]);
 
   const handleFacelets = useCallback((nextFacelets: number[]) => {
     setFacelets(nextFacelets);
@@ -297,16 +403,18 @@ function App() {
           setResult(event.payload);
           setRunning(false);
           setStatus(event.payload.solutions.length ? "Done" : "No solution");
+          refreshCacheStatus();
         }),
         listen<string>("solve-error", (event) => {
           appendLine("error", `error: ${event.payload}`);
           setRunning(false);
           setStatus(String(event.payload));
+          refreshCacheStatus();
         }),
         listen("solve-cancelled", () => {
-          appendLine("cancel", "solve cancelled");
           setRunning(false);
           setStatus("Stopped");
+          refreshCacheStatus();
         }),
       ]);
       if (disposed) {
@@ -319,13 +427,13 @@ function App() {
       disposed = true;
       unlisteners.forEach((fn) => fn());
     };
-  }, [appendLine]);
+  }, [appendLine, refreshCacheStatus]);
 
   useEffect(() => {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [terminal]);
+  }, [displayTerminal]);
 
   function updateInstance(id: string, patch: Partial<Instance>) {
     setInstances((list) => list.map((instance) => (instance.id === id ? { ...instance, ...patch } : instance)));
@@ -388,6 +496,7 @@ function App() {
 
   function closeOverlays() {
     setMenuOpen(false);
+    setAppMenuOpen(false);
     setContextMenu(null);
   }
 
@@ -429,12 +538,35 @@ function App() {
       appendLine("error", `error: ${String(error)}`);
       setStatus(String(error));
       setRunning(false);
+      refreshCacheStatus();
     }
   }
 
   async function stopSolve() {
     await invoke("stop_solve");
     setStatus("Stopping");
+  }
+
+  async function unloadPruningTable() {
+    try {
+      await invoke("unload_pruning_table");
+      setStatus("Pruning table unloaded");
+      appendLine("info", "unloaded pruning table from RAM");
+      refreshCacheStatus();
+    } catch (error) {
+      appendLine("error", `error: ${String(error)}`);
+      setStatus(String(error));
+    }
+  }
+
+  async function deletePruningTable(id: string) {
+    await invoke("delete_pruning_table", { id });
+    refreshPruningTables();
+    refreshCacheStatus();
+  }
+
+  function updateFaceColor(index: number, color: string) {
+    setFaceColors((colors) => colors.map((current, i) => (i === index ? color : current)));
   }
 
   const contextInstance = contextMenu
@@ -449,73 +581,51 @@ function App() {
           <p>By Abid Ibn Ashraf</p>
         </div>
         <div className="topbar-right">
-          <div className="mode-switch">
+          <div className="settings-menu">
             <button
               type="button"
-              className={mode === "solver" ? "active" : ""}
-              onClick={() => setMode("solver")}
+              className="icon-trigger vertical"
+              aria-label="Open menu"
+              title="Menu"
+              onClick={() => setAppMenuOpen((open) => !open)}
             >
-              Solver
+              ⋮
             </button>
-            <button
-              type="button"
-              className={mode === "combiner" ? "active" : ""}
-              onClick={() => setMode("combiner")}
-            >
-              Combiner
-            </button>
+            {appMenuOpen ? (
+              <>
+                <div className="menu-backdrop" onClick={closeOverlays} />
+                <div className="settings-panel app-menu-panel">
+                  <button
+                    className="menu-command"
+                    onClick={() => {
+                      setMode(mode === "solver" ? "combiner" : "solver");
+                      closeOverlays();
+                    }}
+                  >
+                    {mode === "solver" ? "Switch to alg combiner" : "Switch to solver mode"}
+                  </button>
+                  <button
+                    className="menu-command"
+                    onClick={() => {
+                      setSettingsOpen(true);
+                      closeOverlays();
+                    }}
+                  >
+                    Settings
+                  </button>
+                  <button
+                    className="menu-command"
+                    onClick={() => {
+                      setAboutOpen(true);
+                      closeOverlays();
+                    }}
+                  >
+                    About
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
-          {mode === "solver" ? (
-            <>
-              <div className="status-strip">
-                <span className={`pill ${running ? "pill-running" : ""}`}>{status}</span>
-                <span className={`pill ${stateError ? "pill-bad" : "pill-good"}`}>{stateLabel}</span>
-                <span className="pill">
-                  {allowedMoves.length}/{activeInstance.moves.length} moves
-                </span>
-                {result ? <span className="pill">{result.nodes.toLocaleString()} nodes</span> : null}
-              </div>
-              <div className="instance-menu">
-                <button className="instance-trigger" onClick={() => setMenuOpen((open) => !open)}>
-                  <span className="instance-trigger-name">{activeInstance.name}</span>
-                  <span className="instance-caret">▾</span>
-                </button>
-                {menuOpen ? (
-                  <>
-                    <div className="menu-backdrop" onClick={closeOverlays} />
-                    <div className="instance-menu-panel">
-                      <div className="instance-menu-label">Instances</div>
-                      {instances.map((instance) => (
-                        <button
-                          key={instance.id}
-                          className={instance.id === activeId ? "instance-item active" : "instance-item"}
-                          onClick={() => {
-                            setActiveId(instance.id);
-                            setMenuOpen(false);
-                          }}
-                          onContextMenu={(event) => openContextMenu(instance.id, event)}
-                          title="Right-click to delete"
-                        >
-                          <span className="instance-item-name">{instance.name}</span>
-                          <span className="instance-item-count">{instance.moves.length} moves</span>
-                        </button>
-                      ))}
-                      <div className="instance-menu-divider" />
-                      <button
-                        className="instance-item new"
-                        onClick={() => {
-                          setSetupModal({ kind: "new" });
-                          setMenuOpen(false);
-                        }}
-                      >
-                        + New instance
-                      </button>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-            </>
-          ) : null}
         </div>
         {mode === "solver" && contextMenu ? (
           <>
@@ -535,6 +645,99 @@ function App() {
           </>
         ) : null}
       </header>
+
+      {settingsOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal settings-modal">
+            <div className="modal-title-row">
+              <h2>Settings</h2>
+              <button className="secondary" onClick={() => setSettingsOpen(false)}>Close</button>
+            </div>
+            <label className="settings-toggle modal-toggle">
+              <span>Show debug info</span>
+              <input
+                type="checkbox"
+                checked={showDebugInfo}
+                onChange={(event) => setShowDebugInfo(event.target.checked)}
+              />
+            </label>
+            <div className="settings-group">
+              <h3>Face colors</h3>
+              <div className="color-settings-grid">
+                {faceColors.map((color, index) => (
+                  <label key={index} className="color-setting">
+                    <span>Face {index + 1}</span>
+                    <input
+                      type="color"
+                      value={color}
+                      onChange={(event) => updateFaceColor(index, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+            <button
+              className="secondary"
+              onClick={() => {
+                refreshPruningTables();
+                setStorageOpen(true);
+              }}
+            >
+              Manage storage
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {storageOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal storage-modal">
+            <div className="modal-title-row">
+              <h2>Storage</h2>
+              <button className="secondary" onClick={() => setStorageOpen(false)}>Close</button>
+            </div>
+            {pruningTables.length === 0 ? (
+              <div className="hint">No pruning tables found on disk.</div>
+            ) : (
+              <div className="storage-list">
+                {pruningTables.map((table) => (
+                  <div key={table.id} className="storage-row">
+                    <div>
+                      <div className="storage-title">{table.codename}</div>
+                      <div className="storage-sub">
+                        {table.moves.join(" ")} · {(table.bytes / (1024 * 1024)).toFixed(1)} MiB
+                      </div>
+                    </div>
+                    <button className="secondary" onClick={() => deletePruningTable(table.id)}>
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {aboutOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal about-modal">
+            <div className="modal-title-row">
+              <h2>About</h2>
+              <button className="secondary" onClick={() => setAboutOpen(false)}>Close</button>
+            </div>
+            <p>Created by Abid Ibn Ashraf.</p>
+            <div className="about-links">
+              <a href="https://www.worldcubeassociation.org/persons/2024ASHR02" target="_blank" rel="noreferrer">
+                WCA: 2024ASHR02
+              </a>
+              <a href="https://github.com/Abid-speedcuber" target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {mode === "solver" && setupModal ? (
         setupModal.kind === "first" ? (
@@ -607,12 +810,15 @@ function App() {
             lastLayerMode={lastLayerMode}
             onFacelets={handleFacelets}
             onCenterTargets={setCenterTargets}
+            faceColors={faceColors}
+            stateText={stateError ? "invalid state" : "valid state"}
+            stateInvalid={!!stateError}
             footer={
               <div className="terminal" ref={terminalRef}>
-                {terminal.length === 0 ? (
+                {displayTerminal.length === 0 ? (
                   <div className="terminal-placeholder">solutions and solver logs will appear here</div>
                 ) : (
-                  terminal.map((line) => (
+                  displayTerminal.map((line) => (
                     <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
                       {line.text}
                     </div>
@@ -626,8 +832,47 @@ function App() {
         <div className="control-pane">
           <section className="tool-section">
             <div className="section-heading">
-              <h2>Move Set ({activeInstance.name})</h2>
+              <div className="instance-menu panel-instance-menu">
+                <button className="instance-trigger" onClick={() => setMenuOpen((open) => !open)}>
+                  <span className="instance-trigger-name">{activeInstance.name}</span>
+                  <span className="instance-caret">▾</span>
+                </button>
+                {menuOpen ? (
+                  <>
+                    <div className="menu-backdrop" onClick={closeOverlays} />
+                    <div className="instance-menu-panel">
+                      <div className="instance-menu-label">Instances</div>
+                      {instances.map((instance) => (
+                        <button
+                          key={instance.id}
+                          className={instance.id === activeId ? "instance-item active" : "instance-item"}
+                          onClick={() => {
+                            setActiveId(instance.id);
+                            setMenuOpen(false);
+                          }}
+                          onContextMenu={(event) => openContextMenu(instance.id, event)}
+                          title="Right-click to delete"
+                        >
+                          <span className="instance-item-name">{instance.name}</span>
+                          <span className="instance-item-count">{instance.moves.length} moves</span>
+                        </button>
+                      ))}
+                      <div className="instance-menu-divider" />
+                      <button
+                        className="instance-item new"
+                        onClick={() => {
+                          setSetupModal({ kind: "new" });
+                          setMenuOpen(false);
+                        }}
+                      >
+                        + New instance
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
               <div className="mini-actions">
+                <span className="move-count">{allowedMoves.length}/{activeInstance.moves.length} moves</span>
                 <button onClick={allowAllMoves}>All</button>
                 <button onClick={invertMoveSelection}>Invert</button>
               </div>
@@ -701,7 +946,7 @@ function App() {
                 checked={miniPruning}
                 onChange={(event) => setMiniPruning(event.target.checked)}
               />
-              Mini pruning
+              Additional pruning
             </label>
             </div>
             <div className="actions-row">
@@ -713,7 +958,10 @@ function App() {
               {running ? "Stop" : "Solve"}
             </button>
             </div>
-            {stateError ? <div className="state-error">{stateError}</div> : <div className="state-ok">valid FTO state</div>}
+            <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !cacheStatus.hasPruning}>
+              Unload pruning table from RAM
+            </button>
+            {stateError ? <div className="state-error">{stateError}</div> : null}
           </section>
         </div>
         </section>

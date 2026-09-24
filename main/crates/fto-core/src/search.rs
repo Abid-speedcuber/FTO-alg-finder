@@ -16,7 +16,7 @@ use std::{
     thread,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SearchConfig {
     pub min_depth: u8,
     pub max_depth: u8,
@@ -24,9 +24,25 @@ pub struct SearchConfig {
     pub allowed_moves: Vec<Move>,
     pub free_u_ends: bool,
     pub cancel: Option<Arc<AtomicBool>>,
+    pub solution_reporter: Option<Arc<SolutionReporter>>,
 }
 
 pub type DepthReporter<'a> = dyn Fn(u8) + Send + Sync + 'a;
+pub type SolutionReporter = dyn Fn(&[Move]) + Send + Sync;
+
+impl std::fmt::Debug for SearchConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchConfig")
+            .field("min_depth", &self.min_depth)
+            .field("max_depth", &self.max_depth)
+            .field("find_all", &self.find_all)
+            .field("allowed_moves", &self.allowed_moves)
+            .field("free_u_ends", &self.free_u_ends)
+            .field("cancel", &self.cancel.is_some())
+            .field("solution_reporter", &self.solution_reporter.is_some())
+            .finish()
+    }
+}
 
 impl Default for SearchConfig {
     fn default() -> Self {
@@ -37,6 +53,7 @@ impl Default for SearchConfig {
             allowed_moves: Move::ALL.to_vec(),
             free_u_ends: false,
             cancel: None,
+            solution_reporter: None,
         }
     }
 }
@@ -545,6 +562,7 @@ pub fn solve_last_layer_with_pruning_threads(
         allowed_moves: config.allowed_moves.clone(),
         free_u_ends: true,
         cancel: config.cancel.clone(),
+        solution_reporter: config.solution_reporter.clone(),
     };
     solve_last_layer_impl(cubie, SearchState::from_coord(coord), tables, pruning, &config, threads)
 }
@@ -583,6 +601,9 @@ fn solve_last_layer_impl(
                         &mut ctx.solutions,
                         free_auf_solution(prefix, &[], suffix),
                     );
+                    if let Some(solution) = ctx.solutions.last() {
+                        report_solution(config, solution);
+                    }
                     if !config.find_all {
                         break;
                     }
@@ -758,6 +779,7 @@ fn solve_with_pruning_threads_impl(
                         solution.push(suffix);
                     }
                     total.solutions.push(solution);
+                    report_solution(config, total.solutions.last().expect("solution just pushed"));
                     if !config.find_all {
                         break;
                     }
@@ -1206,6 +1228,9 @@ impl<'a> LastLayerSearchContext<'a> {
                     &mut self.solutions,
                     free_auf_solution(self.free_prefix, &self.path, suffix),
                 );
+                if let Some(solution) = self.solutions.last() {
+                    report_solution(self.config, solution);
+                }
             }
             return;
         }
@@ -1294,6 +1319,7 @@ impl SearchContext<'_> {
                     solution.push(suffix);
                 }
                 self.solutions.push(solution);
+                report_solution(self.config, self.solutions.last().expect("solution just pushed"));
             }
             return;
         }
@@ -1490,6 +1516,12 @@ fn last_layer_free_u_suffix(
 fn push_unique_solution(solutions: &mut Vec<Vec<Move>>, solution: Vec<Move>) {
     if !solutions.contains(&solution) {
         solutions.push(solution);
+    }
+}
+
+fn report_solution(config: &SearchConfig, solution: &[Move]) {
+    if let Some(report) = config.solution_reporter.as_ref() {
+        report(solution);
     }
 }
 
@@ -2055,6 +2087,7 @@ mod tests {
                 allowed_moves: Move::ALL.to_vec(),
                 free_u_ends: false,
                 cancel: None,
+                solution_reporter: None,
             },
         );
 

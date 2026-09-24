@@ -96,7 +96,7 @@ Alg combiner:
 - Search cost also rises quickly as the requested depth increases.
 - The pruning table is large. Searches can require substantial memory and disk cache.
 - Because the app is divided into solver instances, different instance move sets may need different pruning-table data. In practice, that can mean more than one set of pruning tables on disk.
-- The GUI launches the release `fto-cli` binary. Build the release CLI once before expecting the desktop app to solve.
+- The GUI links the Rust solver core directly, so desktop builds produce a single app binary.
 - Very deep exact searches may need bidirectional memory measured in GiB.
 
 ## System Requirements
@@ -133,12 +133,6 @@ Install JavaScript dependencies:
 
 ```sh
 npm install
-```
-
-Build the release solver binary:
-
-```sh
-cargo build --release -p fto-cli
 ```
 
 Run the desktop app in development mode:
@@ -198,5 +192,5 @@ These files are generated artifacts. They can be deleted, but the next run may t
 - The workspace uses Rust lints with `unsafe_code = "forbid"`.
 - The frontend is React + Vite + TypeScript.
 - The desktop shell is Tauri 2.
-- The app expects `main/target/release/fto-cli` to exist when solving from the GUI.
+- The CLI remains available for command-line solving and cache/pruning tooling, but the GUI no longer shells out to it.
 - Keep solver changes benchmarked; small coordinate or pruning changes can have large performance effects.

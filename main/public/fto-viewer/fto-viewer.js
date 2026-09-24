@@ -213,6 +213,15 @@
       }
     }
 
+    function refreshAllStickerDisplays() {
+      for (var i = 0; i < cubePieces.length; i++) {
+        if (cubePieces[i]) {
+          refreshStickerDisplayByFacelet(cubePieces[i][3]);
+        }
+      }
+      render();
+    }
+
     function clearTargetHighlights() {
       for (var i = 0; i < highlightedFacelets.length; i++) {
         refreshStickerDisplayByFacelet(highlightedFacelets[i]);
@@ -550,14 +559,21 @@
       var fb = pieceSlots[b];
       var colorsA = [];
       var colorsB = [];
+      var marksA = [];
+      var marksB = [];
       for (var i = 0; i < fa.length; i++) {
         colorsA.push(faceletColors[fa[i]]);
         colorsB.push(faceletColors[fb[i]]);
+        marksA.push(lastLayerMarkForFacelet(fa[i]));
+        marksB.push(lastLayerMarkForFacelet(fb[i]));
       }
       for (var i = 0; i < fa.length; i++) {
         setSwapStickerColor(faceletToSticker[fa[i]], colorsB[i]);
         setSwapStickerColor(faceletToSticker[fb[i]], colorsA[i]);
+        setLastLayerMarkForFacelet(fa[i], marksB[i]);
+        setLastLayerMarkForFacelet(fb[i], marksA[i]);
       }
+      rebuildLastLayerTargetsFromMarks();
     }
 
     function flipCornerParity(pieceIdx) {
@@ -624,6 +640,19 @@
         return { orbit: "rl", slot: rlSlot, color: Math.floor(rlSlot / 3) };
       }
       return null;
+    }
+
+    function lastLayerMarkForFacelet(faceletIndex) {
+      var info = centerInfo(faceletIndex);
+      return info && info.orbit === "rl" ? lastLayerCenterMarks[info.slot] : null;
+    }
+
+    function setLastLayerMarkForFacelet(faceletIndex, mark) {
+      var info = centerInfo(faceletIndex);
+      if (info && info.orbit === "rl") {
+        lastLayerCenterMarks[info.slot] = mark;
+        refreshStickerDisplayByFacelet(faceletIndex);
+      }
     }
 
     function selectedCenterGroup() {
@@ -734,6 +763,35 @@
           sources.splice(index, 1);
         }
       }
+    }
+
+    function rebuildLastLayerTargetsFromMarks() {
+      for (var color = 1; color <= 3; color++) {
+        centerTargets.rl[color] = null;
+        centerTargets.rlSources[color] = null;
+        centerTargets.rlTopSources[color] = [];
+      }
+      if (!lastLayerMode) {
+        notifyCenterTargets();
+        return;
+      }
+      for (var slot = 0; slot < rlCenterFacelets.length; slot++) {
+        var mark = lastLayerCenterMarks[slot];
+        if (!mark) {
+          continue;
+        }
+        var color = selectedCenterGroupForColor(faceletColors[rlCenterFacelets[slot]]).color;
+        if (color < 1 || color > 3) {
+          continue;
+        }
+        if (mark === "fixed") {
+          centerTargets.rl[color] = lastLayerUniqueCenterSlot[color];
+          centerTargets.rlSources[color] = slot;
+        } else if (mark === "top" && centerTargets.rlTopSources[color].indexOf(slot) === -1) {
+          centerTargets.rlTopSources[color].push(slot);
+        }
+      }
+      notifyCenterTargets();
     }
 
     function clearLastLayerCenterMarks() {
@@ -917,6 +975,9 @@
         render();
       }
       function pointerUp(x, y, shiftKey, ctrlKey) {
+        if (!isDragging) {
+          return;
+        }
         if (!didDrag && x != null && y != null) {
           if (activeDragMode === "paint") {
             paintAt(x, y, shiftKey, ctrlKey);
@@ -942,10 +1003,14 @@
         pointerMove(e.clientX, e.clientY);
       };
       var onMouseUp = function(e) {
+        if (e.button !== 0) {
+          return;
+        }
         pointerUp(e.clientX, e.clientY, e.shiftKey, e.ctrlKey);
       };
       var onContextMenu = function(e) {
         e.preventDefault();
+        endDrag();
         ignorePieceAt(e.clientX, e.clientY);
       };
       var onWheel = function(e) {
@@ -1177,7 +1242,6 @@
         mode = nextMode;
         if (mode === "swap") {
           clearCenterTargetPick();
-          clearLastLayerCenterMarks();
         } else {
           clearSwapSelection();
         }
@@ -1189,6 +1253,21 @@
       },
       setColor: function(color) {
         selectedColor = color;
+      },
+      setFaceColors: function(colors) {
+        if (!colors || colors.length < faceColors.length) {
+          return;
+        }
+        for (var i = 0; i < faceColors.length; i++) {
+          var value = colors[i];
+          if (typeof value === "string") {
+            value = parseInt(value.replace("#", ""), 16);
+          }
+          if (Number.isFinite(value)) {
+            faceColors[i] = value;
+          }
+        }
+        refreshAllStickerDisplays();
       },
       setLastLayerMode: function(enabled) {
         lastLayerMode = !!enabled;

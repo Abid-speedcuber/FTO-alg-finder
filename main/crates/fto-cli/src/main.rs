@@ -462,6 +462,7 @@ fn solve_partial_input(
         allowed_moves: allowed_moves.clone(),
         free_u_ends: last_layer_mode,
         cancel: None,
+        solution_reporter: None,
     };
     if exact_depth && !last_layer_mode && problem.mask.is_full() {
         if let Some(depth) = max_depth {
@@ -563,6 +564,7 @@ fn solve_once(
                 allowed_moves,
                 free_u_ends: true,
                 cancel: None,
+                solution_reporter: None,
             },
             threads,
         ));
@@ -613,6 +615,7 @@ fn solve_once(
             allowed_moves,
             free_u_ends: last_layer_mode,
             cancel: None,
+            solution_reporter: None,
         },
         threads,
     ))
