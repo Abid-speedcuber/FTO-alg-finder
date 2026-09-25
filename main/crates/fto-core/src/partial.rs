@@ -891,7 +891,12 @@ pub fn format_partial_solutions(result: SearchResult) -> (u64, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_partial_solved, DynamicKind, DynamicTable, PartialMask};
+    use std::time::Instant;
+
+    use super::{
+        is_partial_solved, partial_free_u_suffix, DynamicKind, DynamicPruning, DynamicTable,
+        PartialMask,
+    };
     use crate::{moves::Move, FtoCubie};
 
     #[test]
@@ -960,5 +965,95 @@ mod tests {
         let mut fixed_swap = FtoCubie::solved();
         fixed_swap.rl.swap(3, 4);
         assert!(!is_partial_solved(&fixed_swap, &mask));
+    }
+
+    #[test]
+    #[ignore = "microbenchmarks partial terminal checks against dynamic-pruning zero checks"]
+    fn benchmark_partial_terminal_check_vs_pruning_zero() {
+        let mask = PartialMask {
+            corners: [true; 6],
+            edges: [true; 12],
+            uf_centers: [false; 12],
+            rl_centers: [false; 12],
+            uf_center_targets: [None; 4],
+            rl_center_targets: [None; 4],
+            last_layer_centers: false,
+        };
+        let moves = crate::moves::move_cubies();
+        let mut pruning = DynamicPruning::build(&mask, &Move::ALL);
+        pruning.build_transitions(usize::MAX);
+        let mut states = Vec::new();
+        let mut cubie = FtoCubie::solved().apply(Move::R).apply(Move::U).apply(Move::F);
+        for i in 0..4096 {
+            if i % 257 == 0 {
+                states.push(FtoCubie::solved());
+            } else if i % 263 == 0 {
+                states.push(FtoCubie::solved().apply(Move::U));
+            } else if i % 269 == 0 {
+                states.push(FtoCubie::solved().apply(Move::Up));
+            } else {
+                cubie = cubie.apply(Move::ALL[i % crate::moves::MOVE_COUNT]);
+                states.push(cubie);
+            }
+        }
+        let indexed = states
+            .iter()
+            .map(|state| pruning.indices_of_state(state))
+            .collect::<Vec<_>>();
+        let precomputed = states
+            .iter()
+            .zip(&indexed)
+            .map(|(state, indices)| pruning.heuristic_for_indices(state, indices))
+            .collect::<Vec<_>>();
+        let iterations = 5_000_000_usize;
+
+        let start = Instant::now();
+        let mut solved_hits = 0_usize;
+        for i in 0..iterations {
+            let state = states[i & (states.len() - 1)];
+            if partial_free_u_suffix(state, &moves, &mask, true).is_some() {
+                solved_hits += 1;
+            }
+            std::hint::black_box(solved_hits);
+        }
+        let solved_ns = start.elapsed().as_nanos();
+
+        let start = Instant::now();
+        let mut lookup_hits = 0_usize;
+        for i in 0..iterations {
+            let idx = i & (states.len() - 1);
+            if pruning.heuristic_for_indices(&states[idx], &indexed[idx]) == 0 {
+                lookup_hits += 1;
+            }
+            std::hint::black_box(lookup_hits);
+        }
+        let lookup_ns = start.elapsed().as_nanos();
+
+        let start = Instant::now();
+        let mut reused_hits = 0_usize;
+        for i in 0..iterations {
+            if precomputed[i & (precomputed.len() - 1)] == 0 {
+                reused_hits += 1;
+            }
+            std::hint::black_box(reused_hits);
+        }
+        let reused_ns = start.elapsed().as_nanos();
+
+        println!("iterations: {iterations}");
+        println!(
+            "partial_free_u_solved_check_ns_per_leaf: {:.2}",
+            solved_ns as f64 / iterations as f64
+        );
+        println!(
+            "partial_dynamic_lookup_zero_ns_per_leaf: {:.2}",
+            lookup_ns as f64 / iterations as f64
+        );
+        println!(
+            "partial_reused_heuristic_zero_ns_per_leaf: {:.2}",
+            reused_ns as f64 / iterations as f64
+        );
+        println!("solved_hits: {solved_hits}");
+        println!("lookup_hits: {lookup_hits}");
+        println!("reused_hits: {reused_hits}");
     }
 }

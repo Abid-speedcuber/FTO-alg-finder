@@ -75,10 +75,49 @@ struct ParallelSearchRoot {
 struct ParallelLastLayerRoot {
     free_prefix: Option<Move>,
     path: Vec<Move>,
-    cubie: FtoCubie,
-    state: SearchState,
+    state: LastLayerState,
     depth_left: u8,
     last_move: Option<Move>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LastLayerState {
+    corner: u16,
+    edge0: u16,
+    edge1: u16,
+    edge3: u16,
+    uf_center: u32,
+    uf3: u16,
+    rl_center: u32,
+    rl_fixed_pos: [u8; 3],
+    edge3_uf3_idx: usize,
+    corner_uf3_idx: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LastLayerGoal {
+    corner: u16,
+    edge0: u16,
+    edge1: u16,
+    edge3: u16,
+    uf_center: u32,
+    rl_center: u32,
+    rl_fixed_pos: [u8; 3],
+}
+
+impl LastLayerGoal {
+    fn solved() -> Self {
+        let solved = FtoCoord::solved();
+        Self {
+            corner: solved.corner,
+            edge0: solved.edge.e0,
+            edge1: solved.edge.e1,
+            edge3: solved.edge3,
+            uf_center: solved.uf_center,
+            rl_center: solved.rl_center,
+            rl_fixed_pos: LL_RL_FIXED_PIECES,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -570,7 +609,6 @@ pub fn solve_last_layer_with_pruning_threads(
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
-    let coord = cubie.coord();
     let start_depth = config.min_depth;
     let config = SearchConfig {
         min_depth: start_depth,
@@ -581,22 +619,28 @@ pub fn solve_last_layer_with_pruning_threads(
         cancel: config.cancel.clone(),
         solution_reporter: config.solution_reporter.clone(),
     };
-    solve_last_layer_impl(cubie, SearchState::from_coord(coord), tables, pruning, &config, threads)
+    solve_last_layer_impl(
+        LastLayerState::from_cubie(cubie),
+        tables,
+        pruning,
+        &config,
+        threads,
+    )
 }
 
 fn solve_last_layer_impl(
-    cubie: FtoCubie,
-    state: SearchState,
+    state: LastLayerState,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
     if threads <= 1 || config.max_depth <= 1 {
-        return solve_last_layer_single(cubie, state, tables, pruning, config);
+        return solve_last_layer_single(state, tables, pruning, config);
     }
 
-    let moves = move_cubies();
+    let rl_center_pos_moves = center_position_moves(CenterOrbitForPosition::Rl);
+    let goal = LastLayerGoal::solved();
     let commute = move_commutation();
     let mut total = SearchResult {
         solutions: Vec::new(),
@@ -608,12 +652,13 @@ fn solve_last_layer_impl(
             break;
         }
         if depth == 0 {
-            let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
-            for (prefix, start_cubie, start_state, _) in
-                last_layer_start_states(cubie, state, tables, &moves)
-            {
+            let mut ctx =
+                LastLayerSearchContext::new(tables, pruning, config, rl_center_pos_moves, goal);
+            for (prefix, start_state, _) in last_layer_start_states(state, tables, &rl_center_pos_moves) {
                 ctx.nodes += 1;
-                if let Some(suffix) = last_layer_free_u_suffix(start_cubie, &moves) {
+                if let Some(suffix) =
+                    last_layer_free_u_suffix(start_state, goal, tables, &rl_center_pos_moves)
+                {
                     push_unique_solution(
                         &mut ctx.solutions,
                         free_auf_solution(prefix, &[], suffix),
@@ -625,7 +670,6 @@ fn solve_last_layer_impl(
                         break;
                     }
                 }
-                let _ = start_state;
             }
             total.nodes += ctx.nodes;
             total.solutions.extend(ctx.solutions);
@@ -639,20 +683,19 @@ fn solve_last_layer_impl(
         let mut collector = LastLayerRootCollector {
             tables,
             pruning,
-            moves,
+            rl_center_pos_moves,
             commute,
             config,
             split_ply,
             roots: Vec::new(),
             nodes: 0,
         };
-        for (prefix, start_cubie, start_state, last_move) in
-            last_layer_start_states(cubie, state, tables, &moves)
+        for (prefix, start_state, last_move) in
+            last_layer_start_states(state, tables, &rl_center_pos_moves)
         {
             let mut path = Vec::with_capacity(depth as usize);
             collector.collect(
                 prefix,
-                start_cubie,
                 start_state,
                 depth,
                 last_move,
@@ -681,7 +724,14 @@ fn solve_last_layer_impl(
                 let roots = &roots;
                 let next_root = &next_root;
                 handles.push(scope.spawn(move || {
-                    let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
+                    let mut ctx =
+                        LastLayerSearchContext::new(
+                            tables,
+                            pruning,
+                            config,
+                            rl_center_pos_moves,
+                            goal,
+                        );
                     loop {
                         if is_cancelled(config) {
                             break;
@@ -693,7 +743,7 @@ fn solve_last_layer_impl(
                         ctx.free_prefix = root.free_prefix;
                         ctx.path.clear();
                         ctx.path.extend_from_slice(&root.path);
-                        ctx.dfs(root.cubie, root.state, root.depth_left, root.last_move, true);
+                        ctx.dfs(root.state, root.depth_left, root.last_move, true);
                         ctx.free_prefix = None;
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
@@ -724,23 +774,23 @@ fn solve_last_layer_impl(
 }
 
 fn solve_last_layer_single(
-    cubie: FtoCubie,
-    state: SearchState,
+    state: LastLayerState,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
     config: &SearchConfig,
 ) -> SearchResult {
-    let moves = move_cubies();
-    let mut ctx = LastLayerSearchContext::new(tables, pruning, config);
+    let rl_center_pos_moves = center_position_moves(CenterOrbitForPosition::Rl);
+    let goal = LastLayerGoal::solved();
+    let mut ctx = LastLayerSearchContext::new(tables, pruning, config, rl_center_pos_moves, goal);
     for depth in config.min_depth..=config.max_depth {
         if is_cancelled(config) {
             break;
         }
-        for (prefix, start_cubie, start_state, last_move) in
-            last_layer_start_states(cubie, state, tables, &moves)
+        for (prefix, start_state, last_move) in
+            last_layer_start_states(state, tables, &rl_center_pos_moves)
         {
             ctx.free_prefix = prefix;
-            ctx.dfs(start_cubie, start_state, depth, last_move, false);
+            ctx.dfs(start_state, depth, last_move, false);
             ctx.free_prefix = None;
             if !config.find_all && !ctx.solutions.is_empty() {
                 break;
@@ -1183,7 +1233,8 @@ struct LastLayerSearchContext<'a> {
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
-    moves: [FtoCubie; MOVE_COUNT],
+    rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
+    goal: LastLayerGoal,
     config: &'a SearchConfig,
     solutions: Vec<Vec<Move>>,
     path: Vec<Move>,
@@ -1196,12 +1247,15 @@ impl<'a> LastLayerSearchContext<'a> {
         tables: &'a TransitionTables,
         pruning: Option<&'a SolverPruning>,
         config: &'a SearchConfig,
+        rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
+        goal: LastLayerGoal,
     ) -> Self {
         Self {
             tables,
             pruning,
             commute: move_commutation(),
-            moves: move_cubies(),
+            rl_center_pos_moves,
+            goal,
             config,
             solutions: Vec::new(),
             path: Vec::with_capacity(config.max_depth as usize),
@@ -1212,8 +1266,7 @@ impl<'a> LastLayerSearchContext<'a> {
 
     fn dfs(
         &mut self,
-        cubie: FtoCubie,
-        state: SearchState,
+        state: LastLayerState,
         depth_left: u8,
         last_move: Option<Move>,
         pruning_checked: bool,
@@ -1229,7 +1282,9 @@ impl<'a> LastLayerSearchContext<'a> {
             if ends_in_u_or_up(&self.path) {
                 return;
             }
-            if let Some(suffix) = last_layer_free_u_suffix(cubie, &self.moves) {
+            if let Some(suffix) =
+                last_layer_free_u_suffix(state, self.goal, self.tables, &self.rl_center_pos_moves)
+            {
                 push_unique_solution(
                     &mut self.solutions,
                     free_auf_solution(self.free_prefix, &self.path, suffix),
@@ -1242,7 +1297,7 @@ impl<'a> LastLayerSearchContext<'a> {
         }
 
         let child_depth = depth_left - 1;
-        let mut children = [(0_u8, Move::U, cubie, state); MOVE_COUNT];
+        let mut children = [(0_u8, Move::U, state); MOVE_COUNT];
         let mut child_count = 0;
         for &mv in &self.config.allowed_moves {
             if self.config.free_u_ends && self.path.is_empty() && is_u_turn(mv) {
@@ -1259,8 +1314,12 @@ impl<'a> LastLayerSearchContext<'a> {
             children[child_count] = (
                 pruning_value,
                 mv,
-                cubie.compose(&self.moves[mv.idx()]),
-                state.apply_with_pruning_child(self.tables, mv, pruning_child),
+                state.apply_with_pruning_child(
+                    self.tables,
+                    mv,
+                    pruning_child,
+                    &self.rl_center_pos_moves,
+                ),
             );
             child_count += 1;
         }
@@ -1268,9 +1327,9 @@ impl<'a> LastLayerSearchContext<'a> {
             children[..child_count].sort_unstable_by(|a, b| b.0.cmp(&a.0));
         }
 
-        for &(_, mv, next_cubie, next_state) in &children[..child_count] {
+        for &(_, mv, next_state) in &children[..child_count] {
             self.path.push(mv);
-            self.dfs(next_cubie, next_state, child_depth, Some(mv), true);
+            self.dfs(next_state, child_depth, Some(mv), true);
             self.path.pop();
             if !self.config.find_all && !self.solutions.is_empty() {
                 return;
@@ -1278,7 +1337,7 @@ impl<'a> LastLayerSearchContext<'a> {
         }
     }
 
-    fn pruning_value(&self, state: SearchState) -> u8 {
+    fn pruning_value(&self, state: LastLayerState) -> u8 {
         adjusted_pruning_value(
             self.pruning
                 .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
@@ -1420,6 +1479,25 @@ fn is_u_turn(mv: Move) -> bool {
     matches!(mv, Move::U | Move::Up)
 }
 
+#[derive(Clone, Copy)]
+enum CenterOrbitForPosition {
+    Rl,
+}
+
+fn center_position_moves(orbit: CenterOrbitForPosition) -> [[u8; 12]; MOVE_COUNT] {
+    let moves = move_cubies();
+    let mut table = [[0_u8; 12]; MOVE_COUNT];
+    for (move_idx, mv) in moves.iter().enumerate() {
+        let perm = match orbit {
+            CenterOrbitForPosition::Rl => &mv.rl,
+        };
+        for dst in 0..12 {
+            table[move_idx][perm[dst] as usize] = dst as u8;
+        }
+    }
+    table
+}
+
 fn adjusted_pruning_value(value: u8, free_u_ends: bool) -> u8 {
     if value == u8::MAX {
         return value;
@@ -1550,7 +1628,7 @@ impl SearchRootCollector<'_> {
 struct LastLayerRootCollector<'a> {
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
-    moves: [FtoCubie; MOVE_COUNT],
+    rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     config: &'a SearchConfig,
     split_ply: u8,
@@ -1562,8 +1640,7 @@ impl LastLayerRootCollector<'_> {
     fn collect(
         &mut self,
         free_prefix: Option<Move>,
-        cubie: FtoCubie,
-        state: SearchState,
+        state: LastLayerState,
         depth_left: u8,
         last_move: Option<Move>,
         path: &mut Vec<Move>,
@@ -1580,7 +1657,6 @@ impl LastLayerRootCollector<'_> {
             self.roots.push(ParallelLastLayerRoot {
                 free_prefix,
                 path: path.clone(),
-                cubie,
                 state,
                 depth_left,
                 last_move,
@@ -1605,8 +1681,12 @@ impl LastLayerRootCollector<'_> {
             path.push(mv);
             self.collect(
                 free_prefix,
-                cubie.compose(&self.moves[mv.idx()]),
-                state.apply_with_pruning_child(self.tables, mv, pruning_child),
+                state.apply_with_pruning_child(
+                    self.tables,
+                    mv,
+                    pruning_child,
+                    &self.rl_center_pos_moves,
+                ),
                 child_depth,
                 Some(mv),
                 path,
@@ -1617,7 +1697,7 @@ impl LastLayerRootCollector<'_> {
         }
     }
 
-    fn pruning_value(&self, state: SearchState) -> u8 {
+    fn pruning_value(&self, state: LastLayerState) -> u8 {
         adjusted_pruning_value(
             self.pruning
                 .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
@@ -1684,41 +1764,48 @@ fn free_u_suffix(
 }
 
 fn last_layer_start_states(
-    root_cubie: FtoCubie,
-    root_state: SearchState,
+    root_state: LastLayerState,
     tables: &TransitionTables,
-    moves: &[FtoCubie; MOVE_COUNT],
-) -> Vec<(Option<Move>, FtoCubie, SearchState, Option<Move>)> {
+    rl_center_pos_moves: &[[u8; 12]; MOVE_COUNT],
+) -> Vec<(Option<Move>, LastLayerState, Option<Move>)> {
     let u_child = root_state.apply_pruning(tables, Move::U);
     let up_child = root_state.apply_pruning(tables, Move::Up);
     vec![
-        (None, root_cubie, root_state, None),
+        (None, root_state, None),
         (
             Some(Move::U),
-            root_cubie.compose(&moves[Move::U.idx()]),
-            root_state.apply_with_pruning_child(tables, Move::U, u_child),
+            root_state.apply_with_pruning_child(tables, Move::U, u_child, rl_center_pos_moves),
             Some(Move::U),
         ),
         (
             Some(Move::Up),
-            root_cubie.compose(&moves[Move::Up.idx()]),
-            root_state.apply_with_pruning_child(tables, Move::Up, up_child),
+            root_state.apply_with_pruning_child(tables, Move::Up, up_child, rl_center_pos_moves),
             Some(Move::Up),
         ),
     ]
 }
 
 fn last_layer_free_u_suffix(
-    cubie: FtoCubie,
-    moves: &[FtoCubie; MOVE_COUNT],
+    state: LastLayerState,
+    goal: LastLayerGoal,
+    tables: &TransitionTables,
+    rl_center_pos_moves: &[[u8; 12]; MOVE_COUNT],
 ) -> Option<Option<Move>> {
-    if is_last_layer_solved(&cubie) {
+    if state.is_goal(goal) {
         return Some(None);
     }
-    if is_last_layer_solved(&cubie.compose(&moves[Move::U.idx()])) {
+    let u_child = state.apply_pruning(tables, Move::U);
+    if state
+        .apply_with_pruning_child(tables, Move::U, u_child, rl_center_pos_moves)
+        .is_goal(goal)
+    {
         return Some(Some(Move::U));
     }
-    if is_last_layer_solved(&cubie.compose(&moves[Move::Up.idx()])) {
+    let up_child = state.apply_pruning(tables, Move::Up);
+    if state
+        .apply_with_pruning_child(tables, Move::Up, up_child, rl_center_pos_moves)
+        .is_goal(goal)
+    {
         return Some(Some(Move::Up));
     }
     None
@@ -1756,42 +1843,6 @@ fn dedup_solutions(solutions: &mut Vec<Vec<Move>>) {
         push_unique_solution(&mut unique, solution);
     }
     *solutions = unique;
-}
-
-fn is_last_layer_solved(cubie: &FtoCubie) -> bool {
-    if cubie.cp != [0, 1, 2, 3, 4, 5] || cubie.co != [0; 6] {
-        return false;
-    }
-    if cubie.ep != [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
-        return false;
-    }
-    for pos in 0..12 {
-        if cubie.uf[pos] / 3 != pos as u8 / 3 {
-            return false;
-        }
-        if !rl_last_layer_center_solved(cubie.rl[pos], pos as u8) {
-            return false;
-        }
-    }
-    true
-}
-
-fn rl_last_layer_center_solved(piece: u8, pos: u8) -> bool {
-    const FIXED: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
-    let color = piece / 3;
-    let pos_color = pos / 3;
-    if color != pos_color {
-        return false;
-    }
-    if let Some(fixed_slot) = FIXED[color as usize] {
-        if piece == fixed_slot {
-            pos == fixed_slot
-        } else {
-            pos != fixed_slot
-        }
-    } else {
-        true
-    }
 }
 
 struct BackwardBuilder<'a> {
@@ -2190,6 +2241,85 @@ impl Hash for SearchState {
     }
 }
 
+const LL_RL_FIXED_PIECES: [u8; 3] = [3, 8, 10];
+
+impl LastLayerState {
+    fn from_cubie(cubie: FtoCubie) -> Self {
+        let coord = cubie.coord();
+        Self::from_coord_and_rl(coord, &cubie.rl)
+    }
+
+    fn from_coord_and_rl(coord: FtoCoord, rl: &[u8; 12]) -> Self {
+        let mut rl_fixed_pos = [0_u8; 3];
+        for (idx, &piece) in LL_RL_FIXED_PIECES.iter().enumerate() {
+            rl_fixed_pos[idx] = rl
+                .iter()
+                .position(|&candidate| candidate == piece)
+                .expect("last-layer fixed RL center piece must exist") as u8;
+        }
+        Self {
+            corner: coord.corner,
+            edge0: coord.edge.e0,
+            edge1: coord.edge.e1,
+            edge3: coord.edge3,
+            uf_center: coord.uf_center,
+            uf3: coord.uf_center3,
+            rl_center: coord.rl_center,
+            rl_fixed_pos,
+            edge3_uf3_idx: SolverPruning::edge3_uf3_index(coord.edge3, coord.uf_center3),
+            corner_uf3_idx: SolverPruning::corner_uf3_index(coord.corner, coord.uf_center3),
+        }
+    }
+
+    fn is_goal(self, goal: LastLayerGoal) -> bool {
+        self.corner == goal.corner
+            && self.edge0 == goal.edge0
+            && self.edge1 == goal.edge1
+            && self.edge3 == goal.edge3
+            && self.uf_center == goal.uf_center
+            && self.rl_center == goal.rl_center
+            && self.rl_fixed_pos == goal.rl_fixed_pos
+    }
+
+    fn apply_pruning(self, tables: &TransitionTables, mv: Move) -> PruningChild {
+        let corner = tables.corner_move(self.corner, mv);
+        let edge3 = tables.edge3_move(self.edge3, mv);
+        let uf3 = tables.uf_center3_move(self.uf3, mv);
+        PruningChild {
+            corner,
+            edge3,
+            uf3,
+            edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
+            corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+        }
+    }
+
+    fn apply_with_pruning_child(
+        self,
+        tables: &TransitionTables,
+        mv: Move,
+        pruning_child: PruningChild,
+        rl_center_pos_moves: &[[u8; 12]; MOVE_COUNT],
+    ) -> Self {
+        let mut rl_fixed_pos = self.rl_fixed_pos;
+        for pos in &mut rl_fixed_pos {
+            *pos = rl_center_pos_moves[mv.idx()][usize::from(*pos)];
+        }
+        Self {
+            corner: pruning_child.corner,
+            edge0: tables.edge_choice_move(self.edge0, mv),
+            edge1: tables.edge_choice_move(self.edge1, mv),
+            edge3: pruning_child.edge3,
+            uf_center: tables.uf_center_move(self.uf_center, mv),
+            uf3: pruning_child.uf3,
+            rl_center: tables.rl_center_move(self.rl_center, mv),
+            rl_fixed_pos,
+            edge3_uf3_idx: pruning_child.edge3_uf3_idx,
+            corner_uf3_idx: pruning_child.corner_uf3_idx,
+        }
+    }
+}
+
 impl SearchState {
     fn from_coord(coord: FtoCoord) -> Self {
         Self {
@@ -2287,9 +2417,14 @@ mod tests {
         search::{SearchConfig, SearchState},
         tables::TransitionTables,
         FtoCubie,
+        FtoCoord,
     };
 
-    use super::{format_solution, solve, PruningChild, SolverPruning, MOVE_COUNT};
+    use super::{
+        center_position_moves, format_solution, free_u_suffix, last_layer_free_u_suffix, solve,
+        CenterOrbitForPosition, LastLayerGoal, LastLayerState, PruningChild, SolverPruning,
+        MOVE_COUNT,
+    };
 
     #[test]
     #[ignore = "builds full center transition tables"]
@@ -2483,5 +2618,200 @@ mod tests {
         );
         assert_ne!(full.edge3, u16::MAX);
         assert_ne!(lean.edge3, u16::MAX);
+    }
+
+    #[test]
+    #[ignore = "microbenchmarks solved-state checks against pruning-table zero checks"]
+    fn benchmark_terminal_check_vs_pruning_zero() {
+        let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
+            .unwrap_or_else(|_| TransitionTables::build());
+        let solved = SearchState::from_coord(FtoCoord::solved());
+        let solved_u = SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord());
+        let solved_up = SearchState::from_coord(FtoCubie::solved().apply(Move::Up).coord());
+        let mut states = Vec::new();
+        let mut state = SearchState::from_coord(
+            FtoCubie::solved()
+                .apply(Move::R)
+                .apply(Move::U)
+                .apply(Move::F)
+                .coord(),
+        );
+        for i in 0..4096 {
+            if i % 257 == 0 {
+                states.push(solved);
+            } else if i % 263 == 0 {
+                states.push(solved_u);
+            } else if i % 269 == 0 {
+                states.push(solved_up);
+            } else {
+                let mv = Move::ALL[i % MOVE_COUNT];
+                let child = state.apply_pruning(&tables, mv);
+                state = state.apply_with_pruning_child(&tables, mv, child);
+                states.push(state);
+            }
+        }
+        let iterations = 20_000_000_usize;
+
+        let start = Instant::now();
+        let mut equality_hits = 0_usize;
+        for i in 0..iterations {
+            let state = states[i & (states.len() - 1)];
+            if free_u_suffix(state, solved, solved_u, solved_up, true).is_some() {
+                equality_hits += 1;
+            }
+            std::hint::black_box(equality_hits);
+        }
+        let equality_ns = start.elapsed().as_nanos();
+
+        println!("iterations: {iterations}");
+        println!(
+            "normal_free_u_equality_ns_per_leaf: {:.2}",
+            equality_ns as f64 / iterations as f64
+        );
+        let precomputed = states
+            .iter()
+            .map(|state| u8::from(free_u_suffix(*state, solved, solved_u, solved_up, true).is_none()))
+            .collect::<Vec<_>>();
+        let start = Instant::now();
+        let mut reused_hits = 0_usize;
+        for i in 0..iterations {
+            if precomputed[i & (precomputed.len() - 1)] == 0 {
+                reused_hits += 1;
+            }
+            std::hint::black_box(reused_hits);
+        }
+        let reused_ns = start.elapsed().as_nanos();
+
+        println!(
+            "normal_reused_heuristic_zero_ns_per_leaf: {:.2}",
+            reused_ns as f64 / iterations as f64
+        );
+        println!("equality_hits: {equality_hits}");
+        println!("reused_hits: {reused_hits}");
+    }
+
+    #[test]
+    #[ignore = "microbenchmarks old cubie LL terminal check against indexed LL terminal check"]
+    fn benchmark_last_layer_terminal_check_indexed() {
+        fn old_rl_last_layer_center_solved(piece: u8, pos: u8) -> bool {
+            const FIXED: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
+            let color = piece / 3;
+            if color != pos / 3 {
+                return false;
+            }
+            if let Some(fixed_slot) = FIXED[color as usize] {
+                if piece == fixed_slot {
+                    pos == fixed_slot
+                } else {
+                    pos != fixed_slot
+                }
+            } else {
+                true
+            }
+        }
+
+        fn old_is_last_layer_solved(cubie: &FtoCubie) -> bool {
+            if cubie.cp != [0, 1, 2, 3, 4, 5] || cubie.co != [0; 6] {
+                return false;
+            }
+            if cubie.ep != [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
+                return false;
+            }
+            for pos in 0..12 {
+                if cubie.uf[pos] / 3 != pos as u8 / 3 {
+                    return false;
+                }
+                if !old_rl_last_layer_center_solved(cubie.rl[pos], pos as u8) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        fn old_last_layer_free_u_suffix(
+            cubie: FtoCubie,
+            moves: &[FtoCubie; MOVE_COUNT],
+        ) -> Option<Option<Move>> {
+            if old_is_last_layer_solved(&cubie) {
+                return Some(None);
+            }
+            if old_is_last_layer_solved(&cubie.compose(&moves[Move::U.idx()])) {
+                return Some(Some(Move::U));
+            }
+            if old_is_last_layer_solved(&cubie.compose(&moves[Move::Up.idx()])) {
+                return Some(Some(Move::Up));
+            }
+            None
+        }
+
+        let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
+            .unwrap_or_else(|_| TransitionTables::build());
+        let moves = crate::moves::move_cubies();
+        let rl_center_pos_moves = center_position_moves(CenterOrbitForPosition::Rl);
+        let goal = LastLayerGoal::solved();
+        let mut cubies = Vec::new();
+        let mut states = Vec::new();
+        let mut cubie = FtoCubie::solved()
+            .apply(Move::R)
+            .apply(Move::U)
+            .apply(Move::F)
+            .apply(Move::BR);
+        for i in 0..4096 {
+            if i % 257 == 0 {
+                cubie = FtoCubie::solved();
+            } else if i % 263 == 0 {
+                cubie = FtoCubie::solved().apply(Move::U);
+            } else if i % 269 == 0 {
+                cubie = FtoCubie::solved().apply(Move::Up);
+            } else {
+                cubie = cubie.apply(Move::ALL[i % MOVE_COUNT]);
+            }
+            cubies.push(cubie);
+            states.push(LastLayerState::from_cubie(cubie));
+        }
+        let iterations = 500_000_usize;
+
+        let start = Instant::now();
+        let mut old_hits = 0_usize;
+        for i in 0..iterations {
+            if old_last_layer_free_u_suffix(cubies[i & (cubies.len() - 1)], &moves).is_some() {
+                old_hits += 1;
+            }
+            std::hint::black_box(old_hits);
+        }
+        let old_ns = start.elapsed().as_nanos();
+
+        let start = Instant::now();
+        let mut indexed_hits = 0_usize;
+        for i in 0..iterations {
+            if last_layer_free_u_suffix(
+                states[i & (states.len() - 1)],
+                goal,
+                &tables,
+                &rl_center_pos_moves,
+            )
+            .is_some()
+            {
+                indexed_hits += 1;
+            }
+            std::hint::black_box(indexed_hits);
+        }
+        let indexed_ns = start.elapsed().as_nanos();
+
+        println!("iterations: {iterations}");
+        println!(
+            "old_cubie_last_layer_free_u_ns_per_leaf: {:.2}",
+            old_ns as f64 / iterations as f64
+        );
+        println!(
+            "indexed_last_layer_free_u_ns_per_leaf: {:.2}",
+            indexed_ns as f64 / iterations as f64
+        );
+        println!(
+            "speedup: {:.2}x",
+            old_ns as f64 / indexed_ns as f64
+        );
+        println!("old_hits: {old_hits}");
+        println!("indexed_hits: {indexed_hits}");
     }
 }
