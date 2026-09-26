@@ -1,7 +1,7 @@
 use crate::{
-    moves::{move_cubies, Move, MOVE_COUNT},
-    search::{format_solution, SearchConfig, SearchResult},
     FtoCubie,
+    moves::{MOVE_COUNT, Move, move_cubies},
+    search::{SearchConfig, SearchResult, format_solution},
 };
 use std::{collections::VecDeque, thread};
 
@@ -302,8 +302,7 @@ impl IndexedPartialSearchContext<'_> {
                 &self.problem.mask,
                 self.config.free_u_ends,
                 raw_pruning,
-            )
-            {
+            ) {
                 push_unique_solution(
                     &mut self.solutions,
                     free_auf_solution(self.free_prefix, &self.path, suffix),
@@ -435,7 +434,11 @@ fn partial_start_states(
     }
     vec![
         (None, root, None),
-        (Some(Move::U), root.compose(&moves[Move::U.idx()]), Some(Move::U)),
+        (
+            Some(Move::U),
+            root.compose(&moves[Move::U.idx()]),
+            Some(Move::U),
+        ),
         (
             Some(Move::Up),
             root.compose(&moves[Move::Up.idx()]),
@@ -754,11 +757,7 @@ impl DynamicTable {
 
     fn value_for_index(&self, idx: usize) -> u8 {
         let value = self.table[idx];
-        if value == UNVISITED {
-            UNVISITED
-        } else {
-            value
-        }
+        if value == UNVISITED { UNVISITED } else { value }
     }
 
     fn move_cached_index(&self, idx: usize, state: &FtoCubie, mv: Move) -> usize {
@@ -770,9 +769,10 @@ impl DynamicTable {
     }
 
     fn bytes(&self) -> usize {
-        self.table.len() + self.transitions_cache.as_ref().map_or(0, |cache| {
-            cache.len() * MOVE_COUNT * std::mem::size_of::<u32>()
-        })
+        self.table.len()
+            + self.transitions_cache.as_ref().map_or(0, |cache| {
+                cache.len() * MOVE_COUNT * std::mem::size_of::<u32>()
+            })
     }
 
     fn transition_bytes(&self) -> usize {
@@ -816,9 +816,9 @@ impl DynamicTable {
                 for pos in 0..12 {
                     pos_of[state.ep[pos] as usize] = pos as u8;
                 }
-                self.pieces
-                    .iter()
-                    .fold(0_usize, |idx, &piece| idx * 12 + usize::from(pos_of[piece as usize]))
+                self.pieces.iter().fold(0_usize, |idx, &piece| {
+                    idx * 12 + usize::from(pos_of[piece as usize])
+                })
             }
         }
     }
@@ -907,7 +907,11 @@ fn is_r_trigger(mv: Move) -> bool {
     matches!(mv, Move::RURp | Move::RUpRp | Move::RpUR | Move::RpUpR)
 }
 
-fn should_skip_after(commute: &[[bool; MOVE_COUNT]; MOVE_COUNT], last: Move, current: Move) -> bool {
+fn should_skip_after(
+    commute: &[[bool; MOVE_COUNT]; MOVE_COUNT],
+    last: Move,
+    current: Move,
+) -> bool {
     last.axis() == current.axis()
         || (is_r_face_move(last) && is_r_trigger(current))
         || (is_r_trigger(last) && is_r_face_move(current))
@@ -942,10 +946,10 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        is_partial_solved, partial_free_u_suffix, DynamicKind, DynamicPruning, DynamicTable,
-        PartialMask,
+        DynamicKind, DynamicPruning, DynamicTable, PartialMask, is_partial_solved,
+        partial_free_u_suffix,
     };
-    use crate::{moves::Move, FtoCubie};
+    use crate::{FtoCubie, moves::Move};
 
     #[test]
     fn cached_edge_transition_matches_rerank() {
@@ -954,7 +958,10 @@ mod tests {
         let state = FtoCubie::solved().apply(Move::R).apply(Move::U);
         let idx = table.index_of_state(&state);
         let next = state.apply(Move::B);
-        assert_eq!(table.move_cached_index(idx, &next, Move::B), table.index_of_state(&next));
+        assert_eq!(
+            table.move_cached_index(idx, &next, Move::B),
+            table.index_of_state(&next)
+        );
     }
 
     #[test]
@@ -964,7 +971,10 @@ mod tests {
         let state = FtoCubie::solved().apply(Move::R).apply(Move::U);
         let idx = table.index_of_state(&state);
         let next = state.apply(Move::B);
-        assert_eq!(table.move_cached_index(idx, &next, Move::B), table.index_of_state(&next));
+        assert_eq!(
+            table.move_cached_index(idx, &next, Move::B),
+            table.index_of_state(&next)
+        );
     }
 
     #[test]
@@ -1031,7 +1041,10 @@ mod tests {
         let mut pruning = DynamicPruning::build(&mask, &Move::ALL);
         pruning.build_transitions(usize::MAX);
         let mut states = Vec::new();
-        let mut cubie = FtoCubie::solved().apply(Move::R).apply(Move::U).apply(Move::F);
+        let mut cubie = FtoCubie::solved()
+            .apply(Move::R)
+            .apply(Move::U)
+            .apply(Move::F);
         for i in 0..4096 {
             if i % 257 == 0 {
                 states.push(FtoCubie::solved());

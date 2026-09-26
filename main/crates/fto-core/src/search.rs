@@ -1,16 +1,15 @@
 use crate::{
-    moves::{move_cubies, Move, MOVE_COUNT},
+    FtoCoord, FtoCubie,
+    moves::{MOVE_COUNT, Move, move_cubies},
     pruning::SolverPruning,
     tables::TransitionTables,
-    FtoCubie,
-    FtoCoord,
 };
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
 };
@@ -359,7 +358,10 @@ pub fn should_use_bidirectional_exact(
     };
     let tree = |target_depth: u8| -> TreeEstimate {
         if target_depth == 0 {
-            return TreeEstimate { nodes: 1, leaves: 1 };
+            return TreeEstimate {
+                nodes: 1,
+                leaves: 1,
+            };
         }
         let mut nodes = 1_u128;
         let mut layer = first.max(1);
@@ -369,7 +371,10 @@ pub fn should_use_bidirectional_exact(
                 layer = ((layer as f64) * avg_follow).ceil() as u128;
             }
         }
-        TreeEstimate { nodes, leaves: layer }
+        TreeEstimate {
+            nodes,
+            leaves: layer,
+        }
     };
     let fwd_depth = depth / 2;
     let back_depth = depth - fwd_depth;
@@ -379,7 +384,9 @@ pub fn should_use_bidirectional_exact(
     let backward = tree(back_depth);
     choose_bidirectional(
         estimated_ida_nodes,
-        forward.nodes.saturating_add(endpoint_count.saturating_mul(backward.nodes)),
+        forward
+            .nodes
+            .saturating_add(endpoint_count.saturating_mul(backward.nodes)),
         endpoint_count.saturating_mul(backward.leaves),
         max_stored_paths,
     )
@@ -402,12 +409,15 @@ pub fn should_use_bidirectional_exact_with_pruning(
     let endpoint_count = endpoint_count.max(1) as u128;
 
     let ida = estimate_pruned_tree(start, tables, pruning, depth, 0, allowed_moves);
-    let forward = estimate_pruned_tree(start, tables, pruning, fwd_depth, back_depth, allowed_moves);
+    let forward =
+        estimate_pruned_tree(start, tables, pruning, fwd_depth, back_depth, allowed_moves);
     let backward = estimate_pruned_tree(solved, tables, None, back_depth, fwd_depth, allowed_moves);
 
     choose_bidirectional(
         ida.nodes,
-        forward.nodes.saturating_add(endpoint_count.saturating_mul(backward.nodes)),
+        forward
+            .nodes
+            .saturating_add(endpoint_count.saturating_mul(backward.nodes)),
         endpoint_count.saturating_mul(backward.leaves),
         max_stored_paths,
     )
@@ -456,10 +466,16 @@ fn estimate_pruned_tree(
     let commute = move_commutation();
     let root_bound = goal_slack.saturating_add(depth);
     if pruning_value_for_state(start, pruning) > root_bound {
-        return TreeEstimate { nodes: 1, leaves: 0 };
+        return TreeEstimate {
+            nodes: 1,
+            leaves: 0,
+        };
     }
     if depth == 0 {
-        return TreeEstimate { nodes: 1, leaves: 1 };
+        return TreeEstimate {
+            nodes: 1,
+            leaves: 1,
+        };
     }
 
     let mut nodes = 1_u128;
@@ -503,7 +519,10 @@ fn estimate_pruned_tree(
             break;
         }
         current = next;
-        if current.first().is_some_and(|&(_, _, depth_left)| depth_left == 0) {
+        if current
+            .first()
+            .is_some_and(|&(_, _, depth_left)| depth_left == 0)
+        {
             return TreeEstimate {
                 nodes,
                 leaves: current_count,
@@ -525,7 +544,10 @@ fn estimate_pruned_tree(
             break;
         }
     }
-    TreeEstimate { nodes, leaves: layer }
+    TreeEstimate {
+        nodes,
+        leaves: layer,
+    }
 }
 
 fn scaled_ceil(value: u128, factor: f64) -> u128 {
@@ -655,7 +677,9 @@ fn solve_last_layer_impl(
         if depth == 0 {
             let mut ctx =
                 LastLayerSearchContext::new(tables, pruning, config, rl_center_pos_moves, goal);
-            for (prefix, start_state, _) in last_layer_start_states(state, tables, &rl_center_pos_moves) {
+            for (prefix, start_state, _) in
+                last_layer_start_states(state, tables, &rl_center_pos_moves)
+            {
                 ctx.nodes += 1;
                 if let Some(suffix) =
                     last_layer_free_u_suffix(start_state, goal, tables, &rl_center_pos_moves)
@@ -695,15 +719,7 @@ fn solve_last_layer_impl(
             last_layer_start_states(state, tables, &rl_center_pos_moves)
         {
             let mut path = Vec::with_capacity(depth as usize);
-            collector.collect(
-                prefix,
-                start_state,
-                depth,
-                last_move,
-                &mut path,
-                0,
-                false,
-            );
+            collector.collect(prefix, start_state, depth, last_move, &mut path, 0, false);
         }
         let roots = collector.roots;
 
@@ -725,14 +741,13 @@ fn solve_last_layer_impl(
                 let roots = &roots;
                 let next_root = &next_root;
                 handles.push(scope.spawn(move || {
-                    let mut ctx =
-                        LastLayerSearchContext::new(
-                            tables,
-                            pruning,
-                            config,
-                            rl_center_pos_moves,
-                            goal,
-                        );
+                    let mut ctx = LastLayerSearchContext::new(
+                        tables,
+                        pruning,
+                        config,
+                        rl_center_pos_moves,
+                        goal,
+                    );
                     loop {
                         if is_cancelled(config) {
                             break;
@@ -849,8 +864,7 @@ fn solve_with_pruning_threads_impl(
                     solved_up,
                     config.free_u_ends,
                     raw_pruning,
-                )
-                {
+                ) {
                     let mut solution = Vec::new();
                     if let Some(prefix) = prefix {
                         solution.push(prefix);
@@ -859,7 +873,10 @@ fn solve_with_pruning_threads_impl(
                         solution.push(suffix);
                     }
                     total.solutions.push(solution);
-                    report_solution(config, total.solutions.last().expect("solution just pushed"));
+                    report_solution(
+                        config,
+                        total.solutions.last().expect("solution just pushed"),
+                    );
                     if !config.find_all {
                         break;
                     }
@@ -1121,7 +1138,10 @@ fn match_bidirectional_parallel(
     let mut roots = Vec::new();
     for &mv in allowed_moves {
         let pruning_child = start.apply_pruning(tables, mv);
-        roots.push((mv, start.apply_with_pruning_child(tables, mv, pruning_child)));
+        roots.push((
+            mv,
+            start.apply_with_pruning_child(tables, mv, pruning_child),
+        ));
     }
     if roots.is_empty() {
         return SearchResult {
@@ -1393,10 +1413,7 @@ impl SearchContext<'_> {
         let mini_pruning_value = self
             .mini
             .map(|mini| {
-                adjusted_pruning_value(
-                    mini.heuristic(&state.mini_indices),
-                    self.config.free_u_ends,
-                )
+                adjusted_pruning_value(mini.heuristic(&state.mini_indices), self.config.free_u_ends)
             })
             .unwrap_or(0);
         if mini_pruning_value > depth_left {
@@ -1416,7 +1433,10 @@ impl SearchContext<'_> {
                     solution.push(suffix);
                 }
                 self.solutions.push(solution);
-                report_solution(self.config, self.solutions.last().expect("solution just pushed"));
+                report_solution(
+                    self.config,
+                    self.solutions.last().expect("solution just pushed"),
+                );
             }
             return;
         }
@@ -1581,10 +1601,7 @@ impl SearchRootCollector<'_> {
         let mini_pruning_value = self
             .mini
             .map(|mini| {
-                adjusted_pruning_value(
-                    mini.heuristic(&state.mini_indices),
-                    self.config.free_u_ends,
-                )
+                adjusted_pruning_value(mini.heuristic(&state.mini_indices), self.config.free_u_ends)
             })
             .unwrap_or(0);
         if mini_pruning_value > depth_left {
@@ -1615,12 +1632,8 @@ impl SearchRootCollector<'_> {
             if pruning_value > child_depth {
                 continue;
             }
-            let next = state.apply_with_pruning_child_and_mini(
-                self.tables,
-                mv,
-                pruning_child,
-                self.mini,
-            );
+            let next =
+                state.apply_with_pruning_child_and_mini(self.tables, mv, pruning_child, self.mini);
             let mini_pruning_value = self
                 .mini
                 .map(|mini| {
@@ -1634,7 +1647,14 @@ impl SearchRootCollector<'_> {
                 continue;
             }
             path.push(mv);
-            self.collect(next, child_depth, Some(mv), path, ply + 1, raw_child_pruning);
+            self.collect(
+                next,
+                child_depth,
+                Some(mv),
+                path,
+                ply + 1,
+                raw_child_pruning,
+            );
             path.pop();
         }
     }
@@ -2137,7 +2157,11 @@ impl CubieForwardMatcher<'_> {
                 continue;
             }
             self.path.push(mv);
-            self.search(state.compose(&self.moves[mv.idx()]), depth_left - 1, Some(mv));
+            self.search(
+                state.compose(&self.moves[mv.idx()]),
+                depth_left - 1,
+                Some(mv),
+            );
             self.path.pop();
             if !self.find_all && !self.solutions.is_empty() {
                 return;
@@ -2206,12 +2230,7 @@ fn permute_slice(
     end: usize,
     emit: &mut impl FnMut(&mut [u8; 12]),
 ) {
-    fn rec(
-        values: &mut [u8; 12],
-        end: usize,
-        idx: usize,
-        emit: &mut impl FnMut(&mut [u8; 12]),
-    ) {
+    fn rec(values: &mut [u8; 12], end: usize, idx: usize, emit: &mut impl FnMut(&mut [u8; 12])) {
         if idx == end {
             emit(values);
             return;
@@ -2243,7 +2262,11 @@ fn is_r_trigger(mv: Move) -> bool {
     matches!(mv, Move::RURp | Move::RUpRp | Move::RpUR | Move::RpUpR)
 }
 
-fn should_skip_after(commute: &[[bool; MOVE_COUNT]; MOVE_COUNT], last: Move, current: Move) -> bool {
+fn should_skip_after(
+    commute: &[[bool; MOVE_COUNT]; MOVE_COUNT],
+    last: Move,
+    current: Move,
+) -> bool {
     last.axis() == current.axis()
         || (is_r_face_move(last) && is_r_trigger(current))
         || (is_r_trigger(last) && is_r_face_move(current))
@@ -2312,10 +2335,10 @@ impl LastLayerState {
     fn from_coord_and_rl(coord: FtoCoord, rl: &[u8; 12]) -> Self {
         let mut rl_fixed_pos = [0_u8; 3];
         for (idx, &piece) in LL_RL_FIXED_PIECES.iter().enumerate() {
-            rl_fixed_pos[idx] = rl
-                .iter()
-                .position(|&candidate| candidate == piece)
-                .expect("last-layer fixed RL center piece must exist") as u8;
+            rl_fixed_pos[idx] =
+                rl.iter()
+                    .position(|&candidate| candidate == piece)
+                    .expect("last-layer fixed RL center piece must exist") as u8;
         }
         Self {
             corner: coord.corner,
@@ -2462,7 +2485,11 @@ struct PruningChild {
 
 #[must_use]
 pub fn format_solution(solution: &[Move]) -> String {
-    solution.iter().map(|mv| mv.name()).collect::<Vec<_>>().join(" ")
+    solution
+        .iter()
+        .map(|mv| mv.name())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub const RAW_BRANCHING_FACTOR: usize = MOVE_COUNT;
@@ -2472,18 +2499,17 @@ mod tests {
     use std::time::Instant;
 
     use crate::{
+        FtoCoord, FtoCubie,
         coord::EdgeCoord,
         moves::Move,
         search::{SearchConfig, SearchState},
         tables::TransitionTables,
-        FtoCubie,
-        FtoCoord,
     };
 
     use super::{
-        center_position_moves, format_solution, free_u_suffix, last_layer_free_u_suffix, solve,
-        CenterOrbitForPosition, LastLayerGoal, LastLayerState, PruningChild, SolverPruning,
-        MOVE_COUNT,
+        CenterOrbitForPosition, LastLayerGoal, LastLayerState, MOVE_COUNT, PruningChild,
+        SolverPruning, center_position_moves, format_solution, free_u_suffix,
+        last_layer_free_u_suffix, solve,
     };
 
     #[test]
@@ -2670,8 +2696,14 @@ mod tests {
         let lean_ns = start.elapsed().as_nanos();
 
         println!("iterations: {iterations}");
-        println!("full_ns_per_transition: {:.2}", full_ns as f64 / iterations as f64);
-        println!("lean_ns_per_transition: {:.2}", lean_ns as f64 / iterations as f64);
+        println!(
+            "full_ns_per_transition: {:.2}",
+            full_ns as f64 / iterations as f64
+        );
+        println!(
+            "lean_ns_per_transition: {:.2}",
+            lean_ns as f64 / iterations as f64
+        );
         println!(
             "speedup: {:.2}%",
             (1.0 - lean_ns as f64 / full_ns as f64) * 100.0
@@ -2795,7 +2827,9 @@ mod tests {
         let solved_h_zero = states
             .iter()
             .map(|state| {
-                state.corner == solved.corner && state.edge3 == solved.edge3 && state.uf3 == solved.uf3
+                state.corner == solved.corner
+                    && state.edge3 == solved.edge3
+                    && state.uf3 == solved.uf3
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -2848,7 +2882,9 @@ mod tests {
         );
         let precomputed = states
             .iter()
-            .map(|state| u8::from(free_u_suffix(*state, solved, solved_u, solved_up, true).is_none()))
+            .map(|state| {
+                u8::from(free_u_suffix(*state, solved, solved_u, solved_up, true).is_none())
+            })
             .collect::<Vec<_>>();
         let start = Instant::now();
         let mut reused_hits = 0_usize;
@@ -2987,10 +3023,7 @@ mod tests {
             "indexed_last_layer_free_u_ns_per_leaf: {:.2}",
             indexed_ns as f64 / iterations as f64
         );
-        println!(
-            "speedup: {:.2}x",
-            old_ns as f64 / indexed_ns as f64
-        );
+        println!("speedup: {:.2}x", old_ns as f64 / indexed_ns as f64);
         println!("old_hits: {old_hits}");
         println!("indexed_hits: {indexed_hits}");
     }

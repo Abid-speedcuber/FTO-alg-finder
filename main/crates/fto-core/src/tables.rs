@@ -1,13 +1,13 @@
 use crate::{
+    FtoCoord, FtoCubie,
     coord::{
+        CENTER_COUNT, CENTER2_COUNT, CENTER2_COUNTS, CENTER3_COUNT, CENTER3_COUNTS, CORNER_COUNT,
+        EDGE_CHOICE_COUNT, EDGE3_COUNT, EDGE3_COUNTS, EDGE4_COUNT, EDGE4_COUNTS,
         apply_choice6_bitmap, apply_color_perm, rank_center_colors, rank_choice6, rank_corner,
         rank_multiset_colors, unrank_center_colors, unrank_choice6, unrank_corner,
-        unrank_multiset_colors, CENTER2_COUNT, CENTER2_COUNTS, CENTER3_COUNT, CENTER3_COUNTS,
-        CENTER_COUNT, CORNER_COUNT, EDGE3_COUNT, EDGE3_COUNTS, EDGE4_COUNT, EDGE4_COUNTS,
-        EDGE_CHOICE_COUNT,
+        unrank_multiset_colors,
     },
-    moves::{move_cubies, Move, MOVE_COUNT},
-    FtoCoord, FtoCubie,
+    moves::{MOVE_COUNT, Move, move_cubies},
 };
 use std::{
     fs::File,
@@ -364,7 +364,10 @@ fn build_edge_choice_table(moves: &[FtoCubie; MOVE_COUNT]) -> Vec<[u16; MOVE_COU
     table
 }
 
-fn build_center_table(moves: &[FtoCubie; MOVE_COUNT], orbit: CenterOrbit) -> Vec<[u32; MOVE_COUNT]> {
+fn build_center_table(
+    moves: &[FtoCubie; MOVE_COUNT],
+    orbit: CenterOrbit,
+) -> Vec<[u32; MOVE_COUNT]> {
     let mut table = vec![[0; MOVE_COUNT]; CENTER_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let colors = unrank_center_colors(rank as u32);
@@ -423,7 +426,10 @@ fn move_perm(mv: &FtoCubie, orbit: EdgeOrCenterOrbit) -> &[u8; 12] {
 }
 
 fn multiset_count(counts: &[u8]) -> u32 {
-    let total = counts.iter().map(|&count| usize::from(count)).sum::<usize>();
+    let total = counts
+        .iter()
+        .map(|&count| usize::from(count))
+        .sum::<usize>();
     factorial(total)
         / counts
             .iter()
@@ -433,14 +439,26 @@ fn multiset_count(counts: &[u8]) -> u32 {
 
 const fn factorial(n: usize) -> u32 {
     const FACT: [u32; 13] = [
-        1, 1, 2, 6, 24, 120, 720, 5_040, 40_320, 362_880, 3_628_800, 39_916_800, 479_001_600,
+        1,
+        1,
+        2,
+        6,
+        24,
+        120,
+        720,
+        5_040,
+        40_320,
+        362_880,
+        3_628_800,
+        39_916_800,
+        479_001_600,
     ];
     FACT[n]
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{moves::Move, tables::TransitionTables, FtoCubie};
+    use crate::{FtoCubie, moves::Move, tables::TransitionTables};
 
     #[test]
     #[ignore = "builds full center transition tables"]

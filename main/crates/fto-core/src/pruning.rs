@@ -7,10 +7,10 @@ use std::{
 };
 
 use crate::{
-    coord::{CENTER3_COUNT, CENTER_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT},
-    moves::{Move, MOVE_COUNT},
-    tables::TransitionTables,
     FtoCoord,
+    coord::{CENTER_COUNT, CENTER3_COUNT, CORNER_COUNT, EDGE_CHOICE_COUNT},
+    moves::{MOVE_COUNT, Move},
+    tables::TransitionTables,
 };
 
 const UNVISITED: u8 = u8::MAX;
@@ -46,7 +46,8 @@ impl PatternDatabase {
         match read_table(path, spec.size().unwrap_or(0)) {
             Ok(table) => Ok(Self { spec, table }),
             Err(_) => {
-                let (_, table) = build_pruning_table(&spec, tables, max_entries, progress_interval)?;
+                let (_, table) =
+                    build_pruning_table(&spec, tables, max_entries, progress_interval)?;
                 write_table(path, &table).map_err(|error| error.to_string())?;
                 Ok(Self { spec, table })
             }
@@ -66,11 +67,7 @@ impl PatternDatabase {
     #[must_use]
     pub fn value(&self, coord: FtoCoord) -> u8 {
         let value = self.table[self.spec.index_of_coord(coord)];
-        if value == UNVISITED {
-            UNVISITED
-        } else {
-            value
-        }
+        if value == UNVISITED { UNVISITED } else { value }
     }
 }
 
@@ -198,10 +195,16 @@ impl SolverPruning {
             cancel,
             report,
         )?;
-        std::fs::write(out_dir.join(format!("edge3__uf3__{file_suffix}.moves")), &suffix)
-            .map_err(|error| error.to_string())?;
-        std::fs::write(out_dir.join(format!("corner__uf3__{file_suffix}.moves")), &suffix)
-            .map_err(|error| error.to_string())?;
+        std::fs::write(
+            out_dir.join(format!("edge3__uf3__{file_suffix}.moves")),
+            &suffix,
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::write(
+            out_dir.join(format!("corner__uf3__{file_suffix}.moves")),
+            &suffix,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(Self {
             edge3_uf3,
             corner_uf3,
@@ -284,11 +287,7 @@ impl SolverPruning {
 }
 
 const fn live_depth(value: u8) -> u8 {
-    if value == UNVISITED {
-        UNVISITED
-    } else {
-        value
-    }
+    if value == UNVISITED { UNVISITED } else { value }
 }
 
 fn load_or_build_solver_table(
@@ -366,13 +365,17 @@ pub fn move_set_codename(suffix: &str) -> String {
     use std::hash::{Hash, Hasher};
 
     const NAMES: [&str; 16] = [
-        "aster", "boreal", "cipher", "drift", "ember", "fable", "glint", "halo",
-        "ivory", "jade", "kestrel", "lumen", "morrow", "nimbus", "oracle", "vesper",
+        "aster", "boreal", "cipher", "drift", "ember", "fable", "glint", "halo", "ivory", "jade",
+        "kestrel", "lumen", "morrow", "nimbus", "oracle", "vesper",
     ];
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     suffix.hash(&mut hasher);
     let value = hasher.finish();
-    format!("{}-{:04x}", NAMES[value as usize % NAMES.len()], value as u16)
+    format!(
+        "{}-{:04x}",
+        NAMES[value as usize % NAMES.len()],
+        value as u16
+    )
 }
 
 pub fn parse_move_set_suffix(suffix: &str) -> Option<Vec<Move>> {
@@ -652,7 +655,15 @@ fn build_pruning_table(
     max_entries: usize,
     progress_interval: usize,
 ) -> Result<(PruningStats, Vec<u8>), String> {
-    build_pruning_table_with_moves(spec, tables, max_entries, progress_interval, &Move::ALL, None, None)
+    build_pruning_table_with_moves(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        &Move::ALL,
+        None,
+        None,
+    )
 }
 
 fn build_pruning_table_with_moves(
@@ -803,7 +814,9 @@ fn build_pruning_table_from_index(
                     return Err(CANCELLED.to_owned());
                 }
             }
-            if expanded & cancel_check_mask == 0 && cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+            if expanded & cancel_check_mask == 0
+                && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+            {
                 return Err(CANCELLED.to_owned());
             }
             for &mv in moves {
@@ -1063,8 +1076,8 @@ fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>
 #[must_use]
 pub fn default_candidates() -> Vec<CandidateSpec> {
     use Component::{
-        Corner, E0, E1, E2, E3, Edge3, Edge4, RlCenter, RlCenter2, RlCenter3, UfCenter,
-        UfCenter2, UfCenter3,
+        Corner, E0, E1, E2, E3, Edge3, Edge4, RlCenter, RlCenter2, RlCenter3, UfCenter, UfCenter2,
+        UfCenter3,
     };
 
     vec![
@@ -1115,12 +1128,12 @@ pub fn default_candidates() -> Vec<CandidateSpec> {
 #[must_use]
 pub fn all_components() -> [Component; 13] {
     use Component::{
-        Corner, E0, E1, E2, E3, Edge3, Edge4, RlCenter, RlCenter2, RlCenter3, UfCenter,
-        UfCenter2, UfCenter3,
+        Corner, E0, E1, E2, E3, Edge3, Edge4, RlCenter, RlCenter2, RlCenter3, UfCenter, UfCenter2,
+        UfCenter3,
     };
     [
-        Corner, E0, E1, E2, E3, Edge3, Edge4, UfCenter, RlCenter, UfCenter2, UfCenter3,
-        RlCenter2, RlCenter3,
+        Corner, E0, E1, E2, E3, Edge3, Edge4, UfCenter, RlCenter, UfCenter2, UfCenter3, RlCenter2,
+        RlCenter3,
     ]
 }
 
@@ -1129,7 +1142,14 @@ pub fn generated_candidates(max_components: usize, max_entries: usize) -> Vec<Ca
     let components = all_components();
     let mut out = Vec::new();
     for width in 1..=max_components {
-        push_combinations(&components, width, 0, &mut Vec::new(), max_entries, &mut out);
+        push_combinations(
+            &components,
+            width,
+            0,
+            &mut Vec::new(),
+            max_entries,
+            &mut out,
+        );
     }
     out
 }
@@ -1160,7 +1180,7 @@ fn push_combinations(
 #[cfg(test)]
 mod tests {
     use crate::{
-        pruning::{evaluate_candidate, CandidateSpec, Component},
+        pruning::{CandidateSpec, Component, evaluate_candidate},
         tables::TransitionTables,
     };
 

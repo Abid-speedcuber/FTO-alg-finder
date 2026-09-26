@@ -317,7 +317,19 @@ fn count_multiset_suffix(len: usize, remaining: &[u8]) -> u32 {
 
 const fn factorial(n: usize) -> u32 {
     const FACT: [u32; 13] = [
-        1, 1, 2, 6, 24, 120, 720, 5_040, 40_320, 362_880, 3_628_800, 39_916_800, 479_001_600,
+        1,
+        1,
+        2,
+        6,
+        24,
+        120,
+        720,
+        5_040,
+        40_320,
+        362_880,
+        3_628_800,
+        39_916_800,
+        479_001_600,
     ];
     FACT[n]
 }
@@ -385,10 +397,10 @@ fn perm_parity(perm: &[u8]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        rank_center_colors, rank_choice6, rank_corner, rank_multiset_colors,
-        unrank_center_colors, unrank_choice6, unrank_corner, unrank_multiset_colors, EdgeCoord,
-        CENTER2_COUNT, CENTER2_COUNTS, CENTER3_COUNT, CENTER3_COUNTS, CENTER_COUNT, CORNER_COUNT,
-        EDGE3_COUNT, EDGE3_COUNTS, EDGE4_COUNT, EDGE4_COUNTS, EDGE_CHOICE_COUNT,
+        CENTER_COUNT, CENTER2_COUNT, CENTER2_COUNTS, CENTER3_COUNT, CENTER3_COUNTS, CORNER_COUNT,
+        EDGE_CHOICE_COUNT, EDGE3_COUNT, EDGE3_COUNTS, EDGE4_COUNT, EDGE4_COUNTS, EdgeCoord,
+        rank_center_colors, rank_choice6, rank_corner, rank_multiset_colors, unrank_center_colors,
+        unrank_choice6, unrank_corner, unrank_multiset_colors,
     };
 
     #[test]

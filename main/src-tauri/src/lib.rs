@@ -222,7 +222,9 @@ fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(
 }
 
 #[tauri::command]
-fn pruning_cache_status(solver_state: tauri::State<'_, SolverState>) -> Result<PruningCacheStatus, String> {
+fn pruning_cache_status(
+    solver_state: tauri::State<'_, SolverState>,
+) -> Result<PruningCacheStatus, String> {
     let cache = solver_state
         .cache
         .lock()
@@ -243,7 +245,10 @@ fn list_pruning_tables() -> Result<Vec<PruningTableInfo>, String> {
 }
 
 #[tauri::command]
-fn delete_pruning_table(id: String, solver_state: tauri::State<'_, SolverState>) -> Result<(), String> {
+fn delete_pruning_table(
+    id: String,
+    solver_state: tauri::State<'_, SolverState>,
+) -> Result<(), String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
@@ -326,15 +331,24 @@ fn solve_fto_inner(
     } else {
         parse_move_names(&request.instance_moves)?
     };
-    let instance_move_set = instance_moves.iter().copied().collect::<std::collections::HashSet<_>>();
-    if !allowed_moves.iter().all(|mv| instance_move_set.contains(mv)) {
+    let instance_move_set = instance_moves
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if !allowed_moves
+        .iter()
+        .all(|mv| instance_move_set.contains(mv))
+    {
         return Err(
             "the selected move set is not contained in this instance's move set".to_owned(),
         );
     }
 
     let (cubie, partial_mask) = if let Some(state) = request.state.clone() {
-        (FtoCubie::new(state.cp, state.co, state.ep, state.uf, state.rl), None)
+        (
+            FtoCubie::new(state.cp, state.co, state.ep, state.uf, state.rl),
+            None,
+        )
     } else if let Some(facelets) = request.facelets.clone() {
         cubie_and_partial_mask_from_facelets(
             &facelets,
@@ -425,7 +439,10 @@ fn run_in_process_solve(
         let result = partial::solve_partial_threads(&problem, &config, request.threads.max(1));
         let solutions = format_solutions(&result.solutions);
         emit_solve_summary(app, result.nodes, &solutions);
-        return Ok(SolveResponse { nodes: result.nodes, solutions });
+        return Ok(SolveResponse {
+            nodes: result.nodes,
+            solutions,
+        });
     }
 
     let pruning = Some(load_solver_pruning(
@@ -489,7 +506,10 @@ fn run_in_process_solve(
     };
     let solutions = format_solutions(&result.solutions);
     emit_solve_summary(app, result.nodes, &solutions);
-    Ok(SolveResponse { nodes: result.nodes, solutions })
+    Ok(SolveResponse {
+        nodes: result.nodes,
+        solutions,
+    })
 }
 
 fn load_transition_tables(
@@ -502,7 +522,8 @@ fn load_transition_tables(
     if let Some(tables) = cache.tables.as_ref() {
         return Ok(tables.clone());
     }
-    let tables = Arc::new(TransitionTables::load_or_build(path).map_err(|error| error.to_string())?);
+    let tables =
+        Arc::new(TransitionTables::load_or_build(path).map_err(|error| error.to_string())?);
     cache.tables = Some(tables.clone());
     Ok(tables)
 }
@@ -519,12 +540,17 @@ fn load_solver_pruning(
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
 ) -> Result<Arc<SolverPruning>, String> {
-    let target = select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+    let target =
+        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
     {
         let cache = cache
             .lock()
             .map_err(|_| "solver cache lock poisoned".to_owned())?;
-        if let Some(cached) = cache.pruning.as_ref().filter(|cached| cached.moves == target) {
+        if let Some(cached) = cache
+            .pruning
+            .as_ref()
+            .filter(|cached| cached.moves == target)
+        {
             emit_line(app, "info", "using cached pruning tables from RAM");
             return Ok(cached.pruning.clone());
         }
@@ -660,12 +686,7 @@ fn solve_incrementally(
             search::solve_last_layer_with_pruning_threads(cubie, tables, pruning, &config, threads)
         } else {
             search::solve_with_pruning_and_mini_threads(
-                coord,
-                tables,
-                pruning,
-                mini,
-                &config,
-                threads,
+                coord, tables, pruning, mini, &config, threads,
             )
         };
         total_nodes += result.nodes;
@@ -715,7 +736,8 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
             continue;
         };
         let file_suffix = file_suffix_ref.to_owned();
-        let suffix = read_move_suffix(out_dir, &file_suffix).unwrap_or_else(|| file_suffix.to_owned());
+        let suffix =
+            read_move_suffix(out_dir, &file_suffix).unwrap_or_else(|| file_suffix.to_owned());
         let corner = format!("corner__uf3__{file_suffix}.pdb");
         if !out_dir.join(&corner).exists() {
             continue;
@@ -761,13 +783,17 @@ fn pruning_codename(suffix: &str) -> String {
     use std::hash::{Hash, Hasher};
 
     const NAMES: [&str; 16] = [
-        "Aster", "Boreal", "Cipher", "Drift", "Ember", "Fable", "Glint", "Halo",
-        "Ivory", "Jade", "Kestrel", "Lumen", "Morrow", "Nimbus", "Oracle", "Vesper",
+        "Aster", "Boreal", "Cipher", "Drift", "Ember", "Fable", "Glint", "Halo", "Ivory", "Jade",
+        "Kestrel", "Lumen", "Morrow", "Nimbus", "Oracle", "Vesper",
     ];
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     suffix.hash(&mut hasher);
     let value = hasher.finish();
-    format!("{}-{:04X}", NAMES[value as usize % NAMES.len()], value as u16)
+    format!(
+        "{}-{:04X}",
+        NAMES[value as usize % NAMES.len()],
+        value as u16
+    )
 }
 
 fn select_pruning_move_set(
@@ -781,7 +807,9 @@ fn select_pruning_move_set(
     }
     let instance_set: HashSet<Move> = HashSet::from_iter(instance_moves.iter().copied());
     if !allowed_moves.iter().all(|mv| instance_set.contains(mv)) {
-        return Err("the selected move set is not contained in this instance's move set".to_owned());
+        return Err(
+            "the selected move set is not contained in this instance's move set".to_owned(),
+        );
     }
 
     let mut candidates = Vec::<Vec<Move>>::new();
@@ -836,10 +864,14 @@ fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
         else {
             continue;
         };
-        if !out_dir.join(format!("corner__uf3__{file_suffix}.pdb")).exists() {
+        if !out_dir
+            .join(format!("corner__uf3__{file_suffix}.pdb"))
+            .exists()
+        {
             continue;
         }
-        let suffix = read_move_suffix(out_dir, file_suffix).unwrap_or_else(|| file_suffix.to_owned());
+        let suffix =
+            read_move_suffix(out_dir, file_suffix).unwrap_or_else(|| file_suffix.to_owned());
         if let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) {
             moves.sort_unstable_by_key(|mv| mv.idx());
             if !sets.contains(&moves) {
@@ -891,8 +923,9 @@ fn cubie_from_partial_facelets(
         }
     }
     let slot_mask = partial_slot_mask_from_facelets(facelets)?;
-    let (mut cp, corner_ori) = detect_partial_pieces(&CORNER_FACELETS, facelets, &slot_mask.corners)
-        .map_err(|_| "defined corner stickers do not describe legal FTO corners".to_owned())?;
+    let (mut cp, corner_ori) =
+        detect_partial_pieces(&CORNER_FACELETS, facelets, &slot_mask.corners)
+            .map_err(|_| "defined corner stickers do not describe legal FTO corners".to_owned())?;
     let mut co = [0_u8; 6];
     let mut corner_xor = 0_u8;
     for i in 0..6 {
@@ -1022,7 +1055,9 @@ fn apply_center_target_orbit(
             continue;
         };
         if slot >= 12 {
-            return Err(format!("{orbit_name} center target {slot} is outside 0..11"));
+            return Err(format!(
+                "{orbit_name} center target {slot} is outside 0..11"
+            ));
         }
         if slot / 3 != color as u8 {
             return Err(format!(
@@ -1118,7 +1153,10 @@ fn detect_partial_pieces<const N: usize, const K: usize>(
     Ok((perm, ori))
 }
 
-fn repair_partial_parity<const N: usize>(perm: &mut [u8; N], care: &[bool; N]) -> Result<(), String> {
+fn repair_partial_parity<const N: usize>(
+    perm: &mut [u8; N],
+    care: &[bool; N],
+) -> Result<(), String> {
     if permutation_parity(perm) == 0 {
         return Ok(());
     }
@@ -1131,7 +1169,10 @@ fn repair_partial_parity<const N: usize>(perm: &mut [u8; N], care: &[bool; N]) -
         perm.swap(ignored[0], ignored[1]);
         Ok(())
     } else {
-        Err("partial position has fixed permutation parity with no ignored pieces to absorb it".to_owned())
+        Err(
+            "partial position has fixed permutation parity with no ignored pieces to absorb it"
+                .to_owned(),
+        )
     }
 }
 
@@ -1210,12 +1251,14 @@ fn read_partial_centers<const N: usize>(
 
     if let Some(top_sources) = top_sources {
         for color in 0..4 {
-            let fixed_slot = fixed_slots
-                .and_then(|slots| slots[color])
-                .map(usize::from);
+            let fixed_slot = fixed_slots.and_then(|slots| slots[color]).map(usize::from);
             for &source in &top_sources[color] {
                 let source = usize::from(source);
-                if source >= N || !care[source] || visible_color[source] != color || out[source] != u8::MAX {
+                if source >= N
+                    || !care[source]
+                    || visible_color[source] != color
+                    || out[source] != u8::MAX
+                {
                     continue;
                 }
                 let piece = (color * 3..color * 3 + 3)
@@ -1510,9 +1553,9 @@ fn parse_move(token: &str) -> Result<Move, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cubie_and_partial_mask_from_facelets, cubie_from_facelets,
-        cubie_from_facelets_for_solving, cubie_from_facelets_with_center_targets, CenterTargets,
-        CORNER_FACELETS, EDGE_FACELETS, F, U, empty_center_source_groups,
+        cubie_and_partial_mask_from_facelets, cubie_from_facelets, cubie_from_facelets_for_solving,
+        cubie_from_facelets_with_center_targets, empty_center_source_groups, CenterTargets,
+        CORNER_FACELETS, EDGE_FACELETS, F, U,
     };
     use fto_core::FtoCubie;
 

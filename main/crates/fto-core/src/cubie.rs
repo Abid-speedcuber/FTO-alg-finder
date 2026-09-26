@@ -11,13 +11,7 @@ pub struct FtoCubie {
 
 impl FtoCubie {
     #[must_use]
-    pub const fn new(
-        cp: [u8; 6],
-        co: [u8; 6],
-        ep: [u8; 12],
-        uf: [u8; 12],
-        rl: [u8; 12],
-    ) -> Self {
+    pub const fn new(cp: [u8; 6], co: [u8; 6], ep: [u8; 12], uf: [u8; 12], rl: [u8; 12]) -> Self {
         Self { cp, co, ep, uf, rl }
     }
 

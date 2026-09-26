@@ -193,10 +193,18 @@ pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
         [0, 1, 2, 3, 10, 11, 4, 5, 8, 9, 6, 7],
     );
 
-    moves[Move::FUFp.idx()] = all[Move::F.idx()].compose(&all[Move::U.idx()]).compose(&all[Move::Fp.idx()]);
-    moves[Move::FUpFp.idx()] = all[Move::F.idx()].compose(&all[Move::Up.idx()]).compose(&all[Move::Fp.idx()]);
-    moves[Move::FpUF.idx()] = all[Move::Fp.idx()].compose(&all[Move::U.idx()]).compose(&all[Move::F.idx()]);
-    moves[Move::FpUpF.idx()] = all[Move::Fp.idx()].compose(&all[Move::Up.idx()]).compose(&all[Move::F.idx()]);
+    moves[Move::FUFp.idx()] = all[Move::F.idx()]
+        .compose(&all[Move::U.idx()])
+        .compose(&all[Move::Fp.idx()]);
+    moves[Move::FUpFp.idx()] = all[Move::F.idx()]
+        .compose(&all[Move::Up.idx()])
+        .compose(&all[Move::Fp.idx()]);
+    moves[Move::FpUF.idx()] = all[Move::Fp.idx()]
+        .compose(&all[Move::U.idx()])
+        .compose(&all[Move::F.idx()]);
+    moves[Move::FpUpF.idx()] = all[Move::Fp.idx()]
+        .compose(&all[Move::Up.idx()])
+        .compose(&all[Move::F.idx()]);
     moves
 }
 

@@ -9,12 +9,12 @@ use std::{
 };
 
 use fto_core::{
+    FtoCubie,
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
-    pruning::{self, SolverPruning, PruningStats},
+    pruning::{self, PruningStats, SolverPruning},
     search::{self, BidirectionalChoice, BidirectionalConfig, MiniPruning, SearchConfig},
     tables::TransitionTables,
-    FtoCubie,
 };
 
 fn main() {
@@ -63,11 +63,12 @@ fn run() -> Result<(), String> {
         match args[i].as_str() {
             "--depth" => {
                 i += 1;
-                max_depth = Some(args
-                    .get(i)
-                    .ok_or("--depth needs a value")?
-                    .parse()
-                    .map_err(|_| "--depth must be an integer from 0 to 255")?);
+                max_depth = Some(
+                    args.get(i)
+                        .ok_or("--depth needs a value")?
+                        .parse()
+                        .map_err(|_| "--depth must be an integer from 0 to 255")?,
+                );
             }
             "--all" => find_all = true,
             "--exact" => exact_depth = true,
@@ -119,7 +120,8 @@ fn run() -> Result<(), String> {
             }
             "--moves" => {
                 i += 1;
-                allowed_moves = parse_move_ident_list(args.get(i).ok_or("--moves needs a move list")?)?;
+                allowed_moves =
+                    parse_move_ident_list(args.get(i).ok_or("--moves needs a move list")?)?;
             }
             "--instance-moves" => {
                 i += 1;
@@ -208,7 +210,11 @@ fn run() -> Result<(), String> {
             }
             "--scramble" => {
                 i += 1;
-                scramble = Some(args.get(i).ok_or("--scramble needs a quoted move sequence")?.clone());
+                scramble = Some(
+                    args.get(i)
+                        .ok_or("--scramble needs a quoted move sequence")?
+                        .clone(),
+                );
             }
             "--help" | "-h" => {
                 print_help();
@@ -336,7 +342,11 @@ fn run() -> Result<(), String> {
             threads,
             allowed_moves,
             last_layer_mode,
-            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_policy(
+                force_bidirectional,
+                disable_bidirectional,
+                bidirectional_threshold,
+            ),
             bidirectional_max_mib,
         );
         println!("nodes: {}", result.nodes);
@@ -389,7 +399,11 @@ fn run() -> Result<(), String> {
             find_all,
             benchmark_iters,
             threads,
-            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_policy(
+                force_bidirectional,
+                disable_bidirectional,
+                bidirectional_threshold,
+            ),
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
@@ -408,7 +422,11 @@ fn run() -> Result<(), String> {
             exact_depth,
             find_all,
             threads,
-            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_policy(
+                force_bidirectional,
+                disable_bidirectional,
+                bidirectional_threshold,
+            ),
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
@@ -423,7 +441,11 @@ fn run() -> Result<(), String> {
             mini_tables.as_ref(),
             find_all,
             threads,
-            bidirectional_policy(force_bidirectional, disable_bidirectional, bidirectional_threshold),
+            bidirectional_policy(
+                force_bidirectional,
+                disable_bidirectional,
+                bidirectional_threshold,
+            ),
             bidirectional_max_mib,
             bidirectional_start_pruning,
             progress_million * 1_000_000,
@@ -830,7 +852,8 @@ fn load_solver_pruning(
     restricted_pruning: bool,
     threads: usize,
 ) -> Result<SolverPruning, String> {
-    let target = select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+    let target =
+        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
     let pruning = SolverPruning::load_or_build_with_moves_threaded(
         tables,
         out_dir,
@@ -1138,7 +1161,10 @@ fn run_auto_pruning(
         .collect::<HashSet<_>>();
     eprintln!("sampling {sample_count} states with walks up to {sample_walk_len} moves");
     let samples = sample_states(tables, sample_count, sample_walk_len);
-    eprintln!("loading sampled values for {} top candidates", selected.len());
+    eprintln!(
+        "loading sampled values for {} top candidates",
+        selected.len()
+    );
     let sampled = selected
         .iter()
         .map(|candidate| load_sampled_values(candidate, &samples))
@@ -1184,7 +1210,10 @@ fn run_auto_pruning(
         eprintln!("keeping all generated pruning tables");
     } else {
         let removed = cleanup_unselected_pdbs(out_dir, &selected_paths)?;
-        eprintln!("removed {removed} unselected pruning tables from {}", out_dir.display());
+        eprintln!(
+            "removed {removed} unselected pruning tables from {}",
+            out_dir.display()
+        );
     }
     Ok(())
 }
@@ -1194,7 +1223,8 @@ fn cleanup_unselected_pdbs(out_dir: &Path, keep_paths: &HashSet<PathBuf>) -> Res
     for entry in fs::read_dir(out_dir).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "pdb") && !keep_paths.contains(&path)
+        if path.extension().is_some_and(|extension| extension == "pdb")
+            && !keep_paths.contains(&path)
         {
             fs::remove_file(&path).map_err(|error| error.to_string())?;
             removed += 1;
@@ -1235,7 +1265,8 @@ fn sample_states(
         let mut last_axis = None;
         for _ in 0..depth {
             let mv = loop {
-                let candidate = fto_core::moves::Move::ALL[rng.next_usize(fto_core::moves::MOVE_COUNT)];
+                let candidate =
+                    fto_core::moves::Move::ALL[rng.next_usize(fto_core::moves::MOVE_COUNT)];
                 if last_axis != Some(candidate.axis()) {
                     break candidate;
                 }
@@ -1302,7 +1333,10 @@ fn score_combinations(
             .iter()
             .map(|&idx| candidates[idx].name.clone())
             .collect::<Vec<_>>();
-        let total_bytes = current.iter().map(|&idx| candidates[idx].bytes).sum::<usize>();
+        let total_bytes = current
+            .iter()
+            .map(|&idx| candidates[idx].bytes)
+            .sum::<usize>();
         let avg_max_milli = sum * 1000 / sample_len as u64;
         writeln!(
             out,
@@ -1631,9 +1665,9 @@ fn parse_array<const N: usize>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let out: [u8; N] = values
-        .try_into()
-        .map_err(|values: Vec<u8>| format!("{key} must contain {N} values, got {}", values.len()))?;
+    let out: [u8; N] = values.try_into().map_err(|values: Vec<u8>| {
+        format!("{key} must contain {N} values, got {}", values.len())
+    })?;
     Ok(out)
 }
 
