@@ -69,6 +69,7 @@ struct ParallelSearchRoot {
     state: SearchState,
     depth_left: u8,
     last_move: Option<Move>,
+    raw_pruning: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -839,8 +840,16 @@ fn solve_with_pruning_threads_impl(
         if depth == 0 {
             for (prefix, start, _) in exact_start_states(root, tables, config.free_u_ends) {
                 total.nodes += 1;
-                if let Some(suffix) =
-                    free_u_suffix(start, solved, solved_u, solved_up, config.free_u_ends)
+                let raw_pruning = pruning
+                    .map(|pruning| pruning.heuristic(start.edge3_uf3_idx, start.corner_uf3_idx));
+                if let Some(suffix) = free_u_suffix_with_raw_pruning(
+                    start,
+                    solved,
+                    solved_u,
+                    solved_up,
+                    config.free_u_ends,
+                    raw_pruning,
+                )
                 {
                     let mut solution = Vec::new();
                     if let Some(prefix) = prefix {
@@ -878,7 +887,7 @@ fn solve_with_pruning_threads_impl(
             if let Some(prefix) = prefix {
                 path.push(prefix);
             }
-            collector.collect(start, depth, last_move, &mut path, 0, false);
+            collector.collect(start, depth, last_move, &mut path, 0, None);
         }
         let roots = collector.roots;
         if roots.is_empty() {
@@ -922,7 +931,12 @@ fn solve_with_pruning_threads_impl(
                         };
                         ctx.path.clear();
                         ctx.path.extend_from_slice(&root.path);
-                        ctx.dfs(root.state, root.depth_left, root.last_move, true);
+                        ctx.dfs(
+                            root.state,
+                            root.depth_left,
+                            root.last_move,
+                            root.raw_pruning,
+                        );
                         if !config.find_all && !ctx.solutions.is_empty() {
                             break;
                         }
@@ -1196,7 +1210,7 @@ fn solve_with_pruning_single(
             if let Some(prefix) = prefix {
                 ctx.path.push(prefix);
             }
-            ctx.dfs(start, depth, last_move, false);
+            ctx.dfs(start, depth, last_move, None);
             if prefix.is_some() {
                 ctx.path.pop();
             }
@@ -1362,22 +1376,40 @@ impl SearchContext<'_> {
         state: SearchState,
         depth_left: u8,
         last_move: Option<Move>,
-        pruning_checked: bool,
+        raw_pruning: Option<u8>,
     ) {
         if is_cancelled(self.config) {
             return;
         }
         self.nodes += 1;
-        if !pruning_checked && self.pruning_value(state) > depth_left {
+        let raw_pruning = raw_pruning.or_else(|| self.raw_pruning_value(state));
+        if raw_pruning
+            .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
+            .unwrap_or(0)
+            > depth_left
+        {
+            return;
+        }
+        let mini_pruning_value = self
+            .mini
+            .map(|mini| {
+                adjusted_pruning_value(
+                    mini.heuristic(&state.mini_indices),
+                    self.config.free_u_ends,
+                )
+            })
+            .unwrap_or(0);
+        if mini_pruning_value > depth_left {
             return;
         }
         if depth_left == 0 {
-            if let Some(suffix) = free_u_suffix(
+            if let Some(suffix) = free_u_suffix_with_raw_pruning(
                 state,
                 self.solved,
                 self.solved_u,
                 self.solved_up,
                 self.config.free_u_ends,
+                raw_pruning,
             ) {
                 let mut solution = self.path.clone();
                 if let Some(suffix) = suffix {
@@ -1390,14 +1422,17 @@ impl SearchContext<'_> {
         }
 
         let child_depth = depth_left - 1;
-        let mut children = [(0_u8, Move::U, state); MOVE_COUNT];
+        let mut children = [(0_u8, Move::U, state, None); MOVE_COUNT];
         let mut child_count = 0;
         for &mv in &self.config.allowed_moves {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
             let pruning_child = state.apply_pruning(self.tables, mv);
-            let pruning_value = self.pruning_value_for_child(pruning_child);
+            let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
+            let pruning_value = raw_child_pruning
+                .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
+                .unwrap_or(0);
             if pruning_value > child_depth {
                 continue;
             }
@@ -1415,19 +1450,19 @@ impl SearchContext<'_> {
             if mini_pruning_value > child_depth {
                 continue;
             }
-            children[child_count] = (pruning_value, mv, next);
+            children[child_count] = (pruning_value, mv, next, raw_child_pruning);
             child_count += 1;
         }
         if !self.config.find_all {
             children[..child_count].sort_unstable_by(|a, b| b.0.cmp(&a.0));
         }
 
-        for &(_, mv, next) in &children[..child_count] {
+        for &(_, mv, next, raw_next_pruning) in &children[..child_count] {
             if is_cancelled(self.config) {
                 return;
             }
             self.path.push(mv);
-            self.dfs(next, child_depth, Some(mv), true);
+            self.dfs(next, child_depth, Some(mv), raw_next_pruning);
             self.path.pop();
 
             if !self.config.find_all && !self.solutions.is_empty() {
@@ -1436,27 +1471,14 @@ impl SearchContext<'_> {
         }
     }
 
-    fn pruning_value(&self, state: SearchState) -> u8 {
-        let base = adjusted_pruning_value(
-            self.pruning
-                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
-                .unwrap_or(0),
-            self.config.free_u_ends,
-        );
-        let mini = self
-            .mini
-            .map(|mini| adjusted_pruning_value(mini.heuristic(&state.mini_indices), self.config.free_u_ends))
-            .unwrap_or(0);
-        base.max(mini)
+    fn raw_pruning_value(&self, state: SearchState) -> Option<u8> {
+        self.pruning
+            .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
     }
 
-    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
-        adjusted_pruning_value(
-            self.pruning
+    fn raw_pruning_value_for_child(&self, child: PruningChild) -> Option<u8> {
+        self.pruning
             .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
-                .unwrap_or(0),
-            self.config.free_u_ends,
-        )
     }
 
     fn should_skip_after(&self, last: Move, current: Move) -> bool {
@@ -1543,12 +1565,29 @@ impl SearchRootCollector<'_> {
         last_move: Option<Move>,
         path: &mut Vec<Move>,
         ply: u8,
-        pruning_checked: bool,
+        raw_pruning: Option<u8>,
     ) {
         if is_cancelled(self.config) {
             return;
         }
-        if !pruning_checked && self.pruning_value(state) > depth_left {
+        let raw_pruning = raw_pruning.or_else(|| self.raw_pruning_value(state));
+        if raw_pruning
+            .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
+            .unwrap_or(0)
+            > depth_left
+        {
+            return;
+        }
+        let mini_pruning_value = self
+            .mini
+            .map(|mini| {
+                adjusted_pruning_value(
+                    mini.heuristic(&state.mini_indices),
+                    self.config.free_u_ends,
+                )
+            })
+            .unwrap_or(0);
+        if mini_pruning_value > depth_left {
             return;
         }
         if depth_left == 0 || ply >= self.split_ply {
@@ -1557,6 +1596,7 @@ impl SearchRootCollector<'_> {
                 state,
                 depth_left,
                 last_move,
+                raw_pruning,
             });
             return;
         }
@@ -1568,7 +1608,10 @@ impl SearchRootCollector<'_> {
                 continue;
             }
             let pruning_child = state.apply_pruning(self.tables, mv);
-            let pruning_value = self.pruning_value_for_child(pruning_child);
+            let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
+            let pruning_value = raw_child_pruning
+                .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
+                .unwrap_or(0);
             if pruning_value > child_depth {
                 continue;
             }
@@ -1591,37 +1634,19 @@ impl SearchRootCollector<'_> {
                 continue;
             }
             path.push(mv);
-            self.collect(next, child_depth, Some(mv), path, ply + 1, true);
+            self.collect(next, child_depth, Some(mv), path, ply + 1, raw_child_pruning);
             path.pop();
         }
     }
 
-    fn pruning_value(&self, state: SearchState) -> u8 {
-        let base = adjusted_pruning_value(
-            self.pruning
-                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
-                .unwrap_or(0),
-            self.config.free_u_ends,
-        );
-        let mini = self
-            .mini
-            .map(|mini| {
-                adjusted_pruning_value(
-                    mini.heuristic(&state.mini_indices),
-                    self.config.free_u_ends,
-                )
-            })
-            .unwrap_or(0);
-        base.max(mini)
+    fn raw_pruning_value(&self, state: SearchState) -> Option<u8> {
+        self.pruning
+            .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
     }
 
-    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
-        adjusted_pruning_value(
-            self.pruning
-                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
-                .unwrap_or(0),
-            self.config.free_u_ends,
-        )
+    fn raw_pruning_value_for_child(&self, child: PruningChild) -> Option<u8> {
+        self.pruning
+            .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
     }
 }
 
@@ -1741,6 +1766,7 @@ fn exact_start_states(
     ]
 }
 
+#[cfg(test)]
 fn free_u_suffix(
     state: SearchState,
     solved: SearchState,
@@ -1761,6 +1787,40 @@ fn free_u_suffix(
         return Some(Some(Move::U));
     }
     None
+}
+
+fn free_u_suffix_with_raw_pruning(
+    state: SearchState,
+    solved: SearchState,
+    solved_u: SearchState,
+    solved_up: SearchState,
+    free_u_ends: bool,
+    raw_pruning: Option<u8>,
+) -> Option<Option<Move>> {
+    if raw_pruning == Some(0) {
+        if remaining_solved_indices_match(state, solved) {
+            return Some(None);
+        }
+    } else if state == solved {
+        return Some(None);
+    }
+    if !free_u_ends {
+        return None;
+    }
+    if state == solved_u {
+        return Some(Some(Move::Up));
+    }
+    if state == solved_up {
+        return Some(Some(Move::U));
+    }
+    None
+}
+
+fn remaining_solved_indices_match(state: SearchState, solved: SearchState) -> bool {
+    state.edge0 == solved.edge0
+        && state.edge1 == solved.edge1
+        && state.uf_center == solved.uf_center
+        && state.rl_center == solved.rl_center
 }
 
 fn last_layer_start_states(
@@ -2623,6 +2683,70 @@ mod tests {
     #[test]
     #[ignore = "microbenchmarks solved-state checks against pruning-table zero checks"]
     fn benchmark_terminal_check_vs_pruning_zero() {
+        fn remaining_matches(state: SearchState, goal: SearchState) -> bool {
+            state.edge0 == goal.edge0
+                && state.edge1 == goal.edge1
+                && state.uf_center == goal.uf_center
+                && state.rl_center == goal.rl_center
+        }
+
+        fn hybrid_free_u_suffix(
+            state: SearchState,
+            solved: SearchState,
+            solved_u: SearchState,
+            solved_up: SearchState,
+            solved_h_zero: bool,
+            free_u_ends: bool,
+        ) -> Option<Option<Move>> {
+            if solved_h_zero && remaining_matches(state, solved) {
+                return Some(None);
+            }
+            if !free_u_ends {
+                return None;
+            }
+            if state == solved_u {
+                return Some(Some(Move::Up));
+            }
+            if state == solved_up {
+                return Some(Some(Move::U));
+            }
+            None
+        }
+
+        #[cold]
+        #[inline(never)]
+        fn cold_exact_h_zero_suffix(
+            state: SearchState,
+            solved: SearchState,
+        ) -> Option<Option<Move>> {
+            remaining_matches(state, solved).then_some(None)
+        }
+
+        fn hybrid_cold_h_zero_free_u_suffix(
+            state: SearchState,
+            solved: SearchState,
+            solved_u: SearchState,
+            solved_up: SearchState,
+            solved_h_zero: bool,
+            free_u_ends: bool,
+        ) -> Option<Option<Move>> {
+            if solved_h_zero {
+                if let Some(suffix) = cold_exact_h_zero_suffix(state, solved) {
+                    return Some(suffix);
+                }
+            }
+            if !free_u_ends {
+                return None;
+            }
+            if state == solved_u {
+                return Some(Some(Move::Up));
+            }
+            if state == solved_up {
+                return Some(Some(Move::U));
+            }
+            None
+        }
+
         let tables = TransitionTables::load_or_build("cache/transition-tables-v4.bin")
             .unwrap_or_else(|_| TransitionTables::build());
         let solved = SearchState::from_coord(FtoCoord::solved());
@@ -2668,6 +2792,60 @@ mod tests {
             "normal_free_u_equality_ns_per_leaf: {:.2}",
             equality_ns as f64 / iterations as f64
         );
+        let solved_h_zero = states
+            .iter()
+            .map(|state| {
+                state.corner == solved.corner && state.edge3 == solved.edge3 && state.uf3 == solved.uf3
+            })
+            .collect::<Vec<_>>();
+        let start = Instant::now();
+        let mut hybrid_hits = 0_usize;
+        for i in 0..iterations {
+            let idx = i & (states.len() - 1);
+            if hybrid_free_u_suffix(
+                states[idx],
+                solved,
+                solved_u,
+                solved_up,
+                solved_h_zero[idx],
+                true,
+            )
+            .is_some()
+            {
+                hybrid_hits += 1;
+            }
+            std::hint::black_box(hybrid_hits);
+        }
+        let hybrid_ns = start.elapsed().as_nanos();
+
+        println!(
+            "normal_hybrid_reused_h_zero_ns_per_leaf: {:.2}",
+            hybrid_ns as f64 / iterations as f64
+        );
+        let start = Instant::now();
+        let mut hybrid_cold_hits = 0_usize;
+        for i in 0..iterations {
+            let idx = i & (states.len() - 1);
+            if hybrid_cold_h_zero_free_u_suffix(
+                states[idx],
+                solved,
+                solved_u,
+                solved_up,
+                solved_h_zero[idx],
+                true,
+            )
+            .is_some()
+            {
+                hybrid_cold_hits += 1;
+            }
+            std::hint::black_box(hybrid_cold_hits);
+        }
+        let hybrid_cold_ns = start.elapsed().as_nanos();
+
+        println!(
+            "normal_hybrid_cold_h_zero_ns_per_leaf: {:.2}",
+            hybrid_cold_ns as f64 / iterations as f64
+        );
         let precomputed = states
             .iter()
             .map(|state| u8::from(free_u_suffix(*state, solved, solved_u, solved_up, true).is_none()))
@@ -2687,6 +2865,8 @@ mod tests {
             reused_ns as f64 / iterations as f64
         );
         println!("equality_hits: {equality_hits}");
+        println!("hybrid_hits: {hybrid_hits}");
+        println!("hybrid_cold_hits: {hybrid_cold_hits}");
         println!("reused_hits: {reused_hits}");
     }
 

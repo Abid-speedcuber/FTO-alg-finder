@@ -286,23 +286,22 @@ impl IndexedPartialSearchContext<'_> {
             return;
         }
         self.nodes += 1;
-        if adjusted_pruning_value(
-            self.pruning
-                .heuristic_for_indices(&state.cubie, &state.indices),
-            self.config.free_u_ends,
-        ) > depth_left
-        {
+        let raw_pruning = self
+            .pruning
+            .heuristic_for_indices(&state.cubie, &state.indices);
+        if adjusted_pruning_value(raw_pruning, self.config.free_u_ends) > depth_left {
             return;
         }
         if depth_left == 0 {
             if self.config.free_u_ends && ends_in_u_or_up(&self.path) {
                 return;
             }
-            if let Some(suffix) = partial_free_u_suffix(
+            if let Some(suffix) = partial_free_u_suffix_with_raw_pruning(
                 state.cubie,
                 &self.moves,
                 &self.problem.mask,
                 self.config.free_u_ends,
+                raw_pruning,
             )
             {
                 push_unique_solution(
@@ -445,6 +444,7 @@ fn partial_start_states(
     ]
 }
 
+#[cfg(test)]
 fn partial_free_u_suffix(
     state: FtoCubie,
     moves: &[FtoCubie; MOVE_COUNT],
@@ -464,6 +464,54 @@ fn partial_free_u_suffix(
         return Some(Some(Move::Up));
     }
     None
+}
+
+fn partial_free_u_suffix_with_raw_pruning(
+    state: FtoCubie,
+    moves: &[FtoCubie; MOVE_COUNT],
+    mask: &PartialMask,
+    free_u_ends: bool,
+    raw_pruning: u8,
+) -> Option<Option<Move>> {
+    if raw_pruning == 0 && partial_centers_solved(&state, mask) {
+        return Some(None);
+    }
+    if !free_u_ends {
+        return None;
+    }
+    if is_partial_solved(&state.compose(&moves[Move::U.idx()]), mask) {
+        return Some(Some(Move::U));
+    }
+    if is_partial_solved(&state.compose(&moves[Move::Up.idx()]), mask) {
+        return Some(Some(Move::Up));
+    }
+    None
+}
+
+fn partial_centers_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
+    for piece in 0..12 {
+        if mask.uf_centers[piece]
+            && !center_piece_satisfies_constraint(
+                &state.uf,
+                piece as u8,
+                &mask.uf_center_targets,
+                false,
+            )
+        {
+            return false;
+        }
+        if mask.rl_centers[piece]
+            && !center_piece_satisfies_constraint(
+                &state.rl,
+                piece as u8,
+                &mask.rl_center_targets,
+                mask.last_layer_centers,
+            )
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn ends_in_u_or_up(path: &[Move]) -> bool {
