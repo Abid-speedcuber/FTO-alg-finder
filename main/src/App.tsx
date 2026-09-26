@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import Pickr from "@simonwep/pickr";
+import "@simonwep/pickr/dist/themes/nano.min.css";
 import AlgCombiner from "./AlgCombiner";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
@@ -53,6 +55,16 @@ const moves = [
 const INSTANCES_KEY = "fto.instances.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
 const defaultFaceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
+const faceColorSlots = [
+  { label: "Top", index: 0 },
+  { label: "Bottom", index: 4 },
+  { label: "Front", index: 1 },
+  { label: "Back", index: 5 },
+  { label: "Left", index: 7 },
+  { label: "Back-right", index: 2 },
+  { label: "Right", index: 6 },
+  { label: "Back-left", index: 3 },
+];
 
 type Instance = {
   id: string;
@@ -65,6 +77,129 @@ type SetupModalState =
   | { kind: "first"; instance: Instance }
   | { kind: "new" }
   | null;
+
+function FaceColorSwatch({
+  label,
+  color,
+  index,
+  onChange,
+}: {
+  label: string;
+  color: string;
+  index: number;
+  onChange: (index: number, color: string) => void;
+}) {
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const pickrRef = useRef<Pickr | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  function paintPickrButton(pickr: Pickr, nextColor: string) {
+    const root = pickr.getRoot() as { button?: HTMLElement };
+    const button = root.button;
+    if (!button) {
+      return;
+    }
+    button.style.setProperty("--pcr-color", nextColor);
+    button.classList.remove("clear");
+  }
+
+  function colorToHex(selected: Pickr.HSVaColor | null): string | null {
+    if (!selected) {
+      return null;
+    }
+    const rgba = selected.toRGBA();
+    return `#${rgba
+      .slice(0, 3)
+      .map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+
+  useEffect(() => {
+    if (!anchorRef.current || pickrRef.current) {
+      return;
+    }
+    const pickr = Pickr.create({
+      el: anchorRef.current,
+      theme: "nano",
+      appClass: "fto-pickr-app",
+      default: color,
+      swatches: null,
+      position: "bottom-middle",
+      defaultRepresentation: "RGBA",
+      components: {
+        preview: true,
+        opacity: false,
+        hue: true,
+        interaction: {
+          hex: false,
+          rgba: false,
+          hsla: false,
+          hsva: false,
+          cmyk: false,
+          input: true,
+          clear: false,
+          save: false,
+          cancel: false,
+        },
+      },
+    });
+    pickr.on("change", (selected: Pickr.HSVaColor | null) => {
+      const nextColor = colorToHex(selected);
+      if (nextColor) {
+        pickr.applyColor(true);
+        paintPickrButton(pickr, nextColor);
+        onChangeRef.current(index, nextColor);
+      }
+    });
+    pickr.on("hide", () => {
+      const nextColor = colorToHex(pickr.getColor());
+      if (nextColor) {
+        paintPickrButton(pickr, nextColor);
+        onChangeRef.current(index, nextColor);
+      }
+    });
+    pickr.on("show", () => {
+      const root = pickr.getRoot() as { button?: HTMLElement };
+      root.button?.classList.add("pcr-open");
+    });
+    pickr.on("hide", () => {
+      const root = pickr.getRoot() as { button?: HTMLElement };
+      root.button?.classList.remove("pcr-open");
+    });
+    try {
+      pickr.setColor(color, true);
+    } catch {
+      // Pickr keeps the last valid color if initialization receives bad input.
+    }
+    paintPickrButton(pickr, color);
+    pickr.on("init", () => paintPickrButton(pickr, color));
+    requestAnimationFrame(() => paintPickrButton(pickr, color));
+    window.setTimeout(() => paintPickrButton(pickr, color), 50);
+    pickrRef.current = pickr;
+    return () => {
+      pickr.destroyAndRemove();
+      pickrRef.current = null;
+    };
+  }, [index]);
+
+  useEffect(() => {
+    if (!pickrRef.current) {
+      return;
+    }
+    pickrRef.current.setColor(color, true);
+    paintPickrButton(pickrRef.current, color);
+  }, [color]);
+
+  return (
+    <div className="scheme-row">
+      <span className="scheme-face-label">{label}</span>
+      <div className="scheme-pickr-wrap" aria-label={`${label} color`} title={label}>
+        <div ref={anchorRef} />
+      </div>
+    </div>
+  );
+}
 
 const solved: CubieState = {
   cp: [0, 1, 2, 3, 4, 5],
@@ -100,21 +235,6 @@ function normalizeHexColor(value: string): string | null {
   const trimmed = value.trim();
   const match = /^#?([0-9a-fA-F]{6})$/.exec(trimmed);
   return match ? `#${match[1].toLowerCase()}` : null;
-}
-
-function hexToRgb(value: string): { r: number; g: number; b: number } {
-  const normalized = normalizeHexColor(value) ?? "#000000";
-  return {
-    r: parseInt(normalized.slice(1, 3), 16),
-    g: parseInt(normalized.slice(3, 5), 16),
-    b: parseInt(normalized.slice(5, 7), 16),
-  };
-}
-
-function rgbToHex(r: number, g: number, b: number): string {
-  return `#${[r, g, b]
-    .map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0"))
-    .join("")}`;
 }
 
 function bootstrapInstances(): { instances: Instance[]; activeId: string; firstRun: boolean } {
@@ -187,8 +307,8 @@ function InstanceSetupModal({
   const canSave = name.trim().length > 0 && selected.size > 0;
 
   return (
-    <div className="modal-backdrop">
-      <div className="modal">
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
         <h2>{title}</h2>
         {subtitle ? <p className="modal-subtitle">{subtitle}</p> : null}
         <label className="field">
@@ -256,6 +376,7 @@ function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [deleteTableConfirm, setDeleteTableConfirm] = useState<PruningTableInfo | null>(null);
   const [faceColors, setFaceColors] = useState<string[]>(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem(FACE_COLORS_KEY) || "null");
@@ -267,7 +388,6 @@ function App() {
     }
     return defaultFaceColors;
   });
-  const [colorEditorIndex, setColorEditorIndex] = useState<number | null>(null);
   const [cacheStatus, setCacheStatus] = useState<PruningCacheStatus>({ hasTables: false, hasPruning: false });
   const [pruningTables, setPruningTables] = useState<PruningTableInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -293,6 +413,7 @@ function App() {
   const validationRun = useRef(0);
   const lineId = useRef(0);
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const modalOpen = settingsOpen || storageOpen || aboutOpen || !!deleteTableConfirm || !!setupModal;
 
   const activeInstance = instances.find((instance) => instance.id === activeId) ?? instances[0];
   const bannedSet = useMemo(() => new Set(activeInstance.banned), [activeInstance]);
@@ -306,6 +427,9 @@ function App() {
     }
     const lastTerminalLine = terminal[terminal.length - 1];
     if (!result?.solutions.length && lastTerminalLine?.kind === "cancel") {
+      return [lastTerminalLine];
+    }
+    if (!result?.solutions.length && lastTerminalLine?.kind === "error") {
       return [lastTerminalLine];
     }
     if (result?.solutions.length) {
@@ -335,16 +459,18 @@ function App() {
       ];
     }
     const lines: TerminalLine[] = [];
-    const currentDepth = [...terminal]
-      .reverse()
-      .find((line) => line.kind === "search" && line.text.startsWith("searching depth"));
+    const currentDepth = running
+      ? [...terminal]
+          .reverse()
+          .find((line) => line.kind === "search" && line.text.startsWith("searching depth"))
+      : undefined;
     const currentProgress = [...terminal]
       .reverse()
       .find((line) => line.kind === "progress" && line.text.startsWith("pruning progress:"));
-    if (!currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
+    if (running && !currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
       lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
     }
-    if (!currentDepth && currentProgress) {
+    if (running && !currentDepth && currentProgress) {
       lines.push(currentProgress);
     }
     if (currentDepth) {
@@ -355,7 +481,7 @@ function App() {
       lines.push(...streamedSolutions);
     }
     return lines;
-  }, [result, showDebugInfo, terminal]);
+  }, [result, running, showDebugInfo, terminal]);
 
   useEffect(() => {
     try {
@@ -388,6 +514,24 @@ function App() {
   useEffect(() => {
     refreshCacheStatus();
   }, [refreshCacheStatus]);
+
+  useEffect(() => {
+    if (!modalOpen) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    const currentPaddingRight = Number.parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+    document.body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight = `${currentPaddingRight + scrollbarWidth}px`;
+    }
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
+    };
+  }, [modalOpen]);
 
   const handleFacelets = useCallback((nextFacelets: number[]) => {
     setFacelets(nextFacelets);
@@ -448,6 +592,14 @@ function App() {
           refreshCacheStatus();
         }),
         listen("solve-cancelled", () => {
+          setTerminal((lines) => {
+            if (lines[lines.length - 1]?.kind === "cancel") {
+              return lines;
+            }
+            const id = ++lineId.current;
+            const next = [...lines, { id, kind: "cancel", text: "solve cancelled" }];
+            return next.length > 500 ? next.slice(next.length - 500) : next;
+          });
           setRunning(false);
           setStatus("Stopped");
           refreshCacheStatus();
@@ -595,8 +747,9 @@ function App() {
     }
   }
 
-  async function deletePruningTable(id: string) {
-    await invoke("delete_pruning_table", { id });
+  async function deletePruningTable(table: PruningTableInfo) {
+    await invoke("delete_pruning_table", { id: table.id });
+    setDeleteTableConfirm(null);
     refreshPruningTables();
     refreshCacheStatus();
   }
@@ -609,16 +762,9 @@ function App() {
     setFaceColors((colors) => colors.map((current, i) => (i === index ? normalized : current)));
   }
 
-  function updateFaceRgb(index: number, channel: "r" | "g" | "b", value: number) {
-    const current = hexToRgb(faceColors[index]);
-    current[channel] = value;
-    updateFaceColor(index, rgbToHex(current.r, current.g, current.b));
-  }
-
   const contextInstance = contextMenu
     ? instances.find((instance) => instance.id === contextMenu.id)
     : undefined;
-  const editedColor = colorEditorIndex == null ? null : hexToRgb(faceColors[colorEditorIndex]);
 
   return (
     <main>
@@ -694,8 +840,8 @@ function App() {
       </header>
 
       {settingsOpen ? (
-        <div className="modal-backdrop">
-          <div className="modal settings-modal">
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="modal settings-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-title-row">
               <h2>Settings</h2>
               <button className="secondary" onClick={() => setSettingsOpen(false)}>Close</button>
@@ -709,45 +855,23 @@ function App() {
               />
             </label>
             <div className="settings-group">
-              <h3>Face colors</h3>
+              <div className="settings-group-title">
+                <h3>Face colors</h3>
+                <button className="secondary compact" onClick={() => setFaceColors(defaultFaceColors)}>
+                  Reset to default
+                </button>
+              </div>
               <div className="settings-swatch-grid">
-                {faceColors.map((color, index) => (
-                  <button
-                    key={index}
-                    type="button"
-                    className={colorEditorIndex === index ? "settings-color-swatch active" : "settings-color-swatch"}
-                    style={{ ["--swatch" as string]: color }}
-                    aria-label={`Face ${index + 1} color`}
-                    title={`Face ${index + 1}`}
-                    onClick={() => setColorEditorIndex(index)}
+                {faceColorSlots.map((slot) => (
+                  <FaceColorSwatch
+                    key={slot.index}
+                    label={slot.label}
+                    color={faceColors[slot.index]}
+                    index={slot.index}
+                    onChange={updateFaceColor}
                   />
                 ))}
               </div>
-              {colorEditorIndex != null && editedColor ? (
-                <div className="simple-color-picker">
-                  <div className="simple-color-preview" style={{ ["--swatch" as string]: faceColors[colorEditorIndex] }} />
-                  <label>
-                    Hex
-                    <input
-                      value={faceColors[colorEditorIndex]}
-                      onChange={(event) => updateFaceColor(colorEditorIndex, event.target.value)}
-                      spellCheck={false}
-                    />
-                  </label>
-                  {(["r", "g", "b"] as const).map((channel) => (
-                    <label key={channel}>
-                      {channel.toUpperCase()}
-                      <input
-                        type="range"
-                        min="0"
-                        max="255"
-                        value={editedColor[channel]}
-                        onChange={(event) => updateFaceRgb(colorEditorIndex, channel, Number(event.target.value))}
-                      />
-                    </label>
-                  ))}
-                </div>
-              ) : null}
             </div>
             <button
               className="secondary"
@@ -763,8 +887,8 @@ function App() {
       ) : null}
 
       {storageOpen ? (
-        <div className="modal-backdrop">
-          <div className="modal storage-modal">
+        <div className="modal-backdrop" onClick={() => setStorageOpen(false)}>
+          <div className="modal storage-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-title-row">
               <h2>Storage</h2>
               <button className="secondary" onClick={() => setStorageOpen(false)}>Close</button>
@@ -781,7 +905,7 @@ function App() {
                         {table.moves.join(" ")} · {(table.bytes / (1024 * 1024)).toFixed(1)} MiB
                       </div>
                     </div>
-                    <button className="secondary" onClick={() => deletePruningTable(table.id)}>
+                    <button className="secondary" onClick={() => setDeleteTableConfirm(table)}>
                       Delete
                     </button>
                   </div>
@@ -792,9 +916,37 @@ function App() {
         </div>
       ) : null}
 
+      {deleteTableConfirm ? (
+        <div className="modal-backdrop" onClick={() => setDeleteTableConfirm(null)}>
+          <div className="modal confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Delete pruning table?</h2>
+            <p className="modal-subtitle">
+              This removes {deleteTableConfirm.codename} from disk. It can be regenerated later, but the next solve
+              using these moves may need to rebuild it.
+            </p>
+            <div className="storage-row confirm-summary">
+              <div>
+                <div className="storage-title">{deleteTableConfirm.codename}</div>
+                <div className="storage-sub">
+                  {deleteTableConfirm.moves.join(" ")} · {(deleteTableConfirm.bytes / (1024 * 1024)).toFixed(1)} MiB
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="secondary" onClick={() => setDeleteTableConfirm(null)}>
+                Cancel
+              </button>
+              <button className="danger" onClick={() => deletePruningTable(deleteTableConfirm)}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {aboutOpen ? (
-        <div className="modal-backdrop">
-          <div className="modal about-modal">
+        <div className="modal-backdrop" onClick={() => setAboutOpen(false)}>
+          <div className="modal about-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-title-row">
               <h2>About</h2>
               <button className="secondary" onClick={() => setAboutOpen(false)}>Close</button>

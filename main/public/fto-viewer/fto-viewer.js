@@ -468,6 +468,9 @@
       for (var i = 0; i < parsed.length; i++) {
         applyMoveInstant({ axis: parsed[i][0], pow: parsed[i][1] });
       }
+      if (lastLayerMode) {
+        applyLastLayerMarksBySlot();
+      }
       render();
     }
 
@@ -883,6 +886,7 @@
       for (var i = 0; i < rlCenterFacelets.length; i++) {
         refreshStickerDisplayByFacelet(rlCenterFacelets[i]);
       }
+      notifyCenterTargets();
     }
 
     function setFacelets(colors) {
