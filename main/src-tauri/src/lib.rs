@@ -100,6 +100,19 @@ struct SolveRequest {
     threads: usize,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratePruningRequest {
+    facelets: Option<Vec<u8>>,
+    center_targets: Option<CenterTargets>,
+    allowed_moves: Vec<String>,
+    instance_moves: Vec<String>,
+    selected_moves_only: bool,
+    last_layer_mode: bool,
+    defined_pieces_only: bool,
+    threads: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CubieState {
     cp: [u8; 6],
@@ -193,6 +206,50 @@ async fn solve_fto(
     tauri::async_runtime::spawn_blocking(move || {
         let response = run_solve_blocking(&request, &cancel, &app, &cancels, &cache);
         let _ = response;
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn generate_pruning_table(
+    request: GeneratePruningRequest,
+    solver_state: tauri::State<'_, SolverState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut current = solver_state
+            .current_cancel
+            .lock()
+            .map_err(|_| "solver state lock poisoned".to_owned())?;
+        if current.is_some() {
+            return Err("a solve or pruning build is already running".to_owned());
+        }
+        *current = Some(cancel.clone());
+    }
+
+    let cancels = solver_state.current_cancel.clone();
+    let cache = solver_state.cache.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = generate_pruning_blocking(&request, &cancel, &app, &cache);
+        if let Ok(mut current) = cancels.lock() {
+            *current = None;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            emit_line(&app, "cancel", "pruning build cancelled");
+            let _ = app.emit("solve-cancelled", ());
+            return;
+        }
+        match result {
+            Ok(()) => {
+                let _ = app.emit("pruning-generated", ());
+            }
+            Err(error) => {
+                emit_line(&app, "error", &format!("error: {error}"));
+                let _ = app.emit("solve-error", error);
+            }
+        }
     });
 
     Ok(())
@@ -379,6 +436,7 @@ pub fn run() {
         .manage(SolverState::default())
         .invoke_handler(tauri::generate_handler![
             solve_fto,
+            generate_pruning_table,
             stop_solve,
             unload_pruning_table,
             pruning_cache_status,
@@ -388,6 +446,152 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri app");
+}
+
+fn generate_pruning_blocking(
+    request: &GeneratePruningRequest,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+    cache: &Mutex<SolverCache>,
+) -> Result<(), String> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
+    let allowed_moves = parse_move_names(&request.allowed_moves)?;
+    if allowed_moves.is_empty() {
+        return Err("at least one move must be allowed".to_owned());
+    }
+    let instance_moves = if request.instance_moves.is_empty() {
+        Move::ALL.to_vec()
+    } else {
+        parse_move_names(&request.instance_moves)?
+    };
+    let target_moves = if request.selected_moves_only {
+        allowed_moves.clone()
+    } else {
+        instance_moves.clone()
+    };
+    if target_moves.is_empty() {
+        return Err("at least one pruning move must be selected".to_owned());
+    }
+
+    let progress_app = app.clone();
+    let progress = move |event: pruning::PruningProgress| {
+        let percent = if event.total == 0 {
+            0.0
+        } else {
+            (event.reached as f64 * 100.0) / event.total as f64
+        };
+        emit_line(
+            &progress_app,
+            "progress",
+            &format!(
+                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
+                event.name, event.reached, event.total, event.depth, event.expanded
+            ),
+        );
+    };
+
+    if request.defined_pieces_only {
+        let facelets = request
+            .facelets
+            .clone()
+            .ok_or_else(|| "partial pruning needs the current viewer state".to_owned())?;
+        let (_, partial_mask) = cubie_and_partial_mask_from_facelets(
+            &facelets,
+            request.center_targets.as_ref(),
+            request.last_layer_mode,
+        )?;
+        let Some(mask) = partial_mask else {
+            return Err("the current position is full; turn off defined-pieces pruning".to_owned());
+        };
+        let specs = partial::coordinate_pruning_specs_for_mask(&mask);
+        if specs.is_empty() {
+            return Err(
+                "the defined pieces do not force a reusable coordinate pruning table".to_owned(),
+            );
+        }
+        let mut selected_specs = Vec::new();
+        selected_specs.push(specs[0].clone());
+        if specs[0].name() == "edge3+uf3" {
+            if let Some(corner_uf3) = specs.iter().find(|spec| spec.name() == "corner+uf3") {
+                selected_specs.push(corner_uf3.clone());
+            }
+        }
+        let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
+        let tables = load_transition_tables(cache, &tables_path)?;
+        let pruning_dir = workspace_root.join("cache/partial-coordinate-pruning-v1");
+        fs::create_dir_all(&pruning_dir).map_err(|error| error.to_string())?;
+        let move_suffix = pruning::move_set_suffix(&target_moves);
+        let move_code = pruning::move_set_codename(&move_suffix);
+        emit_line(
+            app,
+            "info",
+            "generating partial coordinate pruning table...",
+        );
+        let mut count = 0_usize;
+        for spec in selected_specs {
+            let key = partial::coordinate_pruning_cache_key(&spec, &move_code);
+            let table_path = pruning_dir.join(format!("{key}.pdb"));
+            let meta_path = pruning_dir.join(format!("{key}.meta"));
+            let table = pruning::PatternDatabase::load_or_build_with_moves_reporting(
+                spec.clone(),
+                &tables,
+                250_000,
+                &table_path,
+                &target_moves,
+                request.threads.max(1),
+                Some(cancel),
+                Some(&progress),
+            )?;
+            fs::write(
+                meta_path,
+                format!("version=1\nspec={}\nmoves={}\n", spec.name(), move_suffix),
+            )
+            .map_err(|error| error.to_string())?;
+            emit_line(
+                app,
+                "done",
+                &format!(
+                    "generated {} pruning table ({:.1} MiB)",
+                    table.name(),
+                    table.bytes() as f64 / (1024.0 * 1024.0)
+                ),
+            );
+            count += 1;
+        }
+        emit_line(
+            app,
+            "done",
+            &format!("generated {count} partial coordinate pruning table(s)"),
+        );
+        return Ok(());
+    }
+
+    let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
+    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    emit_line(app, "info", "generating pruning table...");
+    let tables = load_transition_tables(cache, &tables_path)?;
+    let pruning = SolverPruning::load_or_build_with_moves_reporting(
+        &tables,
+        &pruning_dir,
+        250_000,
+        &target_moves,
+        request.threads.max(1),
+        Some(cancel),
+        Some(&progress),
+    )
+    .map_err(|error| error.to_string())?;
+    emit_line(
+        app,
+        "done",
+        &format!(
+            "generated pruning tables for moves: {} ({:.1} MiB)",
+            format_move_list(&target_moves),
+            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+        ),
+    );
+    Ok(())
 }
 
 fn cubie_to_state(cubie: FtoCubie) -> CubieState {

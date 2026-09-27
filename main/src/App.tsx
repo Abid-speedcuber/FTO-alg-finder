@@ -52,6 +52,15 @@ const moves = [
   "(F U F')", "(F U' F')", "(F' U F)", "(F' U' F)",
 ];
 
+const defaultInstanceMoves = [
+  "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
+  "R", "R'", "L", "L'", "Fw", "Fw'", "Rw", "Rw'",
+];
+const defaultMoveSet = new Set(defaultInstanceMoves);
+const moreInstanceMoves = moves.filter((move) => !defaultMoveSet.has(move));
+const moveChooserNote =
+  "All the moves listed here are in CIF. Treat CIF F as EIF R if you wanna generate algs in EIF. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
+
 const INSTANCES_KEY = "fto.instances.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
 const defaultFaceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
@@ -223,6 +232,15 @@ function newInstanceId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function nextInstanceName(instances: Instance[]): string {
+  const used = new Set(instances.map((instance) => instance.name.trim()));
+  let index = instances.length + 1;
+  while (used.has(`Instance ${index}`)) {
+    index += 1;
+  }
+  return `Instance ${index}`;
+}
+
 function pruningProgressPercent(text: string): number {
   const match = text.match(/\((\d+(?:\.\d+)?)%\)/);
   if (!match) {
@@ -266,7 +284,7 @@ function bootstrapInstances(): { instances: Instance[]; activeId: string; firstR
   }
   const id = "default";
   return {
-    instances: [{ id, name: "Default", moves: [...moves], banned: [] }],
+    instances: [{ id, name: "Default", moves: [...defaultInstanceMoves], banned: [] }],
     activeId: id,
     firstRun: true,
   };
@@ -278,6 +296,8 @@ function InstanceSetupModal({
   initialName,
   initialMoves,
   confirmLabel,
+  note,
+  cancellable = true,
   onSave,
   onCancel,
 }: {
@@ -286,11 +306,14 @@ function InstanceSetupModal({
   initialName: string;
   initialMoves: string[];
   confirmLabel: string;
+  note?: string;
+  cancellable?: boolean;
   onSave: (name: string, selected: string[]) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(initialName);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(initialMoves));
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const toggleMove = (move: string) => {
     setSelected((current) => {
@@ -304,51 +327,66 @@ function InstanceSetupModal({
     });
   };
 
-  const canSave = name.trim().length > 0 && selected.size > 0;
+  const canSave = selected.size > 0;
+  const renderMoveButton = (move: string) => (
+    <button
+      key={move}
+      className={selected.has(move) ? "move-toggle" : "move-toggle banned"}
+      onClick={() => toggleMove(move)}
+    >
+      {move}
+    </button>
+  );
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-backdrop" onClick={cancellable ? onCancel : undefined}>
+      <div className="modal instance-setup-modal" onClick={(event) => event.stopPropagation()}>
         <h2>{title}</h2>
         {subtitle ? <p className="modal-subtitle">{subtitle}</p> : null}
-        <label className="field">
-          <span>Name</span>
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder="Instance name"
-          />
-        </label>
-        <div className="modal-moves-heading">
-          <div className="field">
-            <span>Moves this instance uses</span>
+        <div className="instance-setup-body">
+          <label className="field">
+            <span>Name</span>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="Instance name"
+            />
+          </label>
+          <div className="modal-moves-heading">
+            <div className="field">
+              <span>Moves this instance uses</span>
+            </div>
+            <div className="mini-actions">
+              <button className="secondary" onClick={() => setSelected(new Set(moves))}>
+                All
+              </button>
+              <button className="secondary" onClick={() => setSelected(new Set())}>
+                None
+              </button>
+            </div>
           </div>
-          <div className="mini-actions">
-            <button className="secondary" onClick={() => setSelected(new Set(moves))}>
-              All
-            </button>
-            <button className="secondary" onClick={() => setSelected(new Set())}>
-              None
-            </button>
-          </div>
-        </div>
-        <div className="modal-move-grid">
-          {moves.map((move) => (
-            <button
-              key={move}
-              className={selected.has(move) ? "move-toggle" : "move-toggle banned"}
-              onClick={() => toggleMove(move)}
-            >
-              {move}
-            </button>
-          ))}
+          <div className="modal-move-grid">{defaultInstanceMoves.map(renderMoveButton)}</div>
+          <button className="more-moves-toggle" onClick={() => setMoreOpen((open) => !open)}>
+            <span>More moves</span>
+            <span className="more-moves-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" focusable="false">
+                <path d={moreOpen ? "M5.5 12.2 10 7.8l4.5 4.4" : "M5.5 7.8 10 12.2l4.5-4.4"} />
+              </svg>
+            </span>
+          </button>
+          {moreOpen ? (
+            <div className="modal-move-grid more-move-grid">{moreInstanceMoves.map(renderMoveButton)}</div>
+          ) : null}
+          {note ? <p className="move-chooser-note">{note}</p> : null}
         </div>
         <div className="modal-footer">
-          <button className="secondary" onClick={onCancel}>
-            Cancel
-          </button>
+          {cancellable ? (
+            <button className="secondary" onClick={onCancel}>
+              Cancel
+            </button>
+          ) : null}
           <button
             className="primary"
             disabled={!canSave}
@@ -373,6 +411,7 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pruningOpen, setPruningOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(false);
@@ -402,7 +441,6 @@ function App() {
   const [depth, setDepth] = useState("");
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
-  const [miniPruning, setMiniPruning] = useState(false);
   const [lastLayerMode, setLastLayerMode] = useState(false);
   const viewerApiRef = useRef<FtoViewerApi | null>(null);
   const [threads, setThreads] = useState("1");
@@ -413,7 +451,7 @@ function App() {
   const validationRun = useRef(0);
   const lineId = useRef(0);
   const terminalRef = useRef<HTMLDivElement | null>(null);
-  const modalOpen = settingsOpen || storageOpen || aboutOpen || !!deleteTableConfirm || !!setupModal;
+  const modalOpen = settingsOpen || pruningOpen || storageOpen || aboutOpen || !!deleteTableConfirm || !!setupModal;
 
   const activeInstance = instances.find((instance) => instance.id === activeId) ?? instances[0];
   const bannedSet = useMemo(() => new Set(activeInstance.banned), [activeInstance]);
@@ -449,7 +487,7 @@ function App() {
         {
           id: -2,
           kind: "info",
-          text: depth ? `found solution at ${depth} depth` : "found solution",
+          text: depth ? `solution found at depth ${depth}` : "solution found",
         },
         ...solutions.map((solution, index) => ({
           id: -1000 - index,
@@ -604,6 +642,12 @@ function App() {
           setStatus("Stopped");
           refreshCacheStatus();
         }),
+        listen("pruning-generated", () => {
+          setRunning(false);
+          setStatus("Pruning table generated");
+          refreshCacheStatus();
+          refreshPruningTables();
+        }),
       ]);
       if (disposed) {
         fns.forEach((fn) => fn());
@@ -615,7 +659,7 @@ function App() {
       disposed = true;
       unlisteners.forEach((fn) => fn());
     };
-  }, [appendLine, refreshCacheStatus]);
+  }, [appendLine, refreshCacheStatus, refreshPruningTables]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -653,9 +697,10 @@ function App() {
   }
 
   function createInstance(name: string, selected: string[]) {
+    const trimmedName = name.trim();
     const instance: Instance = {
       id: newInstanceId(),
-      name: name.trim(),
+      name: trimmedName || nextInstanceName(instances),
       moves: selected,
       banned: [],
     };
@@ -717,7 +762,7 @@ function App() {
           maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
           findAll: all,
           restrictedPruning,
-          miniPruning,
+          miniPruning: false,
           lastLayerMode,
           threads: Number(threads),
         },
@@ -733,6 +778,42 @@ function App() {
   async function stopSolve() {
     await invoke("stop_solve");
     setStatus("Stopping");
+  }
+
+  async function generatePruningTable() {
+    if (running || allowedMoves.length === 0) {
+      return;
+    }
+    setPruningOpen(false);
+    setRunning(true);
+    setStatus("Generating pruning table");
+    setResult(null);
+    clearTerminal();
+    appendLine(
+      "info",
+      `generate pruning (moves=${restrictedPruning ? "selected" : "instance"} last-layer=${
+        lastLayerMode ? "on" : "off"
+      } threads=${threads})`,
+    );
+    try {
+      await invoke("generate_pruning_table", {
+        request: {
+          facelets,
+          centerTargets,
+          allowedMoves,
+          instanceMoves: activeInstance.moves,
+          selectedMovesOnly: restrictedPruning,
+          lastLayerMode,
+          definedPiecesOnly: false,
+          threads: Number(threads),
+        },
+      });
+    } catch (error) {
+      appendLine("error", `error: ${String(error)}`);
+      setStatus(String(error));
+      setRunning(false);
+      refreshCacheStatus();
+    }
   }
 
   async function unloadPruningTable() {
@@ -796,6 +877,15 @@ function App() {
                     }}
                   >
                     {mode === "solver" ? "Switch to alg combiner" : "Switch to solver mode"}
+                  </button>
+                  <button
+                    className="menu-command"
+                    onClick={() => {
+                      setPruningOpen(true);
+                      closeOverlays();
+                    }}
+                  >
+                    Pruning
                   </button>
                   <button
                     className="menu-command"
@@ -886,6 +976,40 @@ function App() {
         </div>
       ) : null}
 
+      {pruningOpen ? (
+        <div className="modal-backdrop" onClick={() => setPruningOpen(false)}>
+          <div className="modal pruning-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-title-row">
+              <h2>Pruning</h2>
+              <button className="secondary" onClick={() => setPruningOpen(false)}>Close</button>
+            </div>
+            <div className="option-list modal-option-list">
+              <label className="check modal-check">
+                <input
+                  type="checkbox"
+                  checked={restrictedPruning}
+                  onChange={(event) => setRestrictedPruning(event.target.checked)}
+                />
+                Use only the selected moves to generate the pruning table
+              </label>
+              <label className="check modal-check">
+                <input
+                  type="checkbox"
+                  checked={lastLayerMode}
+                  onChange={(event) => setLastLayerMode(event.target.checked)}
+                />
+                Use last layer mode
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="primary" onClick={generatePruningTable} disabled={running || allowedMoves.length === 0}>
+                Generate pruning table
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {storageOpen ? (
         <div className="modal-backdrop" onClick={() => setStorageOpen(false)}>
           <div className="modal storage-modal" onClick={(event) => event.stopPropagation()}>
@@ -972,8 +1096,10 @@ function App() {
             initialName={setupModal.instance.name}
             initialMoves={setupModal.instance.moves}
             confirmLabel="Save"
+            note={moveChooserNote}
+            cancellable={false}
             onSave={(name, selected) => {
-              updateInstance(setupModal.instance.id, { name, moves: selected, banned: [] });
+              updateInstance(setupModal.instance.id, { name: name.trim() || "Default", moves: selected, banned: [] });
               setSetupModal(null);
             }}
             onCancel={() => setSetupModal(null)}
@@ -983,8 +1109,9 @@ function App() {
             title="New instance"
             subtitle="Pick a name and the moves this instance will use. Its base pruning table is built only from these moves."
             initialName=""
-            initialMoves={[...moves]}
+            initialMoves={[...defaultInstanceMoves]}
             confirmLabel="Create"
+            note={moveChooserNote}
             onSave={(name, selected) => {
               createInstance(name, selected);
               setSetupModal(null);
@@ -1156,30 +1283,6 @@ function App() {
             <label className="check">
               <input type="checkbox" checked={all} onChange={(event) => setAll(event.target.checked)} />
               All solutions
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={lastLayerMode}
-                onChange={(event) => setLastLayerMode(event.target.checked)}
-              />
-              Last layer mode
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={restrictedPruning}
-                onChange={(event) => setRestrictedPruning(event.target.checked)}
-              />
-              Restricted pruning
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={miniPruning}
-                onChange={(event) => setMiniPruning(event.target.checked)}
-              />
-              Additional pruning
             </label>
             </div>
             <div className="actions-row">

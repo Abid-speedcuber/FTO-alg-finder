@@ -1,9 +1,19 @@
 use crate::{
-    FtoCubie,
+    FtoCoord, FtoCubie,
     moves::{MOVE_COUNT, Move, move_cubies},
+    pruning::{
+        self, CandidateSpec, Component, PatternDatabase, PatternDatabases, PruningProgress,
+        PruningReporter,
+    },
     search::{SearchConfig, SearchResult, format_solution},
 };
-use std::{collections::VecDeque, thread};
+use std::{
+    collections::{HashSet, VecDeque},
+    fs,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+};
 
 const UNVISITED: u8 = u8::MAX;
 const INVALID_TRANSITION: u32 = u32::MAX;
@@ -67,16 +77,41 @@ pub fn solve_partial_threads(
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
-    let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
-    pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
-    eprintln!(
-        "using {} dynamic partial pruning tables ({:.1} MiB)",
-        pruning.tables.len(),
-        pruning.bytes() as f64 / (1024.0 * 1024.0)
-    );
-    for table in &pruning.tables {
-        eprintln!("  {}", table.name());
-    }
+    solve_partial_threads_with_cache(problem, config, threads, None)
+}
+
+#[must_use]
+pub fn solve_partial_threads_with_cache(
+    problem: &PartialProblem,
+    config: &SearchConfig,
+    threads: usize,
+    cache_dir: Option<&Path>,
+) -> SearchResult {
+    let coordinate_pruning = cache_dir
+        .and_then(|dir| {
+            load_coordinate_pruning_cache(&problem.mask, &config.allowed_moves, dir).ok()
+        })
+        .unwrap_or_default();
+    let pruning = if coordinate_pruning.len() > 0 {
+        eprintln!(
+            "using {} cached coordinate partial pruning tables: {}",
+            coordinate_pruning.len(),
+            coordinate_pruning.names().join(", ")
+        );
+        DynamicPruning::from_coordinate_pruning(coordinate_pruning)
+    } else {
+        let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
+        pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
+        eprintln!(
+            "using {} dynamic partial pruning tables ({:.1} MiB)",
+            pruning.tables.len(),
+            pruning.bytes() as f64 / (1024.0 * 1024.0)
+        );
+        for table in &pruning.tables {
+            eprintln!("  {}", table.name());
+        }
+        pruning
+    };
 
     let mut total = SearchResult {
         solutions: Vec::new(),
@@ -302,6 +337,7 @@ impl IndexedPartialSearchContext<'_> {
                 &self.problem.mask,
                 self.config.free_u_ends,
                 raw_pruning,
+                self.pruning.raw_zero_implies_exact_pieces(),
             ) {
                 push_unique_solution(
                     &mut self.solutions,
@@ -475,8 +511,12 @@ fn partial_free_u_suffix_with_raw_pruning(
     mask: &PartialMask,
     free_u_ends: bool,
     raw_pruning: u8,
+    raw_zero_implies_exact_pieces: bool,
 ) -> Option<Option<Move>> {
-    if raw_pruning == 0 && partial_centers_solved(&state, mask) {
+    if raw_zero_implies_exact_pieces && raw_pruning == 0 && partial_centers_solved(&state, mask) {
+        return Some(None);
+    }
+    if is_partial_solved(&state, mask) {
         return Some(None);
     }
     if !free_u_ends {
@@ -555,6 +595,7 @@ fn dedup_solutions(solutions: &mut Vec<Vec<Move>>) {
 
 struct DynamicPruning {
     tables: Vec<DynamicTable>,
+    coordinate: PatternDatabases,
 }
 
 impl DynamicPruning {
@@ -587,24 +628,42 @@ impl DynamicPruning {
             CORNER_TABLE_PIECES,
             allowed_moves,
         );
-        Self { tables }
+        Self {
+            tables,
+            coordinate: PatternDatabases::default(),
+        }
+    }
+
+    fn from_coordinate_pruning(coordinate: PatternDatabases) -> Self {
+        Self {
+            tables: Vec::new(),
+            coordinate,
+        }
+    }
+
+    fn raw_zero_implies_exact_pieces(&self) -> bool {
+        !self.tables.is_empty()
     }
 
     fn heuristic(&self, state: &FtoCubie) -> u8 {
-        self.tables
+        let dynamic = self
+            .tables
             .iter()
             .map(|table| table.value(state))
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        dynamic.max(self.coordinate.heuristic(FtoCoord::from_cubie(state)))
     }
 
     fn heuristic_for_indices(&self, state: &FtoCubie, indices: &[usize]) -> u8 {
-        self.tables
+        let dynamic = self
+            .tables
             .iter()
             .enumerate()
             .map(|(idx, table)| table.value_for_index_or_state(indices[idx], state))
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        dynamic.max(self.coordinate.heuristic(FtoCoord::from_cubie(state)))
     }
 
     fn indices_of_state(&self, state: &FtoCubie) -> Vec<usize> {
@@ -623,7 +682,7 @@ impl DynamicPruning {
     }
 
     fn bytes(&self) -> usize {
-        self.tables.iter().map(DynamicTable::bytes).sum()
+        self.tables.iter().map(DynamicTable::bytes).sum::<usize>() + self.coordinate.total_bytes()
     }
 
     fn build_transitions(&mut self, max_bytes: usize) {
@@ -641,6 +700,133 @@ impl DynamicPruning {
             used as f64 / (1024.0 * 1024.0)
         );
     }
+}
+
+pub fn load_coordinate_pruning_cache(
+    mask: &PartialMask,
+    allowed_moves: &[Move],
+    out_dir: &Path,
+) -> Result<PatternDatabases, String> {
+    let allowed_set = HashSet::<Move>::from_iter(allowed_moves.iter().copied());
+    let mut candidates = Vec::<PatternDatabase>::new();
+    let entries = match fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(PatternDatabases::default()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(key) = name.strip_suffix(".meta") else {
+            continue;
+        };
+        let meta = fs::read_to_string(entry.path()).map_err(|error| error.to_string())?;
+        let Some((spec, moves)) = parse_coordinate_meta(&meta) else {
+            continue;
+        };
+        if !spec
+            .components
+            .iter()
+            .copied()
+            .all(|component| component_is_forced(mask, component))
+        {
+            continue;
+        }
+        let move_set = HashSet::<Move>::from_iter(moves.iter().copied());
+        if !allowed_set.iter().all(|mv| move_set.contains(mv)) {
+            continue;
+        }
+        let table_path = out_dir.join(format!("{key}.pdb"));
+        if let Ok(table) = PatternDatabase::load(spec, &table_path) {
+            candidates.push(table);
+        }
+    }
+    candidates
+        .sort_by_key(|table| std::cmp::Reverse((table.name().matches('+').count(), table.bytes())));
+    candidates.truncate(MAX_DYNAMIC_TABLES);
+    Ok(PatternDatabases::new(candidates))
+}
+
+pub fn coordinate_pruning_specs_for_mask(mask: &PartialMask) -> Vec<CandidateSpec> {
+    use Component::{Corner, Edge3, RlCenter2, RlCenter3, UfCenter2, UfCenter3};
+    let preferred = [
+        vec![Edge3, UfCenter3],
+        vec![Corner, UfCenter3],
+        vec![Edge3, RlCenter3],
+        vec![Edge3, UfCenter2],
+        vec![Edge3, RlCenter2],
+        vec![Edge3],
+        vec![Corner],
+        vec![UfCenter3],
+        vec![RlCenter3],
+        vec![UfCenter2],
+        vec![RlCenter2],
+    ];
+    preferred
+        .into_iter()
+        .map(CandidateSpec::new)
+        .filter(|spec| {
+            spec.components
+                .iter()
+                .copied()
+                .all(|component| component_is_forced(mask, component))
+        })
+        .collect()
+}
+
+pub fn coordinate_pruning_cache_key(spec: &CandidateSpec, move_code: &str) -> String {
+    format!("partial__{}__{}", spec.name().replace('+', "__"), move_code,)
+}
+
+fn parse_coordinate_meta(meta: &str) -> Option<(CandidateSpec, Vec<Move>)> {
+    let mut spec = None;
+    let mut moves = None;
+    for line in meta.lines() {
+        let (key, value) = line.split_once('=')?;
+        match key {
+            "spec" => {
+                spec = Some(CandidateSpec::new(
+                    value
+                        .split('+')
+                        .filter(|value| !value.is_empty())
+                        .map(Component::parse)
+                        .collect::<Option<Vec<_>>>()?,
+                ));
+            }
+            "moves" => moves = pruning::parse_move_set_suffix(value),
+            _ => {}
+        }
+    }
+    Some((spec?, moves?))
+}
+
+fn component_is_forced(mask: &PartialMask, component: Component) -> bool {
+    match component {
+        Component::Corner => mask.corners.iter().all(|&care| care),
+        Component::Edge3 => grouped_coordinate_forced(&mask.edges, &[4, 4, 4]),
+        Component::Edge4 => grouped_coordinate_forced(&mask.edges, &[3, 3, 3, 3]),
+        Component::UfCenter2 => grouped_coordinate_forced(&mask.uf_centers, &[6, 6]),
+        Component::UfCenter3 => grouped_coordinate_forced(&mask.uf_centers, &[3, 3, 6]),
+        Component::RlCenter2 => grouped_coordinate_forced(&mask.rl_centers, &[6, 6]),
+        Component::RlCenter3 => grouped_coordinate_forced(&mask.rl_centers, &[3, 3, 6]),
+        Component::E0
+        | Component::E1
+        | Component::E2
+        | Component::E3
+        | Component::UfCenter
+        | Component::RlCenter => false,
+    }
+}
+
+fn grouped_coordinate_forced(mask: &[bool; 12], groups: &[usize]) -> bool {
+    let mut start = 0_usize;
+    let mut complete_groups = 0_usize;
+    for &len in groups {
+        if mask[start..start + len].iter().all(|&care| care) {
+            complete_groups += 1;
+        }
+        start += len;
+    }
+    complete_groups + 1 >= groups.len()
 }
 
 fn add_piece_tables(
@@ -674,6 +860,15 @@ enum DynamicKind {
     Edge,
 }
 
+impl DynamicKind {
+    fn cache_name(self) -> &'static str {
+        match self {
+            Self::Corner => "corner",
+            Self::Edge => "edge",
+        }
+    }
+}
+
 struct DynamicTable {
     kind: DynamicKind,
     pieces: Vec<u8>,
@@ -684,6 +879,17 @@ struct DynamicTable {
 
 impl DynamicTable {
     fn build(kind: DynamicKind, pieces: Vec<u8>, allowed_moves: &[Move]) -> Self {
+        Self::build_with_report(kind, pieces, allowed_moves, None, None)
+            .expect("dynamic pruning build cannot fail without cancellation")
+    }
+
+    fn build_with_report(
+        kind: DynamicKind,
+        pieces: Vec<u8>,
+        allowed_moves: &[Move],
+        cancel: Option<&AtomicBool>,
+        report: Option<&PruningReporter<'_>>,
+    ) -> Result<Self, String> {
         let transitions = PieceTransitions::new();
         let size = match kind {
             DynamicKind::Corner => pow_usize(12, pieces.len()),
@@ -699,18 +905,54 @@ impl DynamicTable {
         let solved = this.solved_index();
         this.table[solved] = 0;
         let mut queue = VecDeque::from([solved]);
+        let mut reached = 1_usize;
+        let mut expanded = 0_usize;
         while let Some(idx) = queue.pop_front() {
+            if let Some(cancel) = cancel {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".to_owned());
+                }
+            }
             let depth = this.table[idx];
             for &mv in allowed_moves {
                 if let Some(next) = this.move_index(idx, mv) {
                     if this.table[next] == UNVISITED {
                         this.table[next] = depth + 1;
                         queue.push_back(next);
+                        reached += 1;
+                        if reached % 250_000 == 0 {
+                            if let Some(report) = report {
+                                report(PruningProgress {
+                                    name: format!("partial-{}", kind.cache_name()),
+                                    reached,
+                                    total: size,
+                                    depth: usize::from(depth),
+                                    expanded,
+                                });
+                            }
+                        }
                     }
                 }
             }
+            expanded += 1;
         }
-        this
+        if let Some(report) = report {
+            report(PruningProgress {
+                name: format!("partial-{}", kind.cache_name()),
+                reached,
+                total: size,
+                depth: usize::from(
+                    this.table
+                        .iter()
+                        .copied()
+                        .filter(|&value| value != UNVISITED)
+                        .max()
+                        .unwrap_or(0),
+                ),
+                expanded,
+            });
+        }
+        Ok(this)
     }
 
     fn name(&self) -> String {

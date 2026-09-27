@@ -54,6 +54,42 @@ impl PatternDatabase {
         }
     }
 
+    pub fn load(spec: CandidateSpec, path: impl AsRef<Path>) -> Result<Self, String> {
+        let table = read_table(path.as_ref(), spec.size().unwrap_or(0))
+            .map_err(|error| error.to_string())?;
+        Ok(Self { spec, table })
+    }
+
+    pub fn load_or_build_with_moves_reporting(
+        spec: CandidateSpec,
+        tables: &TransitionTables,
+        progress_interval: usize,
+        path: impl AsRef<Path>,
+        moves: &[Move],
+        threads: usize,
+        cancel: Option<&AtomicBool>,
+        report: Option<&PruningReporter<'_>>,
+    ) -> Result<Self, String> {
+        let path = path.as_ref();
+        match read_table(path, spec.size().unwrap_or(0)) {
+            Ok(table) => Ok(Self { spec, table }),
+            Err(_) => {
+                let (_, table) = build_pruning_table_with_moves_threaded(
+                    &spec,
+                    tables,
+                    usize::MAX,
+                    progress_interval,
+                    moves,
+                    threads,
+                    cancel,
+                    report,
+                )?;
+                write_table(path, &table).map_err(|error| error.to_string())?;
+                Ok(Self { spec, table })
+            }
+        }
+    }
+
     #[must_use]
     pub fn name(&self) -> String {
         self.spec.name()

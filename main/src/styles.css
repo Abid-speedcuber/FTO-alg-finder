@@ -16,17 +16,28 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid #c7cdd4;
   border-radius: 7px;
+  padding: 7px 12px;
   background: #ffffff;
   color: #1f2328;
-  min-height: 34px;
+  min-height: 38px;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
 }
 
 button:hover {
@@ -46,6 +57,7 @@ input {
   padding: 7px 10px;
   background: #ffffff;
   color: #1f2328;
+  font-size: 13px;
 }
 
 main {
@@ -130,7 +142,7 @@ main {
   place-items: center;
   width: 32px;
   min-width: 32px;
-  min-height: 28px;
+  min-height: 32px;
   border-radius: 999px;
   padding: 0;
   font-size: 20px;
@@ -146,9 +158,9 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 28px;
+  min-height: 32px;
   border-radius: 999px;
-  padding: 4px 6px 4px 12px;
+  padding: 5px 8px 5px 12px;
   font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
@@ -205,14 +217,16 @@ main {
 }
 
 .menu-command {
+  justify-content: flex-start;
   width: 100%;
-  min-height: 34px;
+  min-height: 36px;
   border-color: transparent;
   border-radius: 6px;
   background: transparent;
-  padding: 7px 10px;
+  padding: 8px 10px;
   text-align: left;
   font-size: 13px;
+  font-weight: 600;
 }
 
 .menu-command:hover {
@@ -251,11 +265,11 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 34px;
+  min-height: 36px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 6px 12px;
+  padding: 7px 12px;
   text-align: left;
 }
 
@@ -305,12 +319,15 @@ main {
 }
 
 .context-delete {
+  justify-content: flex-start;
   width: 100%;
-  min-height: 32px;
+  min-height: 36px;
   border-color: transparent;
   background: transparent;
   color: #b02a37;
   text-align: left;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .context-delete:hover:not(:disabled) {
@@ -363,10 +380,27 @@ main {
 }
 
 .settings-modal,
+.pruning-modal,
 .storage-modal,
 .about-modal,
 .confirm-modal {
   width: min(560px, calc(100vw - 40px));
+}
+
+.instance-setup-modal {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  max-height: min(82vh, calc(100vh - 40px));
+  overflow: hidden;
+}
+
+.instance-setup-body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  max-height: min(54vh, 560px);
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .settings-group {
@@ -386,8 +420,8 @@ main {
 }
 
 .compact {
-  min-height: 30px;
-  padding: 4px 10px;
+  min-height: 32px;
+  padding: 5px 10px;
   font-size: 12px;
 }
 
@@ -544,6 +578,19 @@ main {
   padding: 9px 10px;
 }
 
+.modal-option-list {
+  gap: 10px;
+}
+
+.modal-check {
+  display: grid;
+  min-height: 44px;
+  border: 1px solid #d7dce2;
+  border-radius: 7px;
+  padding: 10px;
+  line-height: 1.35;
+}
+
 .storage-list {
   display: grid;
   gap: 8px;
@@ -569,6 +616,8 @@ main {
   border-color: #b02a37;
   background: #c93c4a;
   color: #ffffff;
+  min-height: 38px;
+  font-weight: 650;
 }
 
 .danger:hover:not(:disabled) {
@@ -623,8 +672,67 @@ main {
 
 .modal-move-grid .move-toggle {
   font-size: 12px;
-  padding: 5px 6px;
-  min-height: 30px;
+  padding: 6px 6px;
+  min-height: 32px;
+}
+
+.more-moves-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #c9d1db;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #17212b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.more-moves-toggle:hover {
+  border-color: #8aa1b8;
+  background: #eef3f8;
+}
+
+.more-moves-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #aeb9c5;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #364553;
+  flex: 0 0 auto;
+}
+
+.more-moves-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.more-moves-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.more-move-grid {
+  padding-top: 2px;
+}
+
+.move-chooser-note {
+  margin: 0;
+  color: #59636e;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  font-synthesis: none;
 }
 
 .modal-footer {
@@ -633,8 +741,13 @@ main {
   gap: 8px;
 }
 
+.modal-footer button {
+  min-height: 38px;
+}
+
 .modal-footer .primary {
   min-width: 120px;
+  min-height: 38px;
 }
 
 .workspace {
@@ -735,6 +848,7 @@ main {
 .secondary {
   min-height: 38px;
   background: #f8fafb;
+  font-weight: 600;
 }
 
 .tool-section {
@@ -768,8 +882,8 @@ h2 {
 }
 
 .mini-actions button {
-  min-height: 28px;
-  padding: 3px 8px;
+  min-height: 30px;
+  padding: 4px 9px;
   font-size: 12px;
 }
 
@@ -781,8 +895,10 @@ h2 {
 
 .move-toggle {
   min-height: 34px;
+  padding: 7px 8px;
   background: #ffffff;
   font-size: 13px;
+  font-weight: 650;
 }
 
 .move-toggle.banned {
@@ -797,8 +913,8 @@ h2 {
 }
 
 .chevron-toggle {
-  min-height: 26px;
-  padding: 2px 9px;
+  min-height: 30px;
+  padding: 4px 9px;
   font-size: 11px;
   line-height: 1;
 }
@@ -827,10 +943,12 @@ h2 {
   display: grid;
   justify-items: center;
   gap: 3px;
-  min-height: 0;
+  min-height: 54px;
   padding: 5px 4px;
   font-size: 11px;
+  font-weight: 600;
   line-height: 1.2;
+  white-space: normal;
 }
 
 .ll-option.selected {
@@ -866,10 +984,12 @@ h2 {
 }
 
 .check {
+  display: grid;
   grid-template-columns: 16px 1fr;
   align-items: center;
   color: #2d3339;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .check input {
@@ -998,6 +1118,7 @@ h2 {
 
 .viewer-controls button {
   min-height: 36px;
+  padding: 5px 7px;
 }
 
 .viewer-controls button.selected:not(.swatch) {
@@ -1151,6 +1272,14 @@ h2 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
+  .instance-setup-modal {
+    max-height: calc(100vh - 32px);
+  }
+
+  .instance-setup-body {
+    max-height: calc(100vh - 260px);
+  }
+
   .topbar-right {
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -1265,7 +1394,7 @@ h2 {
 }
 
 .solution-row button {
-  min-height: 28px;
-  padding: 3px 10px;
+  min-height: 30px;
+  padding: 4px 10px;
   font-size: 12px;
 }
