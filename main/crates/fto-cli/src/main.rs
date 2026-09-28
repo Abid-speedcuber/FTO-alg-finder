@@ -12,7 +12,7 @@ use fto_core::{
     FtoCubie,
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
-    pruning::{self, PruningStats, SolverPruning},
+    pruning::{self, CandidateSpec, Component, PatternDatabase, PatternDatabases, PruningStats, SolverPruning},
     search::{self, BidirectionalChoice, BidirectionalConfig, MiniPruning, SearchConfig},
     tables::TransitionTables,
 };
@@ -32,7 +32,9 @@ fn run() -> Result<(), String> {
     let mut eval_pruning = false;
     let mut auto_pruning = false;
     let mut benchmark = false;
+    let mut ll_benchmark = false;
     let mut benchmark_iters = 7_usize;
+    let mut benchmark_seed = 0x5eed_17a5_7a11_1a5e_u64;
     let mut threads = 1_usize;
     let mut force_bidirectional = false;
     let mut disable_bidirectional = false;
@@ -75,6 +77,7 @@ fn run() -> Result<(), String> {
             "--eval-pruning" => eval_pruning = true,
             "--auto-pruning" => auto_pruning = true,
             "--benchmark" => benchmark = true,
+            "--ll-benchmark" => ll_benchmark = true,
             "--bidirectional" => force_bidirectional = true,
             "--no-bidirectional" => disable_bidirectional = true,
             "--bidir-start-pruning" => bidirectional_start_pruning = true,
@@ -90,6 +93,10 @@ fn run() -> Result<(), String> {
                     .ok_or("--benchmark-iters needs a value")?
                     .parse()
                     .map_err(|_| "--benchmark-iters must be an integer")?;
+            }
+            "--benchmark-seed" => {
+                i += 1;
+                benchmark_seed = parse_u64_arg(args.get(i).ok_or("--benchmark-seed needs a value")?)?;
             }
             "--threads" => {
                 i += 1;
@@ -310,6 +317,28 @@ fn run() -> Result<(), String> {
                 stat.table_bytes as f64 / (1024.0 * 1024.0),
             );
         }
+        return Ok(());
+    }
+
+    if ll_benchmark {
+        let instance_moves = instance_moves.unwrap_or_else(|| Move::ALL.to_vec());
+        run_last_layer_benchmark(
+            &tables,
+            &pruning_out_dir,
+            progress_million * 1_000_000,
+            &allowed_moves,
+            &instance_moves,
+            restricted_pruning,
+            use_solver_pruning,
+            threads,
+            benchmark_iters,
+            sample_count,
+            sample_walk_len,
+            benchmark_seed,
+            max_depth,
+            exact_depth,
+            find_all,
+        )?;
         return Ok(());
     }
 
@@ -790,6 +819,460 @@ fn run_solve_benchmark(
         println!("first_solution: {}", search::format_solution(solution));
     }
     Ok(())
+}
+
+struct LlBenchmarkVariant<'a> {
+    name: &'static str,
+    pruning: Option<&'a SolverPruning>,
+    pattern_pruning: Option<&'a PatternDatabases>,
+}
+
+struct LlBenchmarkSummary {
+    name: &'static str,
+    samples: usize,
+    iterations: usize,
+    total_nodes: u128,
+    total_ns: u128,
+    median_sample_ns: u64,
+    mean_sample_ns: u64,
+    min_depth: usize,
+    max_depth: usize,
+    solution_mismatches: usize,
+}
+
+impl LlBenchmarkSummary {
+    fn print(&self, baseline: Option<&LlBenchmarkSummary>) {
+        let total_ms = self.total_ns as f64 / 1_000_000.0;
+        let ns_per_node = if self.total_nodes == 0 {
+            0.0
+        } else {
+            self.total_ns as f64 / self.total_nodes as f64
+        };
+        let nodes_per_sec = if self.total_ns == 0 {
+            0.0
+        } else {
+            self.total_nodes as f64 * 1_000_000_000.0 / self.total_ns as f64
+        };
+        let (node_ratio, time_ratio, ns_per_node_ratio) = baseline
+            .map(|base| {
+                let base_ns_per_node = if base.total_nodes == 0 {
+                    0.0
+                } else {
+                    base.total_ns as f64 / base.total_nodes as f64
+                };
+                (
+                    ratio(self.total_nodes as f64, base.total_nodes as f64),
+                    ratio(self.total_ns as f64, base.total_ns as f64),
+                    ratio(ns_per_node, base_ns_per_node),
+                )
+            })
+            .unwrap_or((1.0, 1.0, 1.0));
+        println!(
+            concat!(
+                "variant: {name}\n",
+                "  samples: {samples}\n",
+                "  iterations: {iterations}\n",
+                "  total_nodes: {total_nodes}\n",
+                "  total_ms: {total_ms:.3}\n",
+                "  median_sample_ms: {median_sample_ms:.3}\n",
+                "  mean_sample_ms: {mean_sample_ms:.3}\n",
+                "  nodes_per_sec: {nodes_per_sec:.0}\n",
+                "  ns_per_node: {ns_per_node:.1}\n",
+                "  solution_depth_range: {min_depth}..{max_depth}\n",
+                "  solution_mismatches: {solution_mismatches}\n",
+                "  node_ratio_vs_baseline: {node_ratio:.4}\n",
+                "  time_ratio_vs_baseline: {time_ratio:.4}\n",
+                "  ns_per_node_ratio_vs_baseline: {ns_per_node_ratio:.4}"
+            ),
+            name = self.name,
+            samples = self.samples,
+            iterations = self.iterations,
+            total_nodes = self.total_nodes,
+            total_ms = total_ms,
+            median_sample_ms = self.median_sample_ns as f64 / 1_000_000.0,
+            mean_sample_ms = self.mean_sample_ns as f64 / 1_000_000.0,
+            nodes_per_sec = nodes_per_sec,
+            ns_per_node = ns_per_node,
+            min_depth = self.min_depth,
+            max_depth = self.max_depth,
+            solution_mismatches = self.solution_mismatches,
+            node_ratio = node_ratio,
+            time_ratio = time_ratio,
+            ns_per_node_ratio = ns_per_node_ratio,
+        );
+    }
+}
+
+fn ratio(value: f64, baseline: f64) -> f64 {
+    if baseline == 0.0 {
+        0.0
+    } else {
+        value / baseline
+    }
+}
+
+fn run_last_layer_benchmark(
+    tables: &TransitionTables,
+    pruning_out_dir: &Path,
+    progress_interval: usize,
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
+    use_solver_pruning: bool,
+    threads: usize,
+    iterations: usize,
+    sample_count: usize,
+    sample_walk_len: usize,
+    seed: u64,
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+) -> Result<(), String> {
+    if allowed_moves.is_empty() {
+        return Err("LL benchmark needs at least one allowed move".to_owned());
+    }
+    let iterations = iterations.max(1);
+    let sample_count = sample_count.max(1);
+    let samples = generate_walk_samples(allowed_moves, sample_count, sample_walk_len, seed);
+    let pruning = if use_solver_pruning {
+        Some(load_solver_pruning(
+            tables,
+            pruning_out_dir,
+            progress_interval,
+            allowed_moves,
+            instance_moves,
+            restricted_pruning,
+            threads,
+        )?)
+    } else {
+        None
+    };
+    let no_pruning_variant = LlBenchmarkVariant {
+        name: "ll-no-pruning",
+        pruning: None,
+        pattern_pruning: None,
+    };
+    let normal_pruning_variant = pruning.as_ref().map(|pruning| LlBenchmarkVariant {
+        name: "ll-current-normal-pruning",
+        pruning: Some(pruning),
+        pattern_pruning: None,
+    });
+    let variants = [
+        LlBenchmarkVariant {
+            name: no_pruning_variant.name,
+            pruning: no_pruning_variant.pruning,
+            pattern_pruning: no_pruning_variant.pattern_pruning,
+        },
+    ];
+    println!("ll_benchmark_seed: {seed}");
+    println!("ll_benchmark_sample_count: {sample_count}");
+    println!("ll_benchmark_sample_walk_len: {sample_walk_len}");
+    println!("ll_benchmark_threads: {threads}");
+    println!("ll_benchmark_exact_depth: {exact_depth}");
+    println!(
+        "ll_benchmark_depth: {}",
+        max_depth.map_or_else(|| "auto".to_owned(), |depth| depth.to_string())
+    );
+
+    let mut baseline = None;
+    for variant in variants.into_iter().chain(normal_pruning_variant) {
+        let summary = benchmark_last_layer_variant(
+            variant,
+            tables,
+            &samples,
+            max_depth,
+            exact_depth,
+            find_all,
+            iterations,
+            threads,
+            allowed_moves,
+        )?;
+        summary.print(baseline.as_ref());
+        if baseline.is_none() {
+            baseline = Some(summary);
+        }
+    }
+    if !use_solver_pruning {
+        return Ok(());
+    }
+    let ll_variants = [
+        (
+            "ll-edge3-A-corner-B",
+            Component::LlUfCenterA,
+            Component::LlUfCenterB,
+        ),
+        (
+            "ll-edge3-B-corner-A",
+            Component::LlUfCenterB,
+            Component::LlUfCenterA,
+        ),
+        (
+            "ll-edge3-A-corner-A",
+            Component::LlUfCenterA,
+            Component::LlUfCenterA,
+        ),
+        (
+            "ll-edge3-B-corner-B",
+            Component::LlUfCenterB,
+            Component::LlUfCenterB,
+        ),
+    ];
+    for (name, edge_center, corner_center) in ll_variants {
+        let pattern_pruning = load_ll_pattern_pruning(
+            tables,
+            pruning_out_dir,
+            progress_interval,
+            allowed_moves,
+            threads,
+            edge_center,
+            corner_center,
+        )?;
+        let variant = LlBenchmarkVariant {
+            name,
+            pruning: None,
+            pattern_pruning: Some(&pattern_pruning),
+        };
+        let summary = benchmark_last_layer_variant(
+            variant,
+            tables,
+            &samples,
+            max_depth,
+            exact_depth,
+            find_all,
+            iterations,
+            threads,
+            allowed_moves,
+        )?;
+        summary.print(baseline.as_ref());
+    }
+    Ok(())
+}
+
+fn load_ll_pattern_pruning(
+    tables: &TransitionTables,
+    pruning_out_dir: &Path,
+    progress_interval: usize,
+    moves: &[Move],
+    threads: usize,
+    edge_center: Component,
+    corner_center: Component,
+) -> Result<PatternDatabases, String> {
+    let mut moves = moves.to_vec();
+    ensure_ll_free_u_moves(&mut moves);
+    let ll_dir = pruning_out_dir.join("last-layer-v1");
+    fs::create_dir_all(&ll_dir).map_err(|error| error.to_string())?;
+    let move_code = pruning::move_set_codename(&pruning::move_set_suffix(&moves));
+    let specs = [
+        CandidateSpec::new(vec![Component::Edge3, edge_center]),
+        CandidateSpec::new(vec![Component::Corner, corner_center]),
+    ];
+    let mut databases = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let path = ll_dir.join(format!("{}_{move_code}.prun", file_safe_name(&spec.name())));
+        eprintln!(
+            "loading/building LL pruning table {} ({:.1} MiB)",
+            spec.name(),
+            spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+        );
+        databases.push(PatternDatabase::load_or_build_with_moves_reporting(
+            spec,
+            tables,
+            progress_interval,
+            path,
+            &moves,
+            threads,
+            None,
+            None,
+        )?);
+    }
+    eprintln!(
+        "using LL pruning tables: {} ({:.1} MiB)",
+        databases
+            .iter()
+            .map(PatternDatabase::name)
+            .collect::<Vec<_>>()
+            .join(" / "),
+        databases.iter().map(PatternDatabase::bytes).sum::<usize>() as f64 / (1024.0 * 1024.0)
+    );
+    Ok(PatternDatabases::new(databases))
+}
+
+fn ensure_ll_free_u_moves(moves: &mut Vec<Move>) {
+    for mv in [Move::U, Move::Up] {
+        if !moves.contains(&mv) {
+            moves.push(mv);
+        }
+    }
+    moves.sort_unstable_by_key(|mv| mv.idx());
+}
+
+fn benchmark_last_layer_variant(
+    variant: LlBenchmarkVariant<'_>,
+    tables: &TransitionTables,
+    samples: &[FtoCubie],
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+    iterations: usize,
+    threads: usize,
+    allowed_moves: &[Move],
+) -> Result<LlBenchmarkSummary, String> {
+    let mut sample_times = Vec::with_capacity(samples.len() * iterations);
+    let mut total_nodes = 0_u128;
+    let mut total_ns = 0_u128;
+    let mut expected_depths: Vec<Option<usize>> = vec![None; samples.len()];
+    let mut solution_mismatches = 0_usize;
+    let mut min_depth = usize::MAX;
+    let mut max_seen_depth = 0_usize;
+
+    for _ in 0..iterations {
+        for (sample_idx, &cubie) in samples.iter().enumerate() {
+            let start = Instant::now();
+            let result = if let Some(pattern_pruning) = variant.pattern_pruning {
+                benchmark_last_layer_pattern_solve_once(
+                    cubie,
+                    tables,
+                    pattern_pruning,
+                    max_depth,
+                    exact_depth,
+                    find_all,
+                    threads,
+                    allowed_moves.to_vec(),
+                )
+            } else {
+                benchmark_solve_once(
+                    cubie,
+                    tables,
+                    variant.pruning,
+                    None,
+                    max_depth,
+                    exact_depth,
+                    find_all,
+                    threads,
+                    None,
+                    0,
+                    false,
+                    0,
+                    allowed_moves.to_vec(),
+                    true,
+                )
+            }?;
+            let elapsed = start.elapsed().as_nanos() as u64;
+            let depth = result.solutions.first().map(Vec::len);
+            if let Some(expected) = expected_depths[sample_idx] {
+                if Some(expected) != depth {
+                    solution_mismatches += 1;
+                }
+            } else {
+                expected_depths[sample_idx] = depth;
+            }
+            if let Some(depth) = depth {
+                min_depth = min_depth.min(depth);
+                max_seen_depth = max_seen_depth.max(depth);
+            }
+            total_nodes += u128::from(result.nodes);
+            total_ns += u128::from(elapsed);
+            sample_times.push(elapsed);
+            std::hint::black_box(result.nodes);
+            std::hint::black_box(result.solutions.len());
+        }
+    }
+
+    sample_times.sort_unstable();
+    let median_sample_ns = sample_times[sample_times.len() / 2];
+    let mean_sample_ns = (sample_times.iter().sum::<u64>() as f64 / sample_times.len() as f64) as u64;
+    Ok(LlBenchmarkSummary {
+        name: variant.name,
+        samples: samples.len(),
+        iterations,
+        total_nodes,
+        total_ns,
+        median_sample_ns,
+        mean_sample_ns,
+        min_depth: if min_depth == usize::MAX { 0 } else { min_depth },
+        max_depth: max_seen_depth,
+        solution_mismatches,
+    })
+}
+
+fn benchmark_last_layer_pattern_solve_once(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: &PatternDatabases,
+    max_depth: Option<u8>,
+    exact_depth: bool,
+    find_all: bool,
+    threads: usize,
+    allowed_moves: Vec<Move>,
+) -> Result<search::SearchResult, String> {
+    if let Some(max_depth) = max_depth {
+        return Ok(search::solve_last_layer_with_pattern_pruning_threads(
+            cubie,
+            tables,
+            Some(pruning),
+            &SearchConfig {
+                min_depth: if exact_depth { max_depth } else { 0 },
+                max_depth,
+                find_all,
+                allowed_moves,
+                free_u_ends: true,
+                cancel: None,
+                solution_reporter: None,
+            },
+            threads,
+        ));
+    }
+    let mut total_nodes = 0_u64;
+    for depth in 0..=u8::MAX {
+        let mut result = search::solve_last_layer_with_pattern_pruning_threads(
+            cubie,
+            tables,
+            Some(pruning),
+            &SearchConfig {
+                min_depth: depth,
+                max_depth: depth,
+                find_all,
+                allowed_moves: allowed_moves.clone(),
+                free_u_ends: true,
+                cancel: None,
+                solution_reporter: None,
+            },
+            threads,
+        );
+        total_nodes += result.nodes;
+        if !result.solutions.is_empty() {
+            result.nodes = total_nodes;
+            return Ok(result);
+        }
+    }
+    Err("no solution found up to depth 255".to_owned())
+}
+
+fn generate_walk_samples(
+    allowed_moves: &[Move],
+    sample_count: usize,
+    sample_walk_len: usize,
+    seed: u64,
+) -> Vec<FtoCubie> {
+    let mut rng = Lcg::new(seed);
+    let mut samples = Vec::with_capacity(sample_count);
+    for _ in 0..sample_count {
+        let mut cubie = FtoCubie::solved();
+        let mut last_move = None;
+        for _ in 0..sample_walk_len {
+            let mut mv = allowed_moves[rng.next_usize(allowed_moves.len())];
+            for _ in 0..16 {
+                if last_move.is_none_or(|last: Move| mv != last.inverse()) {
+                    break;
+                }
+                mv = allowed_moves[rng.next_usize(allowed_moves.len())];
+            }
+            cubie = cubie.apply(mv);
+            last_move = Some(mv);
+        }
+        samples.push(cubie);
+    }
+    samples
 }
 
 fn benchmark_solve_once(
@@ -1415,6 +1898,20 @@ fn roi_milli(stats: &PruningStats) -> u64 {
     u64::from(stats.average_depth_milli) * 1000 / mib_milli
 }
 
+fn parse_u64_arg(input: &str) -> Result<u64, String> {
+    let trimmed = input.trim();
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).map_err(|_| format!("invalid u64 value: {input}"))
+    } else {
+        trimmed
+            .parse()
+            .map_err(|_| format!("invalid u64 value: {input}"))
+    }
+}
+
 fn parse_candidate(input: &str) -> Result<pruning::CandidateSpec, String> {
     let components = input
         .split('+')
@@ -1434,6 +1931,8 @@ fn print_help() {
         "Usage:
   fto-cli --scramble \"R U R'\"
   fto-cli --json state.json --benchmark --benchmark-iters 9
+  fto-cli --ll-benchmark --no-pruning --sample-count 20 --sample-walk-len 6 --depth 6 --exact
+  fto-cli --ll-benchmark --sample-count 20 --sample-walk-len 6 --depth 6 --exact --benchmark-seed 0x1234
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-max-mib 3072
   fto-cli --json state.json --depth 19 --exact --bidirectional --bidir-start-pruning
   fto-cli --json state.json --depth 17 --exact --threads 2
@@ -1462,6 +1961,9 @@ Exact searches use a node/memory estimate to choose bidirectional search unless 
 --ban removes moves from search. --moves replaces the search move set.
 --instance-moves sets the instance's base move set used to select/build its base pruning table.
 --mini-pruning builds small in-memory restricted PDBs for the exact solve move set.
+--ll-benchmark compares last-layer solve variants on deterministic random-walk samples.
+Use --no-pruning with --ll-benchmark to measure the raw LL baseline without building PDBs.
+--benchmark-seed accepts decimal or 0x-prefixed hexadecimal seeds.
 Both take a space/comma/semicolon-separated list of move identifiers (Rust enum names, e.g. R, Rp, Brp, RURp) rather than display notation, since display notation like (R U R') contains spaces.
 Pruning table selection is automatic: the smallest cached move set that covers the search move set wins (cached restricted tables are shared across instances). --restricted-pruning additionally builds/loads a pruning table for exactly the search move set.
 Auto pruning keeps only the top sampled candidate PDBs unless --keep-all-pruning-pdbs is used.

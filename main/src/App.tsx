@@ -42,6 +42,7 @@ type TerminalLine = {
   id: number;
   kind: string;
   text: string;
+  createdAt?: number;
 };
 
 const moves = [
@@ -249,6 +250,227 @@ function pruningProgressPercent(text: string): number {
   return Math.max(0, Math.min(100, Number(match[1])));
 }
 
+function pruningProgressName(text: string): string {
+  return text.match(/^pruning progress:\s+(.+?)\s+reached/)?.[1] ?? "pruning";
+}
+
+const pruningLineRotationMs = 16_000;
+const pruningSlowGateMs = 20_000;
+const pruningSlowGatePercent = 60;
+const pruningHangTightPercent = 85;
+const pruningAnotherTablePercent = 99;
+const pruningFirstSlowLine =
+  "Progress isn't linear here. The progress gets slower as the depth increases. You might as well grab a popcorn meanwhile";
+const pruningSecondSlowLine =
+  "Uh-oh, looks like I miscalculated. It will take a lil bit longer than I was hoping. Should still be faster than the previous table tho. You might wanna grab a second popcorn, maybe?";
+const pruningExpensiveDoneLine = "Yay, we're done with the exxxpensive table, this one should be FAST.";
+const pruningHangTightLine = "Hang tight, we're almost there.";
+const pruningAnotherTableLine = "btw, we have another table left, it wont take this long i promise";
+
+function isExpensivePruningTable(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized.includes("edge3") || normalized.includes("e3cf3");
+}
+
+const pruningLinesOpening = [
+  "All right, the table is on. Everybody act natural.",
+  "The solver just rolled up its sleeves, metaphorically and with concern.",
+  "This is the quiet part before the numbers start asking for favors.",
+  "Small ceremony first: we light the CPU and hope the cache is kind.",
+  "The table is getting its bearings. It has refused coffee, suspiciously.",
+  "A lot of future impatience is being paid off right now.",
+  "The first few seconds always look innocent. That is how they get you.",
+  "We are not lost yet. We have only begun drawing the map.",
+];
+
+const pruningLinesSteady = [
+  "Still moving. Not glamorous, but deeply employed.",
+  "Somewhere in there, a state just found out it is farther away than expected.",
+  "This is what optimization looks like before it becomes convenient.",
+  "The progress bar has entered its serious actor phase.",
+  "It is doing the thing. The thing is huge, but it is doing it.",
+  "Future solves are standing nearby with tiny thank-you cards.",
+  "I would call this dramatic tension, but it is mostly RAM and decisions.",
+  "The table is building character, which is what software says when it is busy.",
+  "Nothing is broken. This is just the algorithm speaking in long sentences.",
+  "Good news: every boring second here makes later searches less boring.",
+  "The solver is making a list, checking it recursively.",
+  "This is a one-time investment, which is also what expensive hobbies say.",
+];
+
+const pruningLinesSlow = [
+  "We are progressing, slowly but with legal documentation.",
+  "The table is not frozen. It is simply taking the scenic route through math.",
+  "This is the part where the montage would save us three minutes.",
+  "If the fan gets louder, that is applause in computer language.",
+  "The solver has opened a very large spreadsheet and immediately regretted it.",
+  "I asked the progress bar for an ETA. It changed the subject.",
+  "This table is doing honest work, the kind nobody claps for until it is cached.",
+  "There is movement. It is not fast movement, but it has witnesses.",
+  "The algorithm is currently discovering why shortcuts have consequences.",
+  "This is still fine. Slightly theatrical, but fine.",
+  "At this speed, we have time to name the table and write its backstory.",
+  "The cache is going to be unbearably pleased with itself after this.",
+];
+
+const pruningLinesHeavyTable = [
+  "Ah, the big table. It walked in wearing a long coat and asking for CPU time.",
+  "Edge-heavy pruning has arrived, and yes, it brought paperwork.",
+  "This one is the expensive dinner. The receipt will be useful later.",
+  "The table is lifting the heavy stuff while pretending it meant to do this.",
+  "This is why we cache things: so we only have to be brave once.",
+  "The solver is currently turning a large problem into a reusable bad decision.",
+  "This table has main-character runtime and supporting-character manners.",
+  "If this feels personal, that is just combinatorics making eye contact.",
+  "The good news is that the next solve gets to act like this was easy.",
+  "This is the table people warn younger tables about.",
+];
+
+const pruningLinesLong = [
+  "We have crossed into snack territory. Not emergency snacks, just honest ones.",
+  "Still going. Still valid. Still not a betrayal.",
+  "The table has requested patience and a chair with lumbar support.",
+  "At this point the progress bar and I are on speaking terms.",
+  "The computer is doing that thing where silence technically means confidence.",
+  "If you changed tabs, no judgment. The table will still be here, being intense.",
+  "This is less a delay and more a very boring origin story.",
+  "The solver is making future-you look like a genius with excellent timing.",
+  "This would be the scene where the clock on the wall gets a close-up.",
+  "The table is not late. It is arriving in exhaustive order.",
+  "We are deep enough now that optimism needs a loading indicator.",
+  "One day this file will just load from disk and act like it was always easy.",
+];
+
+const pruningLinesMarathon = [
+  "Okay, this table has become a feature film.",
+  "We are no longer waiting. We are participating in a computing event.",
+  "The solver is still alive. It is just making a very long point.",
+  "This runtime has stopped being a number and started being a lifestyle.",
+  "I would say 'almost there,' but my lawyer says words have meanings.",
+  "Some tables are born quick. Some tables make you remember them.",
+  "This is the kind of wait that makes the cache feel like a personal friend.",
+  "If patience had a benchmark, you would be passing it right now.",
+  "The algorithm is not stuck. It is just refusing to summarize.",
+  "When this finishes, the save file deserves a tiny velvet rope.",
+  "We are in the director's cut of pruning table generation.",
+  "The table has now taken enough time to develop opinions.",
+];
+
+type PruningProgressPoint = {
+  name: string;
+  percent: number;
+  createdAt: number;
+};
+
+function firstProgressAt(points: PruningProgressPoint[], percent: number): PruningProgressPoint | undefined {
+  return points.find((point) => point.percent >= percent);
+}
+
+function pruningTableWasSlow(points: PruningProgressPoint[], observedAt?: number): boolean {
+  const startedAt = points[0]?.createdAt;
+  if (startedAt === undefined) {
+    return false;
+  }
+  const firstAtGate = firstProgressAt(points, pruningSlowGatePercent);
+  if (firstAtGate) {
+    return firstAtGate.createdAt - startedAt > pruningSlowGateMs;
+  }
+  const lastPoint = points[points.length - 1];
+  return !!lastPoint && (observedAt ?? lastPoint.createdAt) - startedAt >= pruningSlowGateMs;
+}
+
+function pickTimedPruningLine(name: string, tableElapsedMs: number, slot: number): string {
+  const elapsedSeconds = tableElapsedMs / 1000;
+  const heavyTable = isExpensivePruningTable(name);
+  const seed = slot;
+  const pick = (lines: string[]) => lines[Math.abs(seed) % lines.length];
+
+  if (elapsedSeconds >= 420) {
+    return pick(pruningLinesMarathon);
+  }
+  if (elapsedSeconds >= 180) {
+    return pick(pruningLinesLong);
+  }
+  if (heavyTable && elapsedSeconds >= 45) {
+    return pick(pruningLinesHeavyTable);
+  }
+  if (elapsedSeconds >= 60) {
+    return pick(pruningLinesSlow);
+  }
+  if (elapsedSeconds >= 12) {
+    return pick(pruningLinesSteady);
+  }
+  return pick(pruningLinesOpening);
+}
+
+function pickPruningOneLiner(
+  progressText: string,
+  progressHistory: PruningProgressPoint[],
+  now: number,
+): string | null {
+  const currentName = pruningProgressName(progressText);
+  const allPoints = progressHistory;
+  const tableNames = Array.from(new Set(allPoints.map((point) => point.name)));
+  const currentTableIndex = tableNames.indexOf(currentName);
+  const currentPoints = allPoints.filter((point) => point.name === currentName);
+  const tableStartedAt = currentPoints[0]?.createdAt;
+  if (tableStartedAt === undefined) {
+    return null;
+  }
+
+  const tableElapsedMs = now - tableStartedAt;
+  const activeAt = tableStartedAt + pruningSlowGateMs;
+  const slowEnoughForBanter = pruningTableWasSlow(currentPoints, now);
+  const previousTableName = currentTableIndex > 0 ? tableNames[currentTableIndex - 1] : undefined;
+  const previousTableWasSlow = previousTableName
+    ? pruningTableWasSlow(allPoints.filter((point) => point.name === previousTableName))
+    : false;
+
+  if (!slowEnoughForBanter) {
+    if (previousTableWasSlow && tableElapsedMs < pruningSlowGateMs) {
+      return pruningExpensiveDoneLine;
+    }
+    return null;
+  }
+
+  const slot = Math.max(0, Math.floor((now - activeAt) / pruningLineRotationMs));
+  if (slot === 0) {
+    return previousTableWasSlow ? pruningSecondSlowLine : pruningFirstSlowLine;
+  }
+
+  const forceCandidates = [
+    {
+      text: pruningHangTightLine,
+      point: firstProgressAt(currentPoints, pruningHangTightPercent),
+    },
+    {
+      text: pruningAnotherTableLine,
+      point:
+        currentTableIndex === 0 && isExpensivePruningTable(currentName)
+          ? firstProgressAt(currentPoints, pruningAnotherTablePercent)
+          : undefined,
+    },
+  ];
+  let nextForcedSlot = 1;
+  let usedForcedSlots = 0;
+  for (const candidate of forceCandidates) {
+    if (!candidate.point) {
+      continue;
+    }
+    const conditionSlot = Math.max(1, Math.floor((candidate.point.createdAt - activeAt) / pruningLineRotationMs) + 1);
+    const scheduledSlot = Math.max(nextForcedSlot, conditionSlot);
+    nextForcedSlot = scheduledSlot + 1;
+    if (scheduledSlot < slot) {
+      usedForcedSlots += 1;
+    }
+    if (scheduledSlot === slot) {
+      return candidate.text;
+    }
+  }
+
+  return pickTimedPruningLine(currentName, tableElapsedMs, slot - usedForcedSlots);
+}
+
 function normalizeHexColor(value: string): string | null {
   const trimmed = value.trim();
   const match = /^#?([0-9a-fA-F]{6})$/.exec(trimmed);
@@ -450,6 +672,7 @@ function App() {
   const [result, setResult] = useState<SolveResult | null>(null);
   const [running, setRunning] = useState(false);
   const [terminal, setTerminal] = useState<TerminalLine[]>([]);
+  const [pruningProgressHistory, setPruningProgressHistory] = useState<PruningProgressPoint[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [pruningStartedAt, setPruningStartedAt] = useState<number | null>(null);
   const validationRun = useRef(0);
@@ -517,23 +740,21 @@ function App() {
       );
     if (running && !currentDepth && currentProgress) {
       const isPruningProgress = currentProgress.text.startsWith("pruning progress:");
-      const showPopcorn =
-        isPruningProgress &&
-        pruningProgressPercent(currentProgress.text) < 60 &&
-        pruningStartedAt !== null &&
-        now - pruningStartedAt >= 20_000;
       lines.push({
         id: isPruningProgress ? -3 : -4,
         kind: "info",
         text: isPruningProgress ? "generating pruning table..." : "generating transition tables...",
       });
       lines.push(currentProgress);
-      if (showPopcorn) {
-        lines.push({
-          id: -5,
-          kind: "info",
-          text: "Grab a popcorn. The progress is only gonna get slower as the time goes by",
-        });
+      if (isPruningProgress) {
+        const pruningOneLiner = pickPruningOneLiner(currentProgress.text, pruningProgressHistory, now);
+        if (pruningOneLiner) {
+          lines.push({
+            id: -5,
+            kind: "info",
+            text: pruningOneLiner,
+          });
+        }
       }
     } else if (
       running &&
@@ -555,7 +776,7 @@ function App() {
       lines.push(...streamedSolutions);
     }
     return lines;
-  }, [now, pruningStartedAt, result, running, showDebugInfo, terminal]);
+  }, [now, pruningProgressHistory, result, running, showDebugInfo, terminal]);
 
   useEffect(() => {
     try {
@@ -611,10 +832,10 @@ function App() {
     setFacelets(nextFacelets);
   }, []);
 
-  const appendLine = useCallback((kind: string, text: string) => {
+  const appendLine = useCallback((kind: string, text: string, createdAt = Date.now()) => {
     const id = ++lineId.current;
     setTerminal((lines) => {
-      const next = [...lines, { id, kind, text }];
+      const next = [...lines, { id, kind, text, createdAt }];
       return next.length > 500 ? next.slice(next.length - 500) : next;
     });
   }, []);
@@ -626,6 +847,7 @@ function App() {
   const resetPruningTimer = useCallback(() => {
     pruningStartedAtRef.current = null;
     setPruningStartedAt(null);
+    setPruningProgressHistory([]);
     setNow(Date.now());
   }, []);
 
@@ -665,17 +887,26 @@ function App() {
     (async () => {
       const fns = await Promise.all([
         listen<SolveLine>("solve-line", (event) => {
+          const createdAt = Date.now();
           if (
             event.payload.kind === "progress" &&
-            event.payload.text.startsWith("pruning progress:") &&
-            pruningStartedAtRef.current === null
+            event.payload.text.startsWith("pruning progress:")
           ) {
-            const startedAt = Date.now();
-            pruningStartedAtRef.current = startedAt;
-            setPruningStartedAt(startedAt);
-            setNow(startedAt);
+            if (pruningStartedAtRef.current === null) {
+              pruningStartedAtRef.current = createdAt;
+              setPruningStartedAt(createdAt);
+            }
+            setNow(createdAt);
+            setPruningProgressHistory((points) => [
+              ...points,
+              {
+                name: pruningProgressName(event.payload.text),
+                percent: pruningProgressPercent(event.payload.text),
+                createdAt,
+              },
+            ]);
           }
-          appendLine(event.payload.kind, event.payload.text);
+          appendLine(event.payload.kind, event.payload.text, createdAt);
         }),
         listen<SolveResult>("solve-result", (event) => {
           setResult(event.payload);
@@ -836,6 +1067,7 @@ function App() {
       appendLine("error", `error: ${String(error)}`);
       setStatus(String(error));
       setRunning(false);
+      resetPruningTimer();
       refreshCacheStatus();
     }
   }
@@ -878,6 +1110,7 @@ function App() {
       appendLine("error", `error: ${String(error)}`);
       setStatus(String(error));
       setRunning(false);
+      resetPruningTimer();
       refreshCacheStatus();
     }
   }

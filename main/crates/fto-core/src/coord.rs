@@ -13,6 +13,8 @@ pub const EDGE4_COUNTS: [u8; 4] = [3, 3, 3, 3];
 pub const CENTER2_COUNTS: [u8; 2] = [6, 6];
 pub const CENTER3_COUNTS: [u8; 3] = [3, 3, 6];
 pub const CENTER4_COUNTS: [u8; 4] = [3, 3, 3, 3];
+pub const LL_UF_CENTER_A_MAP: [u8; 12] = [0, 0, 0, 1, 2, 2, 2, 2, 1, 2, 1, 2];
+pub const LL_UF_CENTER_B_MAP: [u8; 12] = [2, 2, 2, 0, 0, 0, 1, 1, 1, 2, 2, 2];
 
 const EDGE_SIGNATURES: [u8; 12] = [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15];
 
@@ -28,6 +30,8 @@ pub struct FtoCoord {
     pub uf_center3: u16,
     pub rl_center2: u16,
     pub rl_center3: u16,
+    pub ll_uf_center_a: u16,
+    pub ll_uf_center_b: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -57,6 +61,16 @@ impl FtoCoord {
             uf_center3: rank_center_color_groups(&cubie.uf, &[0, 1, 2, 2], &CENTER3_COUNTS) as u16,
             rl_center2: rank_center_color_groups(&cubie.rl, &[0, 0, 1, 1], &CENTER2_COUNTS) as u16,
             rl_center3: rank_center_color_groups(&cubie.rl, &[0, 1, 2, 2], &CENTER3_COUNTS) as u16,
+            ll_uf_center_a: rank_center_piece_groups(
+                &cubie.uf,
+                &LL_UF_CENTER_A_MAP,
+                &CENTER3_COUNTS,
+            ) as u16,
+            ll_uf_center_b: rank_center_piece_groups(
+                &cubie.uf,
+                &LL_UF_CENTER_B_MAP,
+                &CENTER3_COUNTS,
+            ) as u16,
         }
     }
 
@@ -134,6 +148,15 @@ pub fn center_color_group_colors(centers: &[u8; 12], color_map: &[u8]) -> [u8; 1
     let mut colors = [0; 12];
     for i in 0..12 {
         colors[i] = color_map[(centers[i] / 3) as usize];
+    }
+    colors
+}
+
+#[must_use]
+pub fn center_piece_group_colors(centers: &[u8; 12], piece_map: &[u8; 12]) -> [u8; 12] {
+    let mut colors = [0; 12];
+    for i in 0..12 {
+        colors[i] = piece_map[centers[i] as usize];
     }
     colors
 }
@@ -256,6 +279,11 @@ pub fn rank_equal_piece_groups(pieces: &[u8; 12], group_size: u8) -> u32 {
 #[must_use]
 pub fn rank_center_color_groups(centers: &[u8; 12], color_map: &[u8], counts: &[u8]) -> u32 {
     rank_multiset_colors(&center_color_group_colors(centers, color_map), counts)
+}
+
+#[must_use]
+pub fn rank_center_piece_groups(centers: &[u8; 12], piece_map: &[u8; 12], counts: &[u8]) -> u32 {
+    rank_multiset_colors(&center_piece_group_colors(centers, piece_map), counts)
 }
 
 #[must_use]

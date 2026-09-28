@@ -813,7 +813,9 @@ fn component_is_forced(mask: &PartialMask, component: Component) -> bool {
         | Component::E2
         | Component::E3
         | Component::UfCenter
-        | Component::RlCenter => false,
+        | Component::RlCenter
+        | Component::LlUfCenterA
+        | Component::LlUfCenterB => false,
     }
 }
 

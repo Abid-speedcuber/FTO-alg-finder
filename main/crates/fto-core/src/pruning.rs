@@ -426,6 +426,8 @@ pub enum Component {
     UfCenter3,
     RlCenter2,
     RlCenter3,
+    LlUfCenterA,
+    LlUfCenterB,
 }
 
 impl Component {
@@ -445,6 +447,8 @@ impl Component {
             Self::UfCenter3 => "uf3",
             Self::RlCenter2 => "rl2",
             Self::RlCenter3 => "rl3",
+            Self::LlUfCenterA => "llufA",
+            Self::LlUfCenterB => "llufB",
         }
     }
 
@@ -457,7 +461,10 @@ impl Component {
             Self::Edge4 => crate::coord::EDGE4_COUNT,
             Self::UfCenter | Self::RlCenter => CENTER_COUNT,
             Self::UfCenter2 | Self::RlCenter2 => crate::coord::CENTER2_COUNT,
-            Self::UfCenter3 | Self::RlCenter3 => crate::coord::CENTER3_COUNT,
+            Self::UfCenter3
+            | Self::RlCenter3
+            | Self::LlUfCenterA
+            | Self::LlUfCenterB => crate::coord::CENTER3_COUNT,
         }
     }
 
@@ -477,6 +484,8 @@ impl Component {
             Self::UfCenter3 => u32::from(coord.uf_center3),
             Self::RlCenter2 => u32::from(coord.rl_center2),
             Self::RlCenter3 => u32::from(coord.rl_center3),
+            Self::LlUfCenterA => u32::from(coord.ll_uf_center_a),
+            Self::LlUfCenterB => u32::from(coord.ll_uf_center_b),
         }
     }
 
@@ -497,6 +506,8 @@ impl Component {
             Self::UfCenter3 => u32::from(solved.uf_center3),
             Self::RlCenter2 => u32::from(solved.rl_center2),
             Self::RlCenter3 => u32::from(solved.rl_center3),
+            Self::LlUfCenterA => u32::from(solved.ll_uf_center_a),
+            Self::LlUfCenterB => u32::from(solved.ll_uf_center_b),
         }
     }
 
@@ -515,6 +526,9 @@ impl Component {
             Self::UfCenter3 => u32::from(tables.uf_center3_move(value as u16, mv)),
             Self::RlCenter2 => u32::from(tables.rl_center2_move(value as u16, mv)),
             Self::RlCenter3 => u32::from(tables.rl_center3_move(value as u16, mv)),
+            Self::LlUfCenterA | Self::LlUfCenterB => {
+                u32::from(tables.uf_center3_move(value as u16, mv))
+            }
         }
     }
 
@@ -533,6 +547,8 @@ impl Component {
             "uf3" | "uf_center3" => Some(Self::UfCenter3),
             "rl2" | "rl_center2" => Some(Self::RlCenter2),
             "rl3" | "rl_center3" => Some(Self::RlCenter3),
+            "llufA" | "ll_uf_a" | "ll_uf_center_a" => Some(Self::LlUfCenterA),
+            "llufB" | "ll_uf_b" | "ll_uf_center_b" => Some(Self::LlUfCenterB),
             _ => None,
         }
     }

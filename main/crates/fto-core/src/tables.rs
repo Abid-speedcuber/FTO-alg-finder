@@ -18,9 +18,9 @@ use std::{
 const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V4\0\0\0\0";
 pub type TransitionReporter<'a> = dyn Fn(&str, usize, usize) + Send + Sync + 'a;
 const TRANSITION_PROGRESS_INTERVAL: usize = 4096;
-const CORNER_TRANSITION_PROGRESS_INTERVAL: usize = 200;
+const CORNER_TRANSITION_PROGRESS_INTERVAL: usize = 80;
 const TRANSITION_PROGRESS_TOTAL: usize = 1_000_000;
-const CORNER_TRANSITION_PROGRESS_WEIGHT: usize = 350_000;
+const CORNER_TRANSITION_PROGRESS_WEIGHT: usize = 520_000;
 
 #[derive(Debug)]
 pub struct TransitionTables {
@@ -437,6 +437,8 @@ impl TransitionTables {
             uf_center3: self.uf_center3[usize::from(coord.uf_center3)][move_idx],
             rl_center2: self.rl_center2[usize::from(coord.rl_center2)][move_idx],
             rl_center3: self.rl_center3[usize::from(coord.rl_center3)][move_idx],
+            ll_uf_center_a: self.uf_center3[usize::from(coord.ll_uf_center_a)][move_idx],
+            ll_uf_center_b: self.uf_center3[usize::from(coord.ll_uf_center_b)][move_idx],
         }
     }
 

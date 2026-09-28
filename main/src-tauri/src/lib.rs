@@ -1,7 +1,7 @@
 use fto_core::{
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
-    pruning::{self, SolverPruning},
+    pruning::{self, CandidateSpec, Component, PatternDatabase, PatternDatabases, SolverPruning},
     search::{self, MiniPruning, SearchConfig},
     tables::TransitionTables,
     FtoCubie,
@@ -176,11 +176,17 @@ struct SolverState {
 struct SolverCache {
     tables: Option<Arc<TransitionTables>>,
     pruning: Option<CachedPruning>,
+    ll_pruning: Option<CachedLlPruning>,
 }
 
 struct CachedPruning {
     moves: Vec<Move>,
     pruning: Arc<SolverPruning>,
+}
+
+struct CachedLlPruning {
+    moves: Vec<Move>,
+    pruning: Arc<PatternDatabases>,
 }
 
 #[tauri::command]
@@ -590,6 +596,30 @@ fn generate_pruning_blocking(
     let pruning_dir = pruning_dir(app, workspace_root);
     emit_line(app, "info", "generating pruning table...");
     let tables = load_transition_tables(cache, &tables_path, app)?;
+    if request.last_layer_mode {
+        let pruning = load_ll_solver_pruning(
+            cache,
+            &tables,
+            &pruning_dir,
+            250_000,
+            &target_moves,
+            &target_moves,
+            true,
+            request.threads.max(1),
+            cancel,
+            app,
+        )?;
+        emit_line(
+            app,
+            "done",
+            &format!(
+                "generated last-layer pruning tables for moves: {} ({:.1} MiB)",
+                format_move_list(&target_moves),
+                pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+            ),
+        );
+        return Ok(());
+    }
     let pruning = SolverPruning::load_or_build_with_moves_reporting(
         &tables,
         &pruning_dir,
@@ -666,18 +696,38 @@ fn run_in_process_solve(
         });
     }
 
-    let pruning = Some(load_solver_pruning(
-        cache,
-        &tables,
-        &pruning_dir,
-        250_000,
-        &allowed_moves,
-        &instance_moves,
-        request.restricted_pruning,
-        request.threads.max(1),
-        cancel,
-        app,
-    )?);
+    let pruning = if request.last_layer_mode {
+        None
+    } else {
+        Some(load_solver_pruning(
+            cache,
+            &tables,
+            &pruning_dir,
+            250_000,
+            &allowed_moves,
+            &instance_moves,
+            request.restricted_pruning,
+            request.threads.max(1),
+            cancel,
+            app,
+        )?)
+    };
+    let ll_pruning = if request.last_layer_mode {
+        Some(load_ll_solver_pruning(
+            cache,
+            &tables,
+            &pruning_dir,
+            250_000,
+            &allowed_moves,
+            &instance_moves,
+            request.restricted_pruning,
+            request.threads.max(1),
+            cancel,
+            app,
+        )?)
+    } else {
+        None
+    };
     let mini = if request.mini_pruning && !request.last_layer_mode {
         let start = Instant::now();
         let mini = MiniPruning::build_restricted(&tables, &allowed_moves);
@@ -701,6 +751,7 @@ fn run_in_process_solve(
             cubie,
             &tables,
             pruning.as_deref(),
+            ll_pruning.as_deref(),
             mini.as_ref(),
             max_depth,
             true,
@@ -716,6 +767,7 @@ fn run_in_process_solve(
             cubie,
             &tables,
             pruning.as_deref(),
+            ll_pruning.as_deref(),
             mini.as_ref(),
             request.find_all,
             request.threads.max(1),
@@ -904,10 +956,107 @@ fn load_solver_pruning(
     Ok(pruning)
 }
 
+fn load_ll_solver_pruning(
+    cache: &Mutex<SolverCache>,
+    tables: &TransitionTables,
+    out_dir: &Path,
+    progress_interval: usize,
+    allowed_moves: &[Move],
+    instance_moves: &[Move],
+    restricted_pruning: bool,
+    threads: usize,
+    cancel: &Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<Arc<PatternDatabases>, String> {
+    let mut target =
+        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+    ensure_ll_free_u_moves(&mut target);
+    {
+        let cache = cache
+            .lock()
+            .map_err(|_| "solver cache lock poisoned".to_owned())?;
+        if let Some(cached) = cache
+            .ll_pruning
+            .as_ref()
+            .filter(|cached| cached.moves == target)
+        {
+            emit_line(app, "info", "using cached last-layer pruning tables from RAM");
+            return Ok(cached.pruning.clone());
+        }
+    }
+
+    let progress_app = app.clone();
+    let progress = move |event: pruning::PruningProgress| {
+        let percent = if event.total == 0 {
+            0.0
+        } else {
+            (event.reached as f64 * 100.0) / event.total as f64
+        };
+        emit_line(
+            &progress_app,
+            "progress",
+            &format!(
+                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
+                event.name, event.reached, event.total, event.depth, event.expanded
+            ),
+        );
+    };
+    let ll_dir = out_dir.join("last-layer-v1");
+    fs::create_dir_all(&ll_dir).map_err(|error| error.to_string())?;
+    let move_code = pruning::move_set_codename(&pruning::move_set_suffix(&target));
+    let specs = [
+        CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]),
+        CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]),
+    ];
+    let mut databases = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let path = ll_dir.join(format!("{}_{move_code}.prun", file_safe_name(&spec.name())));
+        databases.push(PatternDatabase::load_or_build_with_moves_reporting(
+            spec,
+            tables,
+            progress_interval,
+            path,
+            &target,
+            threads,
+            Some(cancel),
+            Some(&progress),
+        )?);
+    }
+    let pruning = Arc::new(PatternDatabases::new(databases));
+    emit_line(
+        app,
+        "info",
+        &format!(
+            "using LL pruning tables: {} built with moves: {} ({:.1} MiB)",
+            pruning.names().join(" / "),
+            format_move_list(&target),
+            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+        ),
+    );
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    cache.ll_pruning = Some(CachedLlPruning {
+        moves: target,
+        pruning: pruning.clone(),
+    });
+    Ok(pruning)
+}
+
+fn ensure_ll_free_u_moves(moves: &mut Vec<Move>) {
+    for mv in [Move::U, Move::Up] {
+        if !moves.contains(&mv) {
+            moves.push(mv);
+        }
+    }
+    moves.sort_unstable_by_key(|mv| mv.idx());
+}
+
 fn solve_once(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    ll_pruning: Option<&PatternDatabases>,
     mini: Option<&MiniPruning>,
     max_depth: u8,
     exact_depth: bool,
@@ -930,7 +1079,9 @@ fn solve_once(
         solution_reporter: Some(reporter),
     };
     let result = if last_layer_mode {
-        search::solve_last_layer_with_pruning_threads(cubie, tables, pruning, &config, threads)
+        search::solve_last_layer_with_pattern_pruning_threads(
+            cubie, tables, ll_pruning, &config, threads,
+        )
     } else {
         search::solve_with_pruning_and_mini_threads(
             cubie.coord(),
@@ -951,6 +1102,7 @@ fn solve_incrementally(
     cubie: FtoCubie,
     tables: &TransitionTables,
     pruning: Option<&SolverPruning>,
+    ll_pruning: Option<&PatternDatabases>,
     mini: Option<&MiniPruning>,
     find_all: bool,
     threads: usize,
@@ -984,7 +1136,9 @@ fn solve_incrementally(
             solution_reporter: Some(reporter),
         };
         let mut result = if last_layer_mode {
-            search::solve_last_layer_with_pruning_threads(cubie, tables, pruning, &config, threads)
+            search::solve_last_layer_with_pattern_pruning_threads(
+                cubie, tables, ll_pruning, &config, threads,
+            )
         } else {
             search::solve_with_pruning_and_mini_threads(
                 coord, tables, pruning, mini, &config, threads,
@@ -1093,6 +1247,10 @@ fn read_move_suffix(out_dir: &Path, file_name: &str) -> Option<String> {
 
 fn pruning_codename(suffix: &str) -> String {
     suffix.to_ascii_uppercase()
+}
+
+fn file_safe_name(name: &str) -> String {
+    name.replace('+', "__")
 }
 
 fn select_pruning_move_set(

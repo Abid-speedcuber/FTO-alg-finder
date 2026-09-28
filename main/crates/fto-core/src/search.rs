@@ -1,7 +1,7 @@
 use crate::{
     FtoCoord, FtoCubie,
     moves::{MOVE_COUNT, Move, move_cubies},
-    pruning::SolverPruning,
+    pruning::{PatternDatabases, SolverPruning},
     tables::TransitionTables,
 };
 use std::{
@@ -86,12 +86,35 @@ struct LastLayerState {
     edge0: u16,
     edge1: u16,
     edge3: u16,
-    uf_center: u32,
     uf3: u16,
+    ll_uf_center_a: u16,
+    ll_uf_center_b: u16,
     rl_center: u32,
     rl_fixed_pos: [u8; 3],
     edge3_uf3_idx: usize,
     corner_uf3_idx: usize,
+}
+
+#[derive(Clone, Copy)]
+pub enum LastLayerPruning<'a> {
+    Solver(&'a SolverPruning),
+    Patterns(&'a PatternDatabases),
+}
+
+impl LastLayerPruning<'_> {
+    fn heuristic(self, state: LastLayerState) -> u8 {
+        match self {
+            Self::Solver(pruning) => pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx),
+            Self::Patterns(pruning) => pruning.heuristic(state.pruning_coord()),
+        }
+    }
+
+    fn heuristic_for_child(self, child: PruningChild) -> u8 {
+        match self {
+            Self::Solver(pruning) => pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx),
+            Self::Patterns(pruning) => pruning.heuristic(child.pruning_coord()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,7 +123,8 @@ struct LastLayerGoal {
     edge0: u16,
     edge1: u16,
     edge3: u16,
-    uf_center: u32,
+    ll_uf_center_a: u16,
+    ll_uf_center_b: u16,
     rl_center: u32,
     rl_fixed_pos: [u8; 3],
 }
@@ -113,7 +137,8 @@ impl LastLayerGoal {
             edge0: solved.edge.e0,
             edge1: solved.edge.e1,
             edge3: solved.edge3,
-            uf_center: solved.uf_center,
+            ll_uf_center_a: solved.ll_uf_center_a,
+            ll_uf_center_b: solved.ll_uf_center_b,
             rl_center: solved.rl_center,
             rl_fixed_pos: LL_RL_FIXED_PIECES,
         }
@@ -632,6 +657,29 @@ pub fn solve_last_layer_with_pruning_threads(
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
+    let pruning = pruning.map(LastLayerPruning::Solver);
+    solve_last_layer_with_pruning_kind_threads(cubie, tables, pruning, config, threads)
+}
+
+#[must_use]
+pub fn solve_last_layer_with_pattern_pruning_threads(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: Option<&PatternDatabases>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
+    let pruning = pruning.map(LastLayerPruning::Patterns);
+    solve_last_layer_with_pruning_kind_threads(cubie, tables, pruning, config, threads)
+}
+
+fn solve_last_layer_with_pruning_kind_threads(
+    cubie: FtoCubie,
+    tables: &TransitionTables,
+    pruning: Option<LastLayerPruning<'_>>,
+    config: &SearchConfig,
+    threads: usize,
+) -> SearchResult {
     let start_depth = config.min_depth;
     let config = SearchConfig {
         min_depth: start_depth,
@@ -654,7 +702,7 @@ pub fn solve_last_layer_with_pruning_threads(
 fn solve_last_layer_impl(
     state: LastLayerState,
     tables: &TransitionTables,
-    pruning: Option<&SolverPruning>,
+    pruning: Option<LastLayerPruning<'_>>,
     config: &SearchConfig,
     threads: usize,
 ) -> SearchResult {
@@ -792,7 +840,7 @@ fn solve_last_layer_impl(
 fn solve_last_layer_single(
     state: LastLayerState,
     tables: &TransitionTables,
-    pruning: Option<&SolverPruning>,
+    pruning: Option<LastLayerPruning<'_>>,
     config: &SearchConfig,
 ) -> SearchResult {
     let rl_center_pos_moves = center_position_moves(CenterOrbitForPosition::Rl);
@@ -1265,7 +1313,7 @@ struct SearchContext<'a> {
 
 struct LastLayerSearchContext<'a> {
     tables: &'a TransitionTables,
-    pruning: Option<&'a SolverPruning>,
+    pruning: Option<LastLayerPruning<'a>>,
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
     goal: LastLayerGoal,
@@ -1279,7 +1327,7 @@ struct LastLayerSearchContext<'a> {
 impl<'a> LastLayerSearchContext<'a> {
     fn new(
         tables: &'a TransitionTables,
-        pruning: Option<&'a SolverPruning>,
+        pruning: Option<LastLayerPruning<'a>>,
         config: &'a SearchConfig,
         rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
         goal: LastLayerGoal,
@@ -1374,7 +1422,7 @@ impl<'a> LastLayerSearchContext<'a> {
     fn pruning_value(&self, state: LastLayerState) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .map(|pruning| pruning.heuristic(state))
                 .unwrap_or(0),
             true,
         )
@@ -1383,7 +1431,7 @@ impl<'a> LastLayerSearchContext<'a> {
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+                .map(|pruning| pruning.heuristic_for_child(child))
                 .unwrap_or(0),
             true,
         )
@@ -1672,7 +1720,7 @@ impl SearchRootCollector<'_> {
 
 struct LastLayerRootCollector<'a> {
     tables: &'a TransitionTables,
-    pruning: Option<&'a SolverPruning>,
+    pruning: Option<LastLayerPruning<'a>>,
     rl_center_pos_moves: [[u8; 12]; MOVE_COUNT],
     commute: [[bool; MOVE_COUNT]; MOVE_COUNT],
     config: &'a SearchConfig,
@@ -1745,7 +1793,7 @@ impl LastLayerRootCollector<'_> {
     fn pruning_value(&self, state: LastLayerState) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic(state.edge3_uf3_idx, state.corner_uf3_idx))
+                .map(|pruning| pruning.heuristic(state))
                 .unwrap_or(0),
             true,
         )
@@ -1754,7 +1802,7 @@ impl LastLayerRootCollector<'_> {
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic(child.edge3_uf3_idx, child.corner_uf3_idx))
+                .map(|pruning| pruning.heuristic_for_child(child))
                 .unwrap_or(0),
             true,
         )
@@ -2345,8 +2393,9 @@ impl LastLayerState {
             edge0: coord.edge.e0,
             edge1: coord.edge.e1,
             edge3: coord.edge3,
-            uf_center: coord.uf_center,
             uf3: coord.uf_center3,
+            ll_uf_center_a: coord.ll_uf_center_a,
+            ll_uf_center_b: coord.ll_uf_center_b,
             rl_center: coord.rl_center,
             rl_fixed_pos,
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(coord.edge3, coord.uf_center3),
@@ -2359,19 +2408,46 @@ impl LastLayerState {
             && self.edge0 == goal.edge0
             && self.edge1 == goal.edge1
             && self.edge3 == goal.edge3
-            && self.uf_center == goal.uf_center
+            && self.ll_uf_center_a == goal.ll_uf_center_a
+            && self.ll_uf_center_b == goal.ll_uf_center_b
             && self.rl_center == goal.rl_center
             && self.rl_fixed_pos == goal.rl_fixed_pos
+    }
+
+    fn pruning_coord(self) -> FtoCoord {
+        FtoCoord {
+            corner: self.corner,
+            edge: crate::coord::EdgeCoord {
+                e0: self.edge0,
+                e1: self.edge1,
+                e2: 0,
+                e3: 0,
+            },
+            edge3: self.edge3,
+            edge4: 0,
+            uf_center: 0,
+            rl_center: self.rl_center,
+            uf_center2: 0,
+            uf_center3: self.uf3,
+            rl_center2: 0,
+            rl_center3: 0,
+            ll_uf_center_a: self.ll_uf_center_a,
+            ll_uf_center_b: self.ll_uf_center_b,
+        }
     }
 
     fn apply_pruning(self, tables: &TransitionTables, mv: Move) -> PruningChild {
         let corner = tables.corner_move(self.corner, mv);
         let edge3 = tables.edge3_move(self.edge3, mv);
         let uf3 = tables.uf_center3_move(self.uf3, mv);
+        let ll_uf_center_a = tables.uf_center3_move(self.ll_uf_center_a, mv);
+        let ll_uf_center_b = tables.uf_center3_move(self.ll_uf_center_b, mv);
         PruningChild {
             corner,
             edge3,
             uf3,
+            ll_uf_center_a,
+            ll_uf_center_b,
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
             corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
         }
@@ -2393,8 +2469,9 @@ impl LastLayerState {
             edge0: tables.edge_choice_move(self.edge0, mv),
             edge1: tables.edge_choice_move(self.edge1, mv),
             edge3: pruning_child.edge3,
-            uf_center: tables.uf_center_move(self.uf_center, mv),
             uf3: pruning_child.uf3,
+            ll_uf_center_a: pruning_child.ll_uf_center_a,
+            ll_uf_center_b: pruning_child.ll_uf_center_b,
             rl_center: tables.rl_center_move(self.rl_center, mv),
             rl_fixed_pos,
             edge3_uf3_idx: pruning_child.edge3_uf3_idx,
@@ -2434,6 +2511,8 @@ impl SearchState {
             corner,
             edge3,
             uf3,
+            ll_uf_center_a: 0,
+            ll_uf_center_b: 0,
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
             corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
         }
@@ -2479,8 +2558,34 @@ struct PruningChild {
     corner: u16,
     edge3: u16,
     uf3: u16,
+    ll_uf_center_a: u16,
+    ll_uf_center_b: u16,
     edge3_uf3_idx: usize,
     corner_uf3_idx: usize,
+}
+
+impl PruningChild {
+    fn pruning_coord(self) -> FtoCoord {
+        FtoCoord {
+            corner: self.corner,
+            edge: crate::coord::EdgeCoord {
+                e0: 0,
+                e1: 0,
+                e2: 0,
+                e3: 0,
+            },
+            edge3: self.edge3,
+            edge4: 0,
+            uf_center: 0,
+            rl_center: 0,
+            uf_center2: 0,
+            uf_center3: self.uf3,
+            rl_center2: 0,
+            rl_center3: 0,
+            ll_uf_center_a: self.ll_uf_center_a,
+            ll_uf_center_b: self.ll_uf_center_b,
+        }
+    }
 }
 
 #[must_use]
@@ -2568,6 +2673,8 @@ mod tests {
                 corner,
                 edge3,
                 uf3,
+                ll_uf_center_a: 0,
+                ll_uf_center_b: 0,
                 edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
                 corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
             }
@@ -2633,6 +2740,8 @@ mod tests {
                 corner,
                 edge3,
                 uf3,
+                ll_uf_center_a: 0,
+                ll_uf_center_b: 0,
                 edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
                 corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
             }
