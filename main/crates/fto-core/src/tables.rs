@@ -16,6 +16,7 @@ use std::{
 };
 
 const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V4\0\0\0\0";
+pub type TransitionReporter<'a> = dyn Fn(&str, usize, usize) + Send + Sync + 'a;
 
 #[derive(Debug)]
 pub struct TransitionTables {
@@ -34,27 +35,71 @@ pub struct TransitionTables {
 impl TransitionTables {
     #[must_use]
     pub fn build() -> Self {
+        Self::build_reporting(None)
+    }
+
+    #[must_use]
+    pub fn build_reporting(report: Option<&TransitionReporter<'_>>) -> Self {
         let moves = move_cubies();
+        let total = 10_usize;
+        let mut done = 0_usize;
+        let mut bump = |name: &str| {
+            done += 1;
+            if let Some(report) = report {
+                report(name, done, total);
+            }
+        };
+        let corner = build_corner_table(&moves);
+        bump("corner");
+        let edge_choice = build_edge_choice_table(&moves);
+        bump("edge-choice");
+        let edge3 = build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS);
+        bump("edge3");
+        let edge4 = build_color_table_u32(&moves, EdgeOrCenterOrbit::Edge, &EDGE4_COUNTS);
+        bump("edge4");
+        let uf_center = build_center_table(&moves, CenterOrbit::Uf);
+        bump("uf-center");
+        let rl_center = build_center_table(&moves, CenterOrbit::Rl);
+        bump("rl-center");
+        let uf_center2 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER2_COUNTS);
+        bump("uf-center2");
+        let uf_center3 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS);
+        bump("uf-center3");
+        let rl_center2 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER2_COUNTS);
+        bump("rl-center2");
+        let rl_center3 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER3_COUNTS);
+        bump("rl-center3");
         Self {
-            corner: build_corner_table(&moves),
-            edge_choice: build_edge_choice_table(&moves),
-            edge3: build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS),
-            edge4: build_color_table_u32(&moves, EdgeOrCenterOrbit::Edge, &EDGE4_COUNTS),
-            uf_center: build_center_table(&moves, CenterOrbit::Uf),
-            rl_center: build_center_table(&moves, CenterOrbit::Rl),
-            uf_center2: build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER2_COUNTS),
-            uf_center3: build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS),
-            rl_center2: build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER2_COUNTS),
-            rl_center3: build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER3_COUNTS),
+            corner,
+            edge_choice,
+            edge3,
+            edge4,
+            uf_center,
+            rl_center,
+            uf_center2,
+            uf_center3,
+            rl_center2,
+            rl_center3,
         }
     }
 
     pub fn load_or_build(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_or_build_reporting(path, None)
+    }
+
+    pub fn load_or_build_reporting(
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+    ) -> io::Result<Self> {
         let path = path.as_ref();
         match Self::load(path) {
             Ok(tables) => Ok(tables),
             Err(_) => {
-                let tables = Self::build();
+                let tables = Self::build_reporting(report);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }

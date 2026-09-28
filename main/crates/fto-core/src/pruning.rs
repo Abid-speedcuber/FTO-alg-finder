@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{self, BufWriter, Read, Write},
     path::Path,
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
     thread,
@@ -14,6 +14,7 @@ use crate::{
 };
 
 const UNVISITED: u8 = u8::MAX;
+const PRUN_MAGIC: &[u8; 16] = b"FTO_PRUN_V1\0\0\0\0\0";
 
 pub const CANCELLED: &str = "solve cancelled";
 
@@ -197,20 +198,8 @@ impl SolverPruning {
         std::fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
         let suffix = move_set_suffix(moves);
         let file_suffix = move_set_codename(&suffix);
-        let new_edge_path = out_dir.join(format!("edge3__uf3__{file_suffix}.pdb"));
-        let old_edge_path = out_dir.join(format!("edge3__uf3__{suffix}.pdb"));
-        let edge_path = if new_edge_path.exists() || !old_edge_path.exists() {
-            new_edge_path
-        } else {
-            old_edge_path
-        };
-        let new_corner_path = out_dir.join(format!("corner__uf3__{file_suffix}.pdb"));
-        let old_corner_path = out_dir.join(format!("corner__uf3__{suffix}.pdb"));
-        let corner_path = if new_corner_path.exists() || !old_corner_path.exists() {
-            new_corner_path
-        } else {
-            old_corner_path
-        };
+        let edge_path = out_dir.join(format!("e3cf3_{file_suffix}.prun"));
+        let corner_path = out_dir.join(format!("ccf3_{file_suffix}.prun"));
         let edge3_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             tables,
@@ -231,16 +220,6 @@ impl SolverPruning {
             cancel,
             report,
         )?;
-        std::fs::write(
-            out_dir.join(format!("edge3__uf3__{file_suffix}.moves")),
-            &suffix,
-        )
-        .map_err(|error| error.to_string())?;
-        std::fs::write(
-            out_dir.join(format!("corner__uf3__{file_suffix}.moves")),
-            &suffix,
-        )
-        .map_err(|error| error.to_string())?;
         Ok(Self {
             edge3_uf3,
             corner_uf3,
@@ -355,7 +334,12 @@ fn load_or_build_solver_table(
                 cancel,
                 report,
             )?;
-            write_table(path, &table).map_err(|error| error.to_string())?;
+            write_table_with_metadata(
+                path,
+                &table,
+                &format!("spec={}\nmoves={}\n", spec.name(), move_set_suffix(moves)),
+            )
+            .map_err(|error| error.to_string())?;
             Ok(table)
         }
     }
@@ -1088,18 +1072,48 @@ fn build_pruning_table_from_index_parallel(
 }
 
 fn write_table(path: impl AsRef<Path>, table: &[u8]) -> io::Result<()> {
+    write_table_with_metadata(path, table, "")
+}
+
+fn write_table_with_metadata(
+    path: impl AsRef<Path>,
+    table: &[u8],
+    metadata: &str,
+) -> io::Result<()> {
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut writer = BufWriter::new(File::create(path)?);
+    writer.write_all(PRUN_MAGIC)?;
+    writer.write_all(&(metadata.len() as u32).to_le_bytes())?;
+    writer.write_all(metadata.as_bytes())?;
     writer.write_all(table)?;
     writer.flush()
 }
 
 fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>> {
-    let mut reader = BufReader::new(File::open(path)?);
+    let mut file = File::open(path)?;
     let mut table = Vec::new();
-    reader.read_to_end(&mut table)?;
+    file.read_to_end(&mut table)?;
+    if table.starts_with(PRUN_MAGIC) {
+        if table.len() < PRUN_MAGIC.len() + 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pruning table header is truncated",
+            ));
+        }
+        let mut len_bytes = [0; 4];
+        len_bytes.copy_from_slice(&table[PRUN_MAGIC.len()..PRUN_MAGIC.len() + 4]);
+        let metadata_len = u32::from_le_bytes(len_bytes) as usize;
+        let table_start = PRUN_MAGIC.len() + 4 + metadata_len;
+        if table_start > table.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pruning table metadata is truncated",
+            ));
+        }
+        table = table[table_start..].to_vec();
+    }
     if table.len() != expected_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1107,6 +1121,24 @@ fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>
         ));
     }
     Ok(table)
+}
+
+pub fn read_table_metadata(path: impl AsRef<Path>) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut magic = [0; 16];
+    file.read_exact(&mut magic)?;
+    if &magic != PRUN_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "pruning table metadata magic mismatch",
+        ));
+    }
+    let mut len_bytes = [0; 4];
+    file.read_exact(&mut len_bytes)?;
+    let metadata_len = u32::from_le_bytes(len_bytes) as usize;
+    let mut metadata = vec![0; metadata_len];
+    file.read_exact(&mut metadata)?;
+    String::from_utf8(metadata).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 #[must_use]

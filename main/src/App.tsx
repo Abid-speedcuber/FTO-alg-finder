@@ -414,6 +414,7 @@ function App() {
   const [pruningOpen, setPruningOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [deleteTableConfirm, setDeleteTableConfirm] = useState<PruningTableInfo | null>(null);
   const [faceColors, setFaceColors] = useState<string[]>(() => {
@@ -442,6 +443,7 @@ function App() {
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
   const [lastLayerMode, setLastLayerMode] = useState(false);
+  const [pruningLastLayerMode, setPruningLastLayerMode] = useState(false);
   const viewerApiRef = useRef<FtoViewerApi | null>(null);
   const [threads, setThreads] = useState("1");
   const [status, setStatus] = useState("Idle");
@@ -451,7 +453,8 @@ function App() {
   const validationRun = useRef(0);
   const lineId = useRef(0);
   const terminalRef = useRef<HTMLDivElement | null>(null);
-  const modalOpen = settingsOpen || pruningOpen || storageOpen || aboutOpen || !!deleteTableConfirm || !!setupModal;
+  const modalOpen =
+    settingsOpen || pruningOpen || storageOpen || aboutOpen || resetConfirmOpen || !!deleteTableConfirm || !!setupModal;
 
   const activeInstance = instances.find((instance) => instance.id === activeId) ?? instances[0];
   const bannedSet = useMemo(() => new Set(activeInstance.banned), [activeInstance]);
@@ -504,8 +507,21 @@ function App() {
       : undefined;
     const currentProgress = [...terminal]
       .reverse()
-      .find((line) => line.kind === "progress" && line.text.startsWith("pruning progress:"));
-    if (running && !currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
+      .find(
+        (line) =>
+          line.kind === "progress" &&
+          (line.text.startsWith("pruning progress:") || line.text.startsWith("transition progress:")),
+      );
+    if (
+      running &&
+      !currentDepth &&
+      terminal.some((line) => line.text.includes("loading transition") || line.text.includes("generating transition"))
+    ) {
+      const latestTransition = [...terminal]
+        .reverse()
+        .find((line) => line.text.includes("loading transition") || line.text.includes("generating transition"));
+      lines.push(latestTransition ?? { id: -1, kind: "info", text: "loading transition tables...." });
+    } else if (running && !currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
       lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
     }
     if (running && !currentDepth && currentProgress) {
@@ -792,7 +808,7 @@ function App() {
     appendLine(
       "info",
       `generate pruning (moves=${restrictedPruning ? "selected" : "instance"} last-layer=${
-        lastLayerMode ? "on" : "off"
+        pruningLastLayerMode ? "on" : "off"
       } threads=${threads})`,
     );
     try {
@@ -803,7 +819,7 @@ function App() {
           allowedMoves,
           instanceMoves: activeInstance.moves,
           selectedMovesOnly: restrictedPruning,
-          lastLayerMode,
+          lastLayerMode: pruningLastLayerMode,
           definedPiecesOnly: false,
           threads: Number(threads),
         },
@@ -833,6 +849,40 @@ function App() {
     setDeleteTableConfirm(null);
     refreshPruningTables();
     refreshCacheStatus();
+  }
+
+  async function resetAllAppData() {
+    try {
+      await invoke("reset_app_data");
+    } catch (error) {
+      appendLine("error", `error: ${String(error)}`);
+    }
+    try {
+      localStorage.removeItem(INSTANCES_KEY);
+      localStorage.removeItem(FACE_COLORS_KEY);
+    } catch {
+      // storage unavailable; keep going with in-memory reset
+    }
+    const instance: Instance = { id: "default", name: "Default", moves: [...defaultInstanceMoves], banned: [] };
+    setInstances([instance]);
+    setActiveId(instance.id);
+    setFaceColors(defaultFaceColors);
+    setSetup("");
+    setInputMode("setup");
+    setApplySignal((current) => current + 1);
+    setDepth("");
+    setAll(true);
+    setRestrictedPruning(false);
+    setLastLayerMode(false);
+    setPruningLastLayerMode(false);
+    setResult(null);
+    clearTerminal();
+    setStatus("App data reset");
+    setResetConfirmOpen(false);
+    setSettingsOpen(false);
+    setSetupModal({ kind: "first", instance });
+    refreshCacheStatus();
+    refreshPruningTables();
   }
 
   function updateFaceColor(index: number, color: string) {
@@ -972,6 +1022,9 @@ function App() {
             >
               Manage storage
             </button>
+            <button className="danger" onClick={() => setResetConfirmOpen(true)}>
+              Reset all app data
+            </button>
           </div>
         </div>
       ) : null}
@@ -995,8 +1048,8 @@ function App() {
               <label className="check modal-check">
                 <input
                   type="checkbox"
-                  checked={lastLayerMode}
-                  onChange={(event) => setLastLayerMode(event.target.checked)}
+                  checked={pruningLastLayerMode}
+                  onChange={(event) => setPruningLastLayerMode(event.target.checked)}
                 />
                 Use last layer mode
               </label>
@@ -1062,6 +1115,25 @@ function App() {
               </button>
               <button className="danger" onClick={() => deletePruningTable(deleteTableConfirm)}>
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {resetConfirmOpen ? (
+        <div className="modal-backdrop" onClick={() => setResetConfirmOpen(false)}>
+          <div className="modal confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Reset all app data?</h2>
+            <p className="modal-subtitle">
+              This clears local settings, instances, generated table caches, and anything currently loaded in RAM.
+            </p>
+            <div className="modal-footer">
+              <button className="secondary" onClick={() => setResetConfirmOpen(false)}>
+                Cancel
+              </button>
+              <button className="danger" onClick={resetAllAppData}>
+                Yes, reset
               </button>
             </div>
           </div>
@@ -1283,6 +1355,14 @@ function App() {
             <label className="check">
               <input type="checkbox" checked={all} onChange={(event) => setAll(event.target.checked)} />
               All solutions
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={lastLayerMode}
+                onChange={(event) => setLastLayerMode(event.target.checked)}
+              />
+              Last layer mode
             </label>
             </div>
             <div className="actions-row">

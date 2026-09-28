@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::Instant,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const U: usize = 0;
 const F: usize = 9;
@@ -293,11 +293,11 @@ fn pruning_cache_status(
 }
 
 #[tauri::command]
-fn list_pruning_tables() -> Result<Vec<PruningTableInfo>, String> {
+fn list_pruning_tables(app: AppHandle) -> Result<Vec<PruningTableInfo>, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
-    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    let pruning_dir = pruning_dir(&app, workspace_root);
     discover_pruning_tables(&pruning_dir)
 }
 
@@ -305,11 +305,12 @@ fn list_pruning_tables() -> Result<Vec<PruningTableInfo>, String> {
 fn delete_pruning_table(
     id: String,
     solver_state: tauri::State<'_, SolverState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
-    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    let pruning_dir = pruning_dir(&app, workspace_root);
     let tables = discover_pruning_tables(&pruning_dir)?;
     let table = tables
         .into_iter()
@@ -322,6 +323,22 @@ fn delete_pruning_table(
         }
     }
     unload_pruning_table(solver_state)
+}
+
+#[tauri::command]
+fn reset_app_data(
+    solver_state: tauri::State<'_, SolverState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    unload_pruning_table(solver_state)?;
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
+    let root = table_root(&app, workspace_root);
+    if root.exists() {
+        fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -442,6 +459,7 @@ pub fn run() {
             pruning_cache_status,
             list_pruning_tables,
             delete_pruning_table,
+            reset_app_data,
             validate_facelets
         ])
         .run(tauri::generate_context!())
@@ -518,9 +536,9 @@ fn generate_pruning_blocking(
                 selected_specs.push(corner_uf3.clone());
             }
         }
-        let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
-        let tables = load_transition_tables(cache, &tables_path)?;
-        let pruning_dir = workspace_root.join("cache/partial-coordinate-pruning-v1");
+        let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+        let tables = load_transition_tables(cache, &tables_path, app)?;
+        let pruning_dir = pruning_dir(app, workspace_root).join("partial-coordinate-v1");
         fs::create_dir_all(&pruning_dir).map_err(|error| error.to_string())?;
         let move_suffix = pruning::move_set_suffix(&target_moves);
         let move_code = pruning::move_set_codename(&move_suffix);
@@ -532,7 +550,7 @@ fn generate_pruning_blocking(
         let mut count = 0_usize;
         for spec in selected_specs {
             let key = partial::coordinate_pruning_cache_key(&spec, &move_code);
-            let table_path = pruning_dir.join(format!("{key}.pdb"));
+            let table_path = pruning_dir.join(format!("{key}.prun"));
             let meta_path = pruning_dir.join(format!("{key}.meta"));
             let table = pruning::PatternDatabase::load_or_build_with_moves_reporting(
                 spec.clone(),
@@ -568,10 +586,10 @@ fn generate_pruning_blocking(
         return Ok(());
     }
 
-    let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
-    let pruning_dir = workspace_root.join("cache/pruning-v4");
+    let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+    let pruning_dir = pruning_dir(app, workspace_root);
     emit_line(app, "info", "generating pruning table...");
-    let tables = load_transition_tables(cache, &tables_path)?;
+    let tables = load_transition_tables(cache, &tables_path, app)?;
     let pruning = SolverPruning::load_or_build_with_moves_reporting(
         &tables,
         &pruning_dir,
@@ -622,10 +640,9 @@ fn run_in_process_solve(
     app: &AppHandle,
     cache: &Mutex<SolverCache>,
 ) -> Result<SolveResponse, String> {
-    let tables_path = workspace_root.join("cache/transition-tables-v4.bin");
-    let pruning_dir = workspace_root.join("cache/pruning-v4");
-    emit_line(app, "info", "loading pruning tables...");
-    let tables = load_transition_tables(cache, &tables_path)?;
+    let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+    let pruning_dir = pruning_dir(app, workspace_root);
+    let tables = load_transition_tables(cache, &tables_path, app)?;
 
     if let Some(mask) = partial_mask {
         let problem = PartialProblem { cubie, mask };
@@ -719,17 +736,97 @@ fn run_in_process_solve(
 fn load_transition_tables(
     cache: &Mutex<SolverCache>,
     path: &Path,
+    app: &AppHandle,
 ) -> Result<Arc<TransitionTables>, String> {
+    {
+        let cache = cache
+            .lock()
+            .map_err(|_| "solver cache lock poisoned".to_owned())?;
+        if let Some(tables) = cache.tables.as_ref() {
+            emit_line(app, "info", "using cached transition tables from RAM");
+            return Ok(tables.clone());
+        }
+    }
+    if path.exists() {
+        emit_line(app, "info", "loading transition tables...");
+    } else {
+        emit_line(app, "info", "generating transition tables...");
+    }
+    let progress_app = app.clone();
+    let progress = move |name: &str, done: usize, total: usize| {
+        let percent = if total == 0 {
+            0.0
+        } else {
+            (done as f64 * 100.0) / total as f64
+        };
+        emit_line(
+            &progress_app,
+            "progress",
+            &format!("transition progress: {name} {done}/{total} ({percent:.1}%)"),
+        );
+    };
+    let tables = Arc::new(
+        TransitionTables::load_or_build_reporting(path, Some(&progress))
+            .map_err(|error| error.to_string())?,
+    );
     let mut cache = cache
         .lock()
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
-    if let Some(tables) = cache.tables.as_ref() {
-        return Ok(tables.clone());
-    }
-    let tables =
-        Arc::new(TransitionTables::load_or_build(path).map_err(|error| error.to_string())?);
     cache.tables = Some(tables.clone());
     Ok(tables)
+}
+
+fn table_root(app: &AppHandle, workspace_root: &Path) -> PathBuf {
+    if cfg!(debug_assertions) {
+        return workspace_root.join("cache");
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                return dir.join("tables");
+            }
+        }
+    }
+    if cfg!(target_os = "linux") {
+        let installed = PathBuf::from("/usr/share/fto-alg-finder/tables");
+        if is_writable_dir(&installed) {
+            return installed;
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("tables"))
+        .unwrap_or_else(|_| workspace_root.join("cache"))
+}
+
+fn is_writable_dir(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(".write-test");
+    match fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn pruning_dir(app: &AppHandle, workspace_root: &Path) -> PathBuf {
+    if cfg!(debug_assertions) {
+        workspace_root.join("cache/pruning-v4")
+    } else {
+        table_root(app, workspace_root).join("pruning")
+    }
+}
+
+fn transition_dir(app: &AppHandle, workspace_root: &Path) -> PathBuf {
+    if cfg!(debug_assertions) {
+        workspace_root.join("cache")
+    } else {
+        table_root(app, workspace_root).join("transition")
+    }
 }
 
 fn load_solver_pruning(
@@ -934,15 +1031,22 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(file_suffix_ref) = name
-            .strip_prefix("edge3__uf3__")
-            .and_then(|name| name.strip_suffix(".pdb"))
+            .strip_prefix("e3cf3_")
+            .and_then(|name| name.strip_suffix(".prun"))
+            .or_else(|| {
+                name.strip_prefix("edge3__uf3__")
+                    .and_then(|name| name.strip_suffix(".pdb"))
+            })
         else {
             continue;
         };
         let file_suffix = file_suffix_ref.to_owned();
-        let suffix =
-            read_move_suffix(out_dir, &file_suffix).unwrap_or_else(|| file_suffix.to_owned());
-        let corner = format!("corner__uf3__{file_suffix}.pdb");
+        let suffix = read_move_suffix(out_dir, &name).unwrap_or_else(|| file_suffix.to_owned());
+        let corner = if out_dir.join(format!("ccf3_{file_suffix}.prun")).exists() {
+            format!("ccf3_{file_suffix}.prun")
+        } else {
+            format!("corner__uf3__{file_suffix}.pdb")
+        };
         if !out_dir.join(&corner).exists() {
             continue;
         }
@@ -950,15 +1054,7 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
             continue;
         };
         moves.sort_unstable_by_key(|mv| mv.idx());
-        let mut files = vec![name, corner];
-        let edge_meta = format!("edge3__uf3__{file_suffix}.moves");
-        let corner_meta = format!("corner__uf3__{file_suffix}.moves");
-        if out_dir.join(&edge_meta).exists() {
-            files.push(edge_meta);
-        }
-        if out_dir.join(&corner_meta).exists() {
-            files.push(corner_meta);
-        }
+        let files = vec![name, corner];
         let bytes = files.iter().try_fold(0_u64, |total, file| {
             fs::metadata(out_dir.join(file))
                 .map(|metadata| total + metadata.len())
@@ -976,9 +1072,21 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
     Ok(tables)
 }
 
-fn read_move_suffix(out_dir: &Path, file_suffix: &str) -> Option<String> {
-    fs::read_to_string(out_dir.join(format!("edge3__uf3__{file_suffix}.moves")))
-        .ok()
+fn read_move_suffix(out_dir: &Path, file_name: &str) -> Option<String> {
+    let path = out_dir.join(file_name);
+    if let Ok(metadata) = pruning::read_table_metadata(&path) {
+        return metadata
+            .lines()
+            .find_map(|line| line.strip_prefix("moves="))
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty());
+    }
+    file_name
+        .strip_prefix("edge3__uf3__")
+        .and_then(|name| name.strip_suffix(".pdb"))
+        .and_then(|suffix| {
+            fs::read_to_string(out_dir.join(format!("edge3__uf3__{suffix}.moves"))).ok()
+        })
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
 }
@@ -1063,19 +1171,23 @@ fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(file_suffix) = name
-            .strip_prefix("edge3__uf3__")
-            .and_then(|name| name.strip_suffix(".pdb"))
+            .strip_prefix("e3cf3_")
+            .and_then(|name| name.strip_suffix(".prun"))
+            .or_else(|| {
+                name.strip_prefix("edge3__uf3__")
+                    .and_then(|name| name.strip_suffix(".pdb"))
+            })
         else {
             continue;
         };
-        if !out_dir
-            .join(format!("corner__uf3__{file_suffix}.pdb"))
-            .exists()
-        {
+        let has_corner = out_dir.join(format!("ccf3_{file_suffix}.prun")).exists()
+            || out_dir
+                .join(format!("corner__uf3__{file_suffix}.pdb"))
+                .exists();
+        if !has_corner {
             continue;
         }
-        let suffix =
-            read_move_suffix(out_dir, file_suffix).unwrap_or_else(|| file_suffix.to_owned());
+        let suffix = read_move_suffix(out_dir, &name).unwrap_or_else(|| file_suffix.to_owned());
         if let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) {
             moves.sort_unstable_by_key(|mv| mv.idx());
             if !sets.contains(&moves) {
