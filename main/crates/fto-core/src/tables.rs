@@ -17,6 +17,10 @@ use std::{
 
 const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V4\0\0\0\0";
 pub type TransitionReporter<'a> = dyn Fn(&str, usize, usize) + Send + Sync + 'a;
+const TRANSITION_PROGRESS_INTERVAL: usize = 4096;
+const CORNER_TRANSITION_PROGRESS_INTERVAL: usize = 200;
+const TRANSITION_PROGRESS_TOTAL: usize = 1_000_000;
+const CORNER_TRANSITION_PROGRESS_WEIGHT: usize = 350_000;
 
 #[derive(Debug)]
 pub struct TransitionTables {
@@ -41,38 +45,168 @@ impl TransitionTables {
     #[must_use]
     pub fn build_reporting(report: Option<&TransitionReporter<'_>>) -> Self {
         let moves = move_cubies();
-        let total = 10_usize;
-        let mut done = 0_usize;
-        let mut bump = |name: &str| {
-            done += 1;
+        let remaining_rows = EDGE_CHOICE_COUNT
+            + EDGE3_COUNT
+            + EDGE4_COUNT
+            + CENTER_COUNT
+            + CENTER_COUNT
+            + CENTER2_COUNT
+            + CENTER3_COUNT
+            + CENTER2_COUNT
+            + CENTER3_COUNT;
+        let remaining_weight = TRANSITION_PROGRESS_TOTAL - CORNER_TRANSITION_PROGRESS_WEIGHT;
+        let weight_for_rows = |rows: usize| (rows * remaining_weight) / remaining_rows;
+        let report_progress = |name: &str,
+                               completed_before: usize,
+                               table_weight: usize,
+                               local_done: usize,
+                               local_total: usize| {
+            let weighted_local = if local_done >= local_total {
+                table_weight
+            } else {
+                (local_done * table_weight) / local_total
+            };
             if let Some(report) = report {
-                report(name, done, total);
+                report(
+                    name,
+                    completed_before + weighted_local,
+                    TRANSITION_PROGRESS_TOTAL,
+                );
             }
         };
-        let corner = build_corner_table(&moves);
-        bump("corner");
-        let edge_choice = build_edge_choice_table(&moves);
-        bump("edge-choice");
-        let edge3 = build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS);
-        bump("edge3");
-        let edge4 = build_color_table_u32(&moves, EdgeOrCenterOrbit::Edge, &EDGE4_COUNTS);
-        bump("edge4");
-        let uf_center = build_center_table(&moves, CenterOrbit::Uf);
-        bump("uf-center");
-        let rl_center = build_center_table(&moves, CenterOrbit::Rl);
-        bump("rl-center");
-        let uf_center2 =
-            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER2_COUNTS);
-        bump("uf-center2");
-        let uf_center3 =
-            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS);
-        bump("uf-center3");
-        let rl_center2 =
-            build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER2_COUNTS);
-        bump("rl-center2");
-        let rl_center3 =
-            build_color_table_u16(&moves, EdgeOrCenterOrbit::RlCenter, &CENTER3_COUNTS);
-        bump("rl-center3");
+        if let Some(report) = report {
+            report("corner", 0, TRANSITION_PROGRESS_TOTAL);
+        }
+
+        let corner = {
+            let before = 0;
+            let mut progress = |done| {
+                report_progress(
+                    "corner",
+                    before,
+                    CORNER_TRANSITION_PROGRESS_WEIGHT,
+                    done,
+                    CORNER_COUNT,
+                )
+            };
+            let table = build_corner_table(&moves, Some(&mut progress));
+            table
+        };
+        let mut completed = CORNER_TRANSITION_PROGRESS_WEIGHT;
+        let edge_choice = {
+            let before = completed;
+            let weight = weight_for_rows(EDGE_CHOICE_COUNT);
+            let mut progress =
+                |done| report_progress("edge-choice", before, weight, done, EDGE_CHOICE_COUNT);
+            let table = build_edge_choice_table(&moves, Some(&mut progress));
+            completed += weight;
+            table
+        };
+        let edge3 = {
+            let before = completed;
+            let weight = weight_for_rows(EDGE3_COUNT);
+            let mut progress = |done| report_progress("edge3", before, weight, done, EDGE3_COUNT);
+            let table = build_color_table_u16(
+                &moves,
+                EdgeOrCenterOrbit::Edge,
+                &EDGE3_COUNTS,
+                Some(&mut progress),
+            );
+            completed += weight;
+            table
+        };
+        let edge4 = {
+            let before = completed;
+            let weight = weight_for_rows(EDGE4_COUNT);
+            let mut progress = |done| report_progress("edge4", before, weight, done, EDGE4_COUNT);
+            let table = build_color_table_u32(
+                &moves,
+                EdgeOrCenterOrbit::Edge,
+                &EDGE4_COUNTS,
+                Some(&mut progress),
+            );
+            completed += weight;
+            table
+        };
+        let uf_center = {
+            let before = completed;
+            let weight = weight_for_rows(CENTER_COUNT);
+            let mut progress =
+                |done| report_progress("uf-center", before, weight, done, CENTER_COUNT);
+            let table = build_center_table(&moves, CenterOrbit::Uf, Some(&mut progress));
+            completed += weight;
+            table
+        };
+        let rl_center = {
+            let before = completed;
+            let weight = weight_for_rows(CENTER_COUNT);
+            let mut progress =
+                |done| report_progress("rl-center", before, weight, done, CENTER_COUNT);
+            let table = build_center_table(&moves, CenterOrbit::Rl, Some(&mut progress));
+            completed += weight;
+            table
+        };
+        let uf_center2 = {
+            let before = completed;
+            let weight = weight_for_rows(CENTER2_COUNT);
+            let mut progress =
+                |done| report_progress("uf-center2", before, weight, done, CENTER2_COUNT);
+            let table = build_color_table_u16(
+                &moves,
+                EdgeOrCenterOrbit::UfCenter,
+                &CENTER2_COUNTS,
+                Some(&mut progress),
+            );
+            completed += weight;
+            table
+        };
+        let uf_center3 = {
+            let before = completed;
+            let weight = weight_for_rows(CENTER3_COUNT);
+            let mut progress =
+                |done| report_progress("uf-center3", before, weight, done, CENTER3_COUNT);
+            let table = build_color_table_u16(
+                &moves,
+                EdgeOrCenterOrbit::UfCenter,
+                &CENTER3_COUNTS,
+                Some(&mut progress),
+            );
+            completed += weight;
+            table
+        };
+        let rl_center2 = {
+            let before = completed;
+            let weight = weight_for_rows(CENTER2_COUNT);
+            let mut progress =
+                |done| report_progress("rl-center2", before, weight, done, CENTER2_COUNT);
+            let table = build_color_table_u16(
+                &moves,
+                EdgeOrCenterOrbit::RlCenter,
+                &CENTER2_COUNTS,
+                Some(&mut progress),
+            );
+            completed += weight;
+            table
+        };
+        let rl_center3 = {
+            let before = completed;
+            let mut progress = |done| {
+                report_progress(
+                    "rl-center3",
+                    before,
+                    TRANSITION_PROGRESS_TOTAL - before,
+                    done,
+                    CENTER3_COUNT,
+                )
+            };
+            let table = build_color_table_u16(
+                &moves,
+                EdgeOrCenterOrbit::RlCenter,
+                &CENTER3_COUNTS,
+                Some(&mut progress),
+            );
+            table
+        };
         Self {
             corner,
             edge_choice,
@@ -379,7 +513,10 @@ enum EdgeOrCenterOrbit {
     RlCenter,
 }
 
-fn build_corner_table(moves: &[FtoCubie; MOVE_COUNT]) -> Vec<[u16; MOVE_COUNT]> {
+fn build_corner_table(
+    moves: &[FtoCubie; MOVE_COUNT],
+    mut progress: Option<&mut dyn FnMut(usize)>,
+) -> Vec<[u16; MOVE_COUNT]> {
     let mut table = vec![[0; MOVE_COUNT]; CORNER_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let (cp, co) = unrank_corner(rank as u16);
@@ -394,17 +531,32 @@ fn build_corner_table(moves: &[FtoCubie; MOVE_COUNT]) -> Vec<[u16; MOVE_COUNT]> 
             let next = state.compose(mv);
             row[move_idx] = rank_corner(&next.cp, &next.co);
         }
+        report_transition_rows(
+            rank + 1,
+            CORNER_COUNT,
+            CORNER_TRANSITION_PROGRESS_INTERVAL,
+            &mut progress,
+        );
     }
     table
 }
 
-fn build_edge_choice_table(moves: &[FtoCubie; MOVE_COUNT]) -> Vec<[u16; MOVE_COUNT]> {
+fn build_edge_choice_table(
+    moves: &[FtoCubie; MOVE_COUNT],
+    mut progress: Option<&mut dyn FnMut(usize)>,
+) -> Vec<[u16; MOVE_COUNT]> {
     let mut table = vec![[0; MOVE_COUNT]; EDGE_CHOICE_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let bitmap = unrank_choice6(rank as u16);
         for (move_idx, mv) in moves.iter().enumerate() {
             row[move_idx] = rank_choice6(apply_choice6_bitmap(bitmap, &mv.ep));
         }
+        report_transition_rows(
+            rank + 1,
+            EDGE_CHOICE_COUNT,
+            TRANSITION_PROGRESS_INTERVAL,
+            &mut progress,
+        );
     }
     table
 }
@@ -412,6 +564,7 @@ fn build_edge_choice_table(moves: &[FtoCubie; MOVE_COUNT]) -> Vec<[u16; MOVE_COU
 fn build_center_table(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: CenterOrbit,
+    mut progress: Option<&mut dyn FnMut(usize)>,
 ) -> Vec<[u32; MOVE_COUNT]> {
     let mut table = vec![[0; MOVE_COUNT]; CENTER_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
@@ -424,6 +577,12 @@ fn build_center_table(
             let next = apply_color_perm(&colors, &perm);
             row[move_idx] = rank_center_colors(&next);
         }
+        report_transition_rows(
+            rank + 1,
+            CENTER_COUNT,
+            TRANSITION_PROGRESS_INTERVAL,
+            &mut progress,
+        );
     }
     table
 }
@@ -432,6 +591,7 @@ fn build_color_table_u16(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: EdgeOrCenterOrbit,
     counts: &[u8],
+    mut progress: Option<&mut dyn FnMut(usize)>,
 ) -> Vec<[u16; MOVE_COUNT]> {
     let size = multiset_count(counts) as usize;
     let mut table = vec![[0; MOVE_COUNT]; size];
@@ -441,6 +601,7 @@ fn build_color_table_u16(
             let next = apply_color_perm(&colors, move_perm(mv, orbit));
             row[move_idx] = rank_multiset_colors(&next, counts) as u16;
         }
+        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress);
     }
     table
 }
@@ -449,6 +610,7 @@ fn build_color_table_u32(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: EdgeOrCenterOrbit,
     counts: &[u8],
+    mut progress: Option<&mut dyn FnMut(usize)>,
 ) -> Vec<[u32; MOVE_COUNT]> {
     let size = multiset_count(counts) as usize;
     let mut table = vec![[0; MOVE_COUNT]; size];
@@ -458,8 +620,22 @@ fn build_color_table_u32(
             let next = apply_color_perm(&colors, move_perm(mv, orbit));
             row[move_idx] = rank_multiset_colors(&next, counts);
         }
+        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress);
     }
     table
+}
+
+fn report_transition_rows(
+    done: usize,
+    total: usize,
+    interval: usize,
+    progress: &mut Option<&mut dyn FnMut(usize)>,
+) {
+    if done % interval == 0 || done == total {
+        if let Some(progress) = progress.as_deref_mut() {
+            progress(done);
+        }
+    }
 }
 
 fn move_perm(mv: &FtoCubie, orbit: EdgeOrCenterOrbit) -> &[u8; 12] {

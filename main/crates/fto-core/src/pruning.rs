@@ -384,18 +384,10 @@ pub fn move_set_suffix(moves: &[Move]) -> String {
 pub fn move_set_codename(suffix: &str) -> String {
     use std::hash::{Hash, Hasher};
 
-    const NAMES: [&str; 16] = [
-        "aster", "boreal", "cipher", "drift", "ember", "fable", "glint", "halo", "ivory", "jade",
-        "kestrel", "lumen", "morrow", "nimbus", "oracle", "vesper",
-    ];
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     suffix.hash(&mut hasher);
     let value = hasher.finish();
-    format!(
-        "{}-{:04x}",
-        NAMES[value as usize % NAMES.len()],
-        value as u16
-    )
+    format!("{:04x}", value as u16)
 }
 
 pub fn parse_move_set_suffix(suffix: &str) -> Option<Vec<Move>> {

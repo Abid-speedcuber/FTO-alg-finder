@@ -536,7 +536,7 @@ fn generate_pruning_blocking(
                 selected_specs.push(corner_uf3.clone());
             }
         }
-        let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+        let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
         let tables = load_transition_tables(cache, &tables_path, app)?;
         let pruning_dir = pruning_dir(app, workspace_root).join("partial-coordinate-v1");
         fs::create_dir_all(&pruning_dir).map_err(|error| error.to_string())?;
@@ -586,7 +586,7 @@ fn generate_pruning_blocking(
         return Ok(());
     }
 
-    let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+    let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
     let pruning_dir = pruning_dir(app, workspace_root);
     emit_line(app, "info", "generating pruning table...");
     let tables = load_transition_tables(cache, &tables_path, app)?;
@@ -640,7 +640,7 @@ fn run_in_process_solve(
     app: &AppHandle,
     cache: &Mutex<SolverCache>,
 ) -> Result<SolveResponse, String> {
-    let tables_path = transition_dir(app, workspace_root).join("bundle.tran");
+    let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
     let pruning_dir = pruning_dir(app, workspace_root);
     let tables = load_transition_tables(cache, &tables_path, app)?;
 
@@ -1092,20 +1092,7 @@ fn read_move_suffix(out_dir: &Path, file_name: &str) -> Option<String> {
 }
 
 fn pruning_codename(suffix: &str) -> String {
-    use std::hash::{Hash, Hasher};
-
-    const NAMES: [&str; 16] = [
-        "Aster", "Boreal", "Cipher", "Drift", "Ember", "Fable", "Glint", "Halo", "Ivory", "Jade",
-        "Kestrel", "Lumen", "Morrow", "Nimbus", "Oracle", "Vesper",
-    ];
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    suffix.hash(&mut hasher);
-    let value = hasher.finish();
-    format!(
-        "{}-{:04X}",
-        NAMES[value as usize % NAMES.len()],
-        value as u16
-    )
+    suffix.to_ascii_uppercase()
 }
 
 fn select_pruning_move_set(

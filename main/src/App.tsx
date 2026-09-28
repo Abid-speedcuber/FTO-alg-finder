@@ -450,9 +450,12 @@ function App() {
   const [result, setResult] = useState<SolveResult | null>(null);
   const [running, setRunning] = useState(false);
   const [terminal, setTerminal] = useState<TerminalLine[]>([]);
+  const [now, setNow] = useState(() => Date.now());
+  const [pruningStartedAt, setPruningStartedAt] = useState<number | null>(null);
   const validationRun = useRef(0);
   const lineId = useRef(0);
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
     settingsOpen || pruningOpen || storageOpen || aboutOpen || resetConfirmOpen || !!deleteTableConfirm || !!setupModal;
 
@@ -512,7 +515,27 @@ function App() {
           line.kind === "progress" &&
           (line.text.startsWith("pruning progress:") || line.text.startsWith("transition progress:")),
       );
-    if (
+    if (running && !currentDepth && currentProgress) {
+      const isPruningProgress = currentProgress.text.startsWith("pruning progress:");
+      const showPopcorn =
+        isPruningProgress &&
+        pruningProgressPercent(currentProgress.text) < 60 &&
+        pruningStartedAt !== null &&
+        now - pruningStartedAt >= 20_000;
+      lines.push({
+        id: isPruningProgress ? -3 : -4,
+        kind: "info",
+        text: isPruningProgress ? "generating pruning table..." : "generating transition tables...",
+      });
+      lines.push(currentProgress);
+      if (showPopcorn) {
+        lines.push({
+          id: -5,
+          kind: "info",
+          text: "Grab a popcorn. The progress is only gonna get slower as the time goes by",
+        });
+      }
+    } else if (
       running &&
       !currentDepth &&
       terminal.some((line) => line.text.includes("loading transition") || line.text.includes("generating transition"))
@@ -524,9 +547,6 @@ function App() {
     } else if (running && !currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
       lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
     }
-    if (running && !currentDepth && currentProgress) {
-      lines.push(currentProgress);
-    }
     if (currentDepth) {
       lines.push(currentDepth);
     }
@@ -535,7 +555,7 @@ function App() {
       lines.push(...streamedSolutions);
     }
     return lines;
-  }, [result, running, showDebugInfo, terminal]);
+  }, [now, pruningStartedAt, result, running, showDebugInfo, terminal]);
 
   useEffect(() => {
     try {
@@ -603,6 +623,12 @@ function App() {
     setTerminal([]);
   }, []);
 
+  const resetPruningTimer = useCallback(() => {
+    pruningStartedAtRef.current = null;
+    setPruningStartedAt(null);
+    setNow(Date.now());
+  }, []);
+
   useEffect(() => {
     if (facelets.length !== 72) {
       return;
@@ -626,22 +652,42 @@ function App() {
   }, [facelets]);
 
   useEffect(() => {
+    if (!running || pruningStartedAt === null) {
+      return;
+    }
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [pruningStartedAt, running]);
+
+  useEffect(() => {
     let disposed = false;
     let unlisteners: (() => void)[] = [];
     (async () => {
       const fns = await Promise.all([
         listen<SolveLine>("solve-line", (event) => {
+          if (
+            event.payload.kind === "progress" &&
+            event.payload.text.startsWith("pruning progress:") &&
+            pruningStartedAtRef.current === null
+          ) {
+            const startedAt = Date.now();
+            pruningStartedAtRef.current = startedAt;
+            setPruningStartedAt(startedAt);
+            setNow(startedAt);
+          }
           appendLine(event.payload.kind, event.payload.text);
         }),
         listen<SolveResult>("solve-result", (event) => {
           setResult(event.payload);
           setRunning(false);
+          resetPruningTimer();
           setStatus(event.payload.solutions.length ? "Done" : "No solution");
           refreshCacheStatus();
         }),
         listen<string>("solve-error", (event) => {
           appendLine("error", `error: ${event.payload}`);
           setRunning(false);
+          resetPruningTimer();
           setStatus(String(event.payload));
           refreshCacheStatus();
         }),
@@ -655,11 +701,13 @@ function App() {
             return next.length > 500 ? next.slice(next.length - 500) : next;
           });
           setRunning(false);
+          resetPruningTimer();
           setStatus("Stopped");
           refreshCacheStatus();
         }),
         listen("pruning-generated", () => {
           setRunning(false);
+          resetPruningTimer();
           setStatus("Pruning table generated");
           refreshCacheStatus();
           refreshPruningTables();
@@ -675,7 +723,7 @@ function App() {
       disposed = true;
       unlisteners.forEach((fn) => fn());
     };
-  }, [appendLine, refreshCacheStatus, refreshPruningTables]);
+  }, [appendLine, refreshCacheStatus, refreshPruningTables, resetPruningTimer]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -761,6 +809,7 @@ function App() {
     setRunning(true);
     setStatus("Solving");
     setResult(null);
+    resetPruningTimer();
     clearTerminal();
     appendLine(
       "info",
@@ -804,6 +853,7 @@ function App() {
     setRunning(true);
     setStatus("Generating pruning table");
     setResult(null);
+    resetPruningTimer();
     clearTerminal();
     appendLine(
       "info",
