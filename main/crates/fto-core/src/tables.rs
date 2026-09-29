@@ -230,21 +230,46 @@ impl TransitionTables {
         report: Option<&TransitionReporter<'_>>,
     ) -> io::Result<Self> {
         let path = path.as_ref();
-        match Self::load(path) {
+        match Self::load_reporting(path, report) {
             Ok(tables) => Ok(tables),
             Err(_) => {
                 let tables = Self::build_reporting(report);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                tables.save(path)?;
+                tables.save_reporting(path, report)?;
                 Ok(tables)
             }
         }
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.save_reporting(path, None)
+    }
+
+    pub fn save_reporting(
+        &self,
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+    ) -> io::Result<()> {
         let mut writer = BufWriter::new(File::create(path)?);
+        let total_rows = self.corner.len()
+            + self.edge_choice.len()
+            + self.edge3.len()
+            + self.edge4.len()
+            + self.uf_center.len()
+            + self.rl_center.len()
+            + self.uf_center2.len()
+            + self.uf_center3.len()
+            + self.rl_center2.len()
+            + self.rl_center3.len();
+        let mut written_rows = 0_usize;
+        let report_rows = |written_rows: usize| {
+            if let Some(report) = report {
+                report("saving transition tables", written_rows, total_rows.max(1));
+            }
+        };
+        report_rows(0);
         writer.write_all(CACHE_MAGIC)?;
         write_u32(&mut writer, self.corner.len() as u32)?;
         write_u32(&mut writer, self.edge_choice.len() as u32)?;
@@ -261,26 +286,46 @@ impl TransitionTables {
             for &value in row {
                 writer.write_all(&value.to_le_bytes())?;
             }
+            written_rows += 1;
+            if written_rows % 4096 == 0 {
+                report_rows(written_rows);
+            }
         }
         for row in &self.edge_choice {
             for &value in row {
                 writer.write_all(&value.to_le_bytes())?;
+            }
+            written_rows += 1;
+            if written_rows % 4096 == 0 {
+                report_rows(written_rows);
             }
         }
         for row in &self.edge3 {
             for &value in row {
                 writer.write_all(&value.to_le_bytes())?;
             }
+            written_rows += 1;
+            if written_rows % 4096 == 0 {
+                report_rows(written_rows);
+            }
         }
         for row in &self.edge4 {
             for &value in row {
                 writer.write_all(&value.to_le_bytes())?;
+            }
+            written_rows += 1;
+            if written_rows % 4096 == 0 {
+                report_rows(written_rows);
             }
         }
         for table in [&self.uf_center, &self.rl_center] {
             for row in table {
                 for &value in row {
                     writer.write_all(&value.to_le_bytes())?;
+                }
+                written_rows += 1;
+                if written_rows % 4096 == 0 {
+                    report_rows(written_rows);
                 }
             }
         }
@@ -294,12 +339,24 @@ impl TransitionTables {
                 for &value in row {
                     writer.write_all(&value.to_le_bytes())?;
                 }
+                written_rows += 1;
+                if written_rows % 4096 == 0 {
+                    report_rows(written_rows);
+                }
             }
         }
+        report_rows(total_rows);
         writer.flush()
     }
 
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_reporting(path, None)
+    }
+
+    pub fn load_reporting(
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+    ) -> io::Result<Self> {
         let mut reader = BufReader::new(File::open(path)?);
         let mut magic = [0; 16];
         reader.read_exact(&mut magic)?;
@@ -335,6 +392,23 @@ impl TransitionTables {
                 "transition cache dimensions mismatch",
             ));
         }
+        let total_rows = corner_len
+            + edge_choice_len
+            + edge3_len
+            + edge4_len
+            + uf_len
+            + rl_len
+            + uf2_len
+            + uf3_len
+            + rl2_len
+            + rl3_len;
+        let mut read_rows = 0_usize;
+        let report_rows = |read_rows: usize| {
+            if let Some(report) = report {
+                report("loading transition tables", read_rows, total_rows.max(1));
+            }
+        };
+        report_rows(0);
 
         let mut corner = vec![[0; MOVE_COUNT]; CORNER_COUNT];
         for row in &mut corner {
@@ -342,6 +416,10 @@ impl TransitionTables {
                 let mut bytes = [0; 2];
                 reader.read_exact(&mut bytes)?;
                 *value = u16::from_le_bytes(bytes);
+            }
+            read_rows += 1;
+            if read_rows % 4096 == 0 {
+                report_rows(read_rows);
             }
         }
 
@@ -352,6 +430,10 @@ impl TransitionTables {
                 reader.read_exact(&mut bytes)?;
                 *value = u16::from_le_bytes(bytes);
             }
+            read_rows += 1;
+            if read_rows % 4096 == 0 {
+                report_rows(read_rows);
+            }
         }
 
         let mut edge3 = vec![[0; MOVE_COUNT]; EDGE3_COUNT];
@@ -361,6 +443,10 @@ impl TransitionTables {
                 reader.read_exact(&mut bytes)?;
                 *value = u16::from_le_bytes(bytes);
             }
+            read_rows += 1;
+            if read_rows % 4096 == 0 {
+                report_rows(read_rows);
+            }
         }
 
         let mut edge4 = vec![[0; MOVE_COUNT]; EDGE4_COUNT];
@@ -369,6 +455,10 @@ impl TransitionTables {
                 let mut bytes = [0; 4];
                 reader.read_exact(&mut bytes)?;
                 *value = u32::from_le_bytes(bytes);
+            }
+            read_rows += 1;
+            if read_rows % 4096 == 0 {
+                report_rows(read_rows);
             }
         }
 
@@ -380,6 +470,10 @@ impl TransitionTables {
                     let mut bytes = [0; 4];
                     reader.read_exact(&mut bytes)?;
                     *value = u32::from_le_bytes(bytes);
+                }
+                read_rows += 1;
+                if read_rows % 4096 == 0 {
+                    report_rows(read_rows);
                 }
             }
         }
@@ -400,8 +494,13 @@ impl TransitionTables {
                     reader.read_exact(&mut bytes)?;
                     *value = u16::from_le_bytes(bytes);
                 }
+                read_rows += 1;
+                if read_rows % 4096 == 0 {
+                    report_rows(read_rows);
+                }
             }
         }
+        report_rows(total_rows);
 
         Ok(Self {
             corner,

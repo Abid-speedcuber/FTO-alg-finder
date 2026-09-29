@@ -12,7 +12,10 @@ use fto_core::{
     FtoCubie,
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
-    pruning::{self, CandidateSpec, Component, PatternDatabase, PatternDatabases, PruningStats, SolverPruning},
+    pruning::{
+        self, CandidateSpec, Component, PatternDatabase, PatternDatabases, PruningStats,
+        SolverPruning,
+    },
     search::{self, BidirectionalChoice, BidirectionalConfig, MiniPruning, SearchConfig},
     tables::TransitionTables,
 };
@@ -96,7 +99,8 @@ fn run() -> Result<(), String> {
             }
             "--benchmark-seed" => {
                 i += 1;
-                benchmark_seed = parse_u64_arg(args.get(i).ok_or("--benchmark-seed needs a value")?)?;
+                benchmark_seed =
+                    parse_u64_arg(args.get(i).ok_or("--benchmark-seed needs a value")?)?;
             }
             "--threads" => {
                 i += 1;
@@ -957,13 +961,11 @@ fn run_last_layer_benchmark(
         pruning: Some(pruning),
         pattern_pruning: None,
     });
-    let variants = [
-        LlBenchmarkVariant {
-            name: no_pruning_variant.name,
-            pruning: no_pruning_variant.pruning,
-            pattern_pruning: no_pruning_variant.pattern_pruning,
-        },
-    ];
+    let variants = [LlBenchmarkVariant {
+        name: no_pruning_variant.name,
+        pruning: no_pruning_variant.pruning,
+        pattern_pruning: no_pruning_variant.pattern_pruning,
+    }];
     println!("ll_benchmark_seed: {seed}");
     println!("ll_benchmark_sample_count: {sample_count}");
     println!("ll_benchmark_sample_walk_len: {sample_walk_len}");
@@ -1180,7 +1182,8 @@ fn benchmark_last_layer_variant(
 
     sample_times.sort_unstable();
     let median_sample_ns = sample_times[sample_times.len() / 2];
-    let mean_sample_ns = (sample_times.iter().sum::<u64>() as f64 / sample_times.len() as f64) as u64;
+    let mean_sample_ns =
+        (sample_times.iter().sum::<u64>() as f64 / sample_times.len() as f64) as u64;
     Ok(LlBenchmarkSummary {
         name: variant.name,
         samples: samples.len(),
@@ -1189,7 +1192,11 @@ fn benchmark_last_layer_variant(
         total_ns,
         median_sample_ns,
         mean_sample_ns,
-        min_depth: if min_depth == usize::MAX { 0 } else { min_depth },
+        min_depth: if min_depth == usize::MAX {
+            0
+        } else {
+            min_depth
+        },
         max_depth: max_seen_depth,
         solution_mismatches,
     })

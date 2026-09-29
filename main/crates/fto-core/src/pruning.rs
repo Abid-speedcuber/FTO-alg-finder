@@ -72,7 +72,19 @@ impl PatternDatabase {
         report: Option<&PruningReporter<'_>>,
     ) -> Result<Self, String> {
         let path = path.as_ref();
-        match read_table(path, spec.size().unwrap_or(0)) {
+        match if path.exists() {
+            read_table_reporting(
+                path,
+                spec.size().unwrap_or(0),
+                report,
+                &format!("loading {}", spec.name()),
+            )
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "pruning table does not exist",
+            ))
+        } {
             Ok(table) => Ok(Self { spec, table }),
             Err(_) => {
                 let (_, table) = build_pruning_table_with_moves_threaded(
@@ -85,7 +97,14 @@ impl PatternDatabase {
                     cancel,
                     report,
                 )?;
-                write_table(path, &table).map_err(|error| error.to_string())?;
+                write_table_with_metadata_reporting(
+                    path,
+                    &table,
+                    "",
+                    report,
+                    &format!("saving {}", spec.name()),
+                )
+                .map_err(|error| error.to_string())?;
                 Ok(Self { spec, table })
             }
         }
@@ -321,7 +340,19 @@ fn load_or_build_solver_table(
         spec.name(),
         spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
     );
-    match read_table(path, spec.size().unwrap_or(0)) {
+    match if path.exists() {
+        read_table_reporting(
+            path,
+            spec.size().unwrap_or(0),
+            report,
+            &format!("loading {}", spec.name()),
+        )
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "pruning table does not exist",
+        ))
+    } {
         Ok(table) => Ok(table),
         Err(_) => {
             let (_, table) = build_pruning_table_with_moves_threaded(
@@ -334,14 +365,28 @@ fn load_or_build_solver_table(
                 cancel,
                 report,
             )?;
-            write_table_with_metadata(
+            write_table_with_metadata_reporting(
                 path,
                 &table,
                 &format!("spec={}\nmoves={}\n", spec.name(), move_set_suffix(moves)),
+                report,
+                &format!("saving {}", spec.name()),
             )
             .map_err(|error| error.to_string())?;
             Ok(table)
         }
+    }
+}
+
+fn report_table_io(report: Option<&PruningReporter<'_>>, name: &str, reached: usize, total: usize) {
+    if let Some(report) = report {
+        report(PruningProgress {
+            name: name.to_owned(),
+            depth: 0,
+            expanded: 0,
+            reached,
+            total: total.max(1),
+        });
     }
 }
 
@@ -461,10 +506,9 @@ impl Component {
             Self::Edge4 => crate::coord::EDGE4_COUNT,
             Self::UfCenter | Self::RlCenter => CENTER_COUNT,
             Self::UfCenter2 | Self::RlCenter2 => crate::coord::CENTER2_COUNT,
-            Self::UfCenter3
-            | Self::RlCenter3
-            | Self::LlUfCenterA
-            | Self::LlUfCenterB => crate::coord::CENTER3_COUNT,
+            Self::UfCenter3 | Self::RlCenter3 | Self::LlUfCenterA | Self::LlUfCenterB => {
+                crate::coord::CENTER3_COUNT
+            }
         }
     }
 
@@ -1088,21 +1132,66 @@ fn write_table_with_metadata(
     table: &[u8],
     metadata: &str,
 ) -> io::Result<()> {
+    write_table_with_metadata_reporting(path, table, metadata, None, "")
+}
+
+fn write_table_with_metadata_reporting(
+    path: impl AsRef<Path>,
+    table: &[u8],
+    metadata: &str,
+    report: Option<&PruningReporter<'_>>,
+    progress_name: &str,
+) -> io::Result<()> {
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut writer = BufWriter::new(File::create(path)?);
+    let total = table.len().max(1);
+    report_table_io(report, progress_name, 0, total);
     writer.write_all(PRUN_MAGIC)?;
     writer.write_all(&(metadata.len() as u32).to_le_bytes())?;
     writer.write_all(metadata.as_bytes())?;
-    writer.write_all(table)?;
+    let chunk_size = (total / 100).max(1024 * 1024).min(total);
+    let mut written = 0_usize;
+    for chunk in table.chunks(chunk_size) {
+        writer.write_all(chunk)?;
+        written += chunk.len();
+        report_table_io(report, progress_name, written.min(total), total);
+    }
     writer.flush()
 }
 
 fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>> {
+    read_table_reporting(path, expected_len, None, "")
+}
+
+fn read_table_reporting(
+    path: impl AsRef<Path>,
+    expected_len: usize,
+    report: Option<&PruningReporter<'_>>,
+    progress_name: &str,
+) -> io::Result<Vec<u8>> {
     let mut file = File::open(path)?;
-    let mut table = Vec::new();
-    file.read_to_end(&mut table)?;
+    let total = file
+        .metadata()?
+        .len()
+        .try_into()
+        .unwrap_or(usize::MAX)
+        .max(1);
+    report_table_io(report, progress_name, 0, total);
+    let mut table = Vec::with_capacity(total.min(expected_len.saturating_add(4096)));
+    let chunk_size = (total / 100).max(1024 * 1024).min(total);
+    let mut buffer = vec![0; chunk_size];
+    let mut read = 0_usize;
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        table.extend_from_slice(&buffer[..n]);
+        read = read.saturating_add(n);
+        report_table_io(report, progress_name, read.min(total), total);
+    }
     if table.starts_with(PRUN_MAGIC) {
         if table.len() < PRUN_MAGIC.len() + 4 {
             return Err(io::Error::new(

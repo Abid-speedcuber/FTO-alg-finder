@@ -501,19 +501,7 @@ fn generate_pruning_blocking(
 
     let progress_app = app.clone();
     let progress = move |event: pruning::PruningProgress| {
-        let percent = if event.total == 0 {
-            0.0
-        } else {
-            (event.reached as f64 * 100.0) / event.total as f64
-        };
-        emit_line(
-            &progress_app,
-            "progress",
-            &format!(
-                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
-                event.name, event.reached, event.total, event.depth, event.expanded
-            ),
-        );
+        emit_line(&progress_app, "progress", &format_pruning_progress(&event));
     };
 
     if request.defined_pieces_only {
@@ -561,7 +549,7 @@ fn generate_pruning_blocking(
             let table = pruning::PatternDatabase::load_or_build_with_moves_reporting(
                 spec.clone(),
                 &tables,
-                250_000,
+                pruning_progress_interval(target_moves.len()),
                 &table_path,
                 &target_moves,
                 request.threads.max(1),
@@ -601,7 +589,7 @@ fn generate_pruning_blocking(
             cache,
             &tables,
             &pruning_dir,
-            250_000,
+            pruning_progress_interval(target_moves.len()),
             &target_moves,
             &target_moves,
             true,
@@ -623,7 +611,7 @@ fn generate_pruning_blocking(
     let pruning = SolverPruning::load_or_build_with_moves_reporting(
         &tables,
         &pruning_dir,
-        250_000,
+        pruning_progress_interval(target_moves.len()),
         &target_moves,
         request.threads.max(1),
         Some(cancel),
@@ -703,7 +691,7 @@ fn run_in_process_solve(
             cache,
             &tables,
             &pruning_dir,
-            250_000,
+            pruning_progress_interval(allowed_moves.len()),
             &allowed_moves,
             &instance_moves,
             request.restricted_pruning,
@@ -717,7 +705,7 @@ fn run_in_process_solve(
             cache,
             &tables,
             &pruning_dir,
-            250_000,
+            pruning_progress_interval(allowed_moves.len()),
             &allowed_moves,
             &instance_moves,
             request.restricted_pruning,
@@ -814,7 +802,7 @@ fn load_transition_tables(
         emit_line(
             &progress_app,
             "progress",
-            &format!("transition progress: {name} {done}/{total} ({percent:.1}%)"),
+            &format_transition_progress(name, done, total, percent),
         );
     };
     let tables = Arc::new(
@@ -826,6 +814,50 @@ fn load_transition_tables(
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
     cache.tables = Some(tables.clone());
     Ok(tables)
+}
+
+fn format_transition_progress(name: &str, done: usize, total: usize, percent: f64) -> String {
+    let (prefix, display_name) = if let Some(name) = name.strip_prefix("loading ") {
+        ("loading transition table progress", name)
+    } else if let Some(name) = name.strip_prefix("saving ") {
+        ("saving transition table progress", name)
+    } else {
+        ("transition progress", name)
+    };
+    format!("{prefix}: {display_name} {done}/{total} ({percent:.1}%)")
+}
+
+fn format_pruning_progress(event: &pruning::PruningProgress) -> String {
+    let percent = if event.total == 0 {
+        0.0
+    } else {
+        (event.reached as f64 * 100.0) / event.total as f64
+    };
+    if let Some(name) = event.name.strip_prefix("loading ") {
+        return format!(
+            "loading pruning table progress: {name} reached {}/{} ({percent:.1}%)",
+            event.reached, event.total
+        );
+    }
+    if let Some(name) = event.name.strip_prefix("saving ") {
+        return format!(
+            "saving pruning table progress: {name} reached {}/{} ({percent:.1}%)",
+            event.reached, event.total
+        );
+    }
+    format!(
+        "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
+        event.name, event.reached, event.total, event.depth, event.expanded
+    )
+}
+
+fn pruning_progress_interval(move_count: usize) -> usize {
+    match move_count {
+        0..=6 => 10_000,
+        7..=10 => 25_000,
+        11..=16 => 75_000,
+        _ => 250_000,
+    }
 }
 
 fn table_root(app: &AppHandle, workspace_root: &Path) -> PathBuf {
@@ -911,19 +943,7 @@ fn load_solver_pruning(
 
     let progress_app = app.clone();
     let progress = move |event: pruning::PruningProgress| {
-        let percent = if event.total == 0 {
-            0.0
-        } else {
-            (event.reached as f64 * 100.0) / event.total as f64
-        };
-        emit_line(
-            &progress_app,
-            "progress",
-            &format!(
-                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
-                event.name, event.reached, event.total, event.depth, event.expanded
-            ),
-        );
+        emit_line(&progress_app, "progress", &format_pruning_progress(&event));
     };
     let pruning = Arc::new(
         SolverPruning::load_or_build_with_moves_reporting(
@@ -980,26 +1000,18 @@ fn load_ll_solver_pruning(
             .as_ref()
             .filter(|cached| cached.moves == target)
         {
-            emit_line(app, "info", "using cached last-layer pruning tables from RAM");
+            emit_line(
+                app,
+                "info",
+                "using cached last-layer pruning tables from RAM",
+            );
             return Ok(cached.pruning.clone());
         }
     }
 
     let progress_app = app.clone();
     let progress = move |event: pruning::PruningProgress| {
-        let percent = if event.total == 0 {
-            0.0
-        } else {
-            (event.reached as f64 * 100.0) / event.total as f64
-        };
-        emit_line(
-            &progress_app,
-            "progress",
-            &format!(
-                "pruning progress: {} reached {}/{} ({percent:.1}%) depth {} expanded {}",
-                event.name, event.reached, event.total, event.depth, event.expanded
-            ),
-        );
+        emit_line(&progress_app, "progress", &format_pruning_progress(&event));
     };
     let ll_dir = out_dir.join("last-layer-v1");
     fs::create_dir_all(&ll_dir).map_err(|error| error.to_string())?;

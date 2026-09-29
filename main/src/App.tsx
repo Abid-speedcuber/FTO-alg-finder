@@ -251,7 +251,51 @@ function pruningProgressPercent(text: string): number {
 }
 
 function pruningProgressName(text: string): string {
-  return text.match(/^pruning progress:\s+(.+?)\s+reached/)?.[1] ?? "pruning";
+  return (
+    text.match(/^(?:pruning progress|loading pruning table progress|saving pruning table progress):\s+(.+?)\s+reached/)?.[1] ??
+    "pruning"
+  );
+}
+
+function transitionProgressName(text: string): string {
+  return (
+    text.match(/^(?:transition progress|loading transition table progress|saving transition table progress):\s+(.+?)\s+\d+\/\d+/)?.[1] ??
+    "transition tables"
+  );
+}
+
+function isProgressLine(text: string): boolean {
+  return (
+    text.startsWith("pruning progress:") ||
+    text.startsWith("loading pruning table progress:") ||
+    text.startsWith("saving pruning table progress:") ||
+    text.startsWith("transition progress:") ||
+    text.startsWith("loading transition table progress:") ||
+    text.startsWith("saving transition table progress:")
+  );
+}
+
+function isGeneratingPruningProgress(text: string): boolean {
+  return text.startsWith("pruning progress:");
+}
+
+function progressHeading(line: TerminalLine): string {
+  if (line.text.startsWith("loading pruning table progress:")) {
+    return "loading pruning table...";
+  }
+  if (line.text.startsWith("saving pruning table progress:")) {
+    return "saving pruning table...";
+  }
+  if (line.text.startsWith("pruning progress:")) {
+    return "generating pruning table...";
+  }
+  if (line.text.startsWith("loading transition table progress:")) {
+    return "loading transition tables...";
+  }
+  if (line.text.startsWith("saving transition table progress:")) {
+    return "saving transition tables...";
+  }
+  return "generating transition tables...";
 }
 
 const pruningLineRotationMs = 16_000;
@@ -638,6 +682,7 @@ function App() {
   const [storageOpen, setStorageOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [deleteInstanceConfirm, setDeleteInstanceConfirm] = useState<Instance | null>(null);
   const [deleteTableConfirm, setDeleteTableConfirm] = useState<PruningTableInfo | null>(null);
   const [faceColors, setFaceColors] = useState<string[]>(() => {
     try {
@@ -680,9 +725,19 @@ function App() {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
-    settingsOpen || pruningOpen || storageOpen || aboutOpen || resetConfirmOpen || !!deleteTableConfirm || !!setupModal;
+    settingsOpen ||
+    pruningOpen ||
+    storageOpen ||
+    aboutOpen ||
+    resetConfirmOpen ||
+    !!deleteInstanceConfirm ||
+    !!deleteTableConfirm ||
+    !!setupModal;
 
   const activeInstance = instances.find((instance) => instance.id === activeId) ?? instances[0];
+  const contextInstance = contextMenu
+    ? instances.find((instance) => instance.id === contextMenu.id)
+    : undefined;
   const bannedSet = useMemo(() => new Set(activeInstance.banned), [activeInstance]);
   const allowedMoves = useMemo(
     () => activeInstance.moves.filter((move) => !bannedSet.has(move)),
@@ -733,17 +788,13 @@ function App() {
       : undefined;
     const currentProgress = [...terminal]
       .reverse()
-      .find(
-        (line) =>
-          line.kind === "progress" &&
-          (line.text.startsWith("pruning progress:") || line.text.startsWith("transition progress:")),
-      );
+      .find((line) => line.kind === "progress" && isProgressLine(line.text));
     if (running && !currentDepth && currentProgress) {
-      const isPruningProgress = currentProgress.text.startsWith("pruning progress:");
+      const isPruningProgress = isGeneratingPruningProgress(currentProgress.text);
       lines.push({
         id: isPruningProgress ? -3 : -4,
         kind: "info",
-        text: isPruningProgress ? "generating pruning table..." : "generating transition tables...",
+        text: progressHeading(currentProgress),
       });
       lines.push(currentProgress);
       if (isPruningProgress) {
@@ -759,14 +810,25 @@ function App() {
     } else if (
       running &&
       !currentDepth &&
-      terminal.some((line) => line.text.includes("loading transition") || line.text.includes("generating transition"))
+      terminal.some((line) =>
+        line.text.includes("transition") || line.text.includes("cached pruning tables") || line.text.includes("LL pruning tables")
+      )
     ) {
       const latestTransition = [...terminal]
         .reverse()
-        .find((line) => line.text.includes("loading transition") || line.text.includes("generating transition"));
+        .find((line) =>
+          line.text.includes("transition") || line.text.includes("cached pruning tables") || line.text.includes("LL pruning tables")
+        );
       lines.push(latestTransition ?? { id: -1, kind: "info", text: "loading transition tables...." });
-    } else if (running && !currentDepth && terminal.some((line) => line.text.includes("loading pruning"))) {
-      lines.push({ id: -1, kind: "info", text: "loading pruning tables...." });
+    } else if (
+      running &&
+      !currentDepth &&
+      terminal.some((line) => line.text.includes("loading pruning") || line.text.includes("using cached pruning"))
+    ) {
+      const latestPruning = [...terminal]
+        .reverse()
+        .find((line) => line.text.includes("loading pruning") || line.text.includes("using cached pruning"));
+      lines.push(latestPruning ?? { id: -1, kind: "info", text: "loading pruning tables...." });
     }
     if (currentDepth) {
       lines.push(currentDepth);
@@ -890,7 +952,7 @@ function App() {
           const createdAt = Date.now();
           if (
             event.payload.kind === "progress" &&
-            event.payload.text.startsWith("pruning progress:")
+            isGeneratingPruningProgress(event.payload.text)
           ) {
             if (pruningStartedAtRef.current === null) {
               pruningStartedAtRef.current = createdAt;
@@ -1004,21 +1066,33 @@ function App() {
   }
 
   function deleteInstance(id: string) {
-    if (instances.length <= 1) {
-      return;
-    }
-    setInstances((list) => list.filter((instance) => instance.id !== id));
+    const deleted = instances.find((instance) => instance.id === id);
+    const fallbackInstance: Instance = {
+      id: deleted?.id ?? "default",
+      name: deleted?.name || "Default",
+      moves: deleted?.moves.length ? deleted.moves : [...defaultInstanceMoves],
+      banned: [],
+    };
+    setInstances((list) => {
+      const next = list.filter((instance) => instance.id !== id);
+      return next.length > 0 ? next : [fallbackInstance];
+    });
     setActiveId((current) => {
       if (current !== id) {
         return current;
       }
-      return instances.find((instance) => instance.id !== id)?.id ?? instances[0].id;
+      return instances.find((instance) => instance.id !== id)?.id ?? fallbackInstance.id;
     });
+    if (instances.length <= 1) {
+      setActiveId(fallbackInstance.id);
+      setSetupModal({ kind: "first", instance: fallbackInstance });
+    }
   }
 
   function openContextMenu(instanceId: string, event: React.MouseEvent) {
     event.preventDefault();
-    setMenuOpen(false);
+    event.stopPropagation();
+    setMenuOpen(true);
     setContextMenu({ id: instanceId, x: event.clientX, y: event.clientY });
   }
 
@@ -1176,10 +1250,6 @@ function App() {
     setFaceColors((colors) => colors.map((current, i) => (i === index ? normalized : current)));
   }
 
-  const contextInstance = contextMenu
-    ? instances.find((instance) => instance.id === contextMenu.id)
-    : undefined;
-
   return (
     <main>
       <header className="app-header">
@@ -1243,24 +1313,24 @@ function App() {
             ) : null}
           </div>
         </div>
-        {mode === "solver" && contextMenu ? (
-          <>
-            <div className="menu-backdrop" onClick={closeOverlays} />
-            <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-              <button
-                className="context-delete"
-                disabled={instances.length <= 1}
-                onClick={() => {
-                  deleteInstance(contextMenu.id);
-                  closeOverlays();
-                }}
-              >
-                Delete {contextInstance?.name ?? "instance"}
-              </button>
-            </div>
-          </>
-        ) : null}
       </header>
+
+      {mode === "solver" && contextMenu ? (
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+          <button
+            className="context-delete"
+            disabled={!contextInstance}
+            onClick={() => {
+              if (contextInstance) {
+                setDeleteInstanceConfirm(contextInstance);
+              }
+              closeOverlays();
+            }}
+          >
+            Delete {contextInstance?.name ?? "instance"}
+          </button>
+        </div>
+      ) : null}
 
       {settingsOpen ? (
         <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
@@ -1404,6 +1474,38 @@ function App() {
         </div>
       ) : null}
 
+      {deleteInstanceConfirm ? (
+        <div className="modal-backdrop" onClick={() => setDeleteInstanceConfirm(null)}>
+          <div className="modal confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Delete instance?</h2>
+            <p className="modal-subtitle">
+              Do you really want to delete {deleteInstanceConfirm.name}? Pruning tables related to this instance will
+              not be automatically deleted. To delete them, go to Settings &gt; Manage storage.
+            </p>
+            <div className="storage-row confirm-summary">
+              <div>
+                <div className="storage-title">{deleteInstanceConfirm.name}</div>
+                <div className="storage-sub">{deleteInstanceConfirm.moves.length} moves</div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="secondary" onClick={() => setDeleteInstanceConfirm(null)}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  deleteInstance(deleteInstanceConfirm.id);
+                  setDeleteInstanceConfirm(null);
+                }}
+              >
+                Delete instance
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {resetConfirmOpen ? (
         <div className="modal-backdrop" onClick={() => setResetConfirmOpen(false)}>
           <div className="modal confirm-modal" onClick={(event) => event.stopPropagation()}>
@@ -1454,7 +1556,19 @@ function App() {
             note={moveChooserNote}
             cancellable={false}
             onSave={(name, selected) => {
-              updateInstance(setupModal.instance.id, { name: name.trim() || "Default", moves: selected, banned: [] });
+              const savedInstance: Instance = {
+                id: setupModal.instance.id,
+                name: name.trim() || "Default",
+                moves: selected,
+                banned: [],
+              };
+              setInstances((list) => {
+                const exists = list.some((instance) => instance.id === savedInstance.id);
+                return exists
+                  ? list.map((instance) => (instance.id === savedInstance.id ? savedInstance : instance))
+                  : [savedInstance];
+              });
+              setActiveId(savedInstance.id);
               setSetupModal(null);
             }}
             onCancel={() => setSetupModal(null)}
@@ -1564,6 +1678,7 @@ function App() {
                           onClick={() => {
                             setActiveId(instance.id);
                             setMenuOpen(false);
+                            setContextMenu(null);
                           }}
                           onContextMenu={(event) => openContextMenu(instance.id, event)}
                           title="Right-click to delete"
