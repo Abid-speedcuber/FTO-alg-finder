@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FTO Alg Finder</title>
+    <meta
+      name="description"
+      content="FTO Alg Finder is a desktop solver and algorithm search app for the Face-Turning Octahedron."
+    />
+    <link rel="icon" href="assets/app-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="FTO Alg Finder home">
+        <img src="assets/app-icon.png" alt="" />
+        <span>FTO Alg Finder</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="#screenshots">Screenshots</a>
+        <a href="#requirements">Requirements</a>
+        <a href="#downloads">Downloads</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-content">
+          <p class="eyebrow">Face-Turning Octahedron Solver</p>
+          <h1 id="hero-title">Hunt cleaner FTO algs.</h1>
+          <p class="lede">
+            Paint the puzzle, restrict the moves you actually use, and let the Rust solver grind through exact
+            depths, last-layer cases, and alg combinations.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#downloads">Download</a>
+            <a class="button secondary" href="#screenshots">See the app</a>
+          </div>
+          <div class="hero-stats" aria-label="Solver highlights">
+            <span>3D input</span>
+            <span>exact depth</span>
+            <span>LL mode</span>
+            <span>pruning caches</span>
+          </div>
+        </div>
+        <div class="puzzle-stage" aria-hidden="true">
+          <div class="scramble-line line-a">U F R' BR U' BL Fw</div>
+          <div class="scramble-line line-b">depth 8 | all solutions | 12 threads</div>
+          <div class="fto-orbit">
+            <div class="fto-piece p1"></div>
+            <div class="fto-piece p2"></div>
+            <div class="fto-piece p3"></div>
+            <div class="fto-piece p4"></div>
+            <div class="fto-piece p5"></div>
+            <div class="fto-piece p6"></div>
+            <div class="fto-core"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section intro" aria-labelledby="intro-title">
+        <div>
+          <p class="eyebrow">The idea</p>
+          <h2 id="intro-title">For FTO solvers who care about the moves, not just the answer.</h2>
+        </div>
+        <p>
+          FTO Alg Finder is a desktop solver for building and testing practical Face-Turning Octahedron algorithms.
+          It supports graphical input, setup strings, restricted movesets, saved solver instances, partial-position
+          input, last-layer searching, and an alg combiner for trying intermediate sets without doing the boring
+          bookkeeping by hand.
+        </p>
+      </section>
+
+      <section class="feature-band" aria-label="Highlights">
+        <article>
+          <span>input</span>
+          <h3>Click the puzzle</h3>
+          <p>Set colors manually, swap pieces, twist corners, or use partial-position input from the viewer.</p>
+        </article>
+        <article>
+          <span>search</span>
+          <h3>Control the moveset</h3>
+          <p>Run auto or exact-depth searches with selected moves, banned moves, threads, and all-solution mode.</p>
+        </article>
+        <article>
+          <span>algs</span>
+          <h3>Combine and cancel</h3>
+          <p>Try ordered pairs and triples of intermediate algorithms with optional U-slot insertion.</p>
+        </article>
+      </section>
+
+      <section id="screenshots" class="section screenshots" aria-labelledby="screenshots-title">
+        <div class="section-heading">
+          <p class="eyebrow">Screenshots</p>
+          <h2 id="screenshots-title">The actual workspace</h2>
+        </div>
+        <div class="screenshot-grid">
+          <figure>
+            <img src="screenshots/app-main.png" alt="Default instance setup in FTO Alg Finder" />
+            <figcaption>First-run solver instance setup with the live FTO viewer behind it.</figcaption>
+          </figure>
+          <figure class="ui-shot" aria-label="Algorithm combiner interface preview">
+            <div class="window-bar">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="mock-layout">
+              <div class="mock-panel large">
+                <div class="mock-tabs">
+                  <strong>Setup Move</strong>
+                  <span>/ alg</span>
+                </div>
+                <div class="mock-input"></div>
+                <div class="mock-viewer">
+                  <div class="mock-fto"></div>
+                </div>
+              </div>
+              <div class="mock-panel side">
+                <div class="mock-row"></div>
+                <div class="mock-moves">
+                  <span>U</span><span>U'</span><span>F</span><span>F'</span>
+                  <span>BR</span><span>BR'</span><span>BL</span><span>BL'</span>
+                  <span>Rw</span><span>Rw'</span><span>Fw</span><span>Fw'</span>
+                </div>
+                <div class="mock-run"></div>
+                <div class="mock-log"></div>
+              </div>
+            </div>
+            <figcaption>Move controls, viewer area, and solver output space in the main workflow.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section id="requirements" class="section requirements" aria-labelledby="requirements-title">
+        <div class="section-heading">
+          <p class="eyebrow">System requirements</p>
+          <h2 id="requirements-title">Table generation wants breathing room.</h2>
+        </div>
+        <div class="requirement-grid">
+          <article>
+            <h3>Minimum practical setup</h3>
+            <ul>
+              <li>64-bit Windows or Linux desktop.</li>
+              <li>8 GiB RAM for shallow and moderate searches.</li>
+              <li>At least 1.2 GiB available RAM for pruning and transition tables.</li>
+              <li>2 GiB free disk space for dependencies, builds, and normal caches.</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Recommended for heavier use</h3>
+            <ul>
+              <li>5-10 GiB free disk space for several solver instances or pruning caches.</li>
+              <li>Multiple CPU cores when using the thread setting.</li>
+              <li>Rust Edition 2024 toolchain, Node.js 18+, and npm when building from source.</li>
+              <li>More memory for deep exact-depth CLI searches.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="downloads" class="section downloads" aria-labelledby="downloads-title">
+        <div class="section-heading">
+          <p class="eyebrow">Downloads</p>
+          <h2 id="downloads-title">Grab a build</h2>
+        </div>
+        <div class="download-grid">
+          <article class="download-card">
+            <img src="assets/windows.svg" alt="" />
+            <div>
+              <h3>Windows</h3>
+              <p>Standalone 64-bit installer for FTO Alg Finder 0.1.0.</p>
+              <a class="button primary" href="../builds/windows/FTO-Alg-Finder-0.1.0-x64.exe" download>
+                Download for Windows
+              </a>
+              <small id="windows-size">EXE installer</small>
+            </div>
+          </article>
+          <article class="download-card muted" id="linux-build">
+            <img src="assets/linux.svg" alt="" />
+            <div>
+              <h3>Linux</h3>
+              <p>No Linux binary is bundled in this repository yet. Build the Tauri app locally from source.</p>
+              <a class="button secondary" href="../README.md">Build from source</a>
+              <small>Run <code>cd main && npm install && npm run tauri build</code></small>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>Created by Abid Ibn Ashraf. Licensed under GPL-3.0-or-later.</p>
+    </footer>
+
+    <script>
+      const windowsSize = document.getElementById("windows-size");
+      if (windowsSize) {
+        windowsSize.textContent = "4.1 MB EXE installer";
+      }
+    </script>
+  </body>
+</html>
