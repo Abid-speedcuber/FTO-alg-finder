@@ -166,27 +166,81 @@
           <h2 id="downloads-title">Grab a build</h2>
         </div>
         <div class="download-grid">
-          <article class="download-card">
+          <article class="download-card primary-download">
             <img src="assets/windows.svg" alt="" />
             <div>
               <h3>Windows</h3>
               <p>Standalone 64-bit installer for FTO Alg Finder 0.1.0.</p>
-              <a class="button primary" href="../builds/windows/FTO-Alg-Finder-0.1.0-x64.exe" download>
+              <a
+                class="button primary"
+                href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-x64.exe"
+              >
                 Download for Windows
               </a>
               <small id="windows-size">EXE installer</small>
             </div>
           </article>
-          <article class="download-card muted" id="linux-build">
+          <article class="download-card primary-download">
             <img src="assets/linux.svg" alt="" />
             <div>
-              <h3>Linux</h3>
-              <p>No Linux binary is bundled in this repository yet. Build the Tauri app locally from source.</p>
-              <a class="button secondary" href="../README.md">Build from source</a>
-              <small>Run <code>cd main && npm install && npm run tauri build</code></small>
+              <h3>Linux AppImage</h3>
+              <p>Portable x86_64 build for most Linux distros. No distro package manager required.</p>
+              <a
+                class="button primary"
+                href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-x86_64.AppImage"
+              >
+                Download AppImage
+              </a>
+              <small>Universal Linux build</small>
+            </div>
+          </article>
+          <article class="download-card package-card">
+            <div class="package-logo ubuntu-logo">
+              <img src="assets/ubuntu.svg" alt="" />
+            </div>
+            <div>
+              <h3>Ubuntu / Debian</h3>
+              <p><code>.deb</code> package for Debian-based distros.</p>
+              <a
+                class="button secondary"
+                href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-amd64.deb"
+              >
+                Download .deb
+              </a>
+            </div>
+          </article>
+          <article class="download-card package-card">
+            <div class="package-logo fedora-logo">
+              <img src="assets/fedora.svg" alt="" />
+            </div>
+            <div>
+              <h3>Fedora</h3>
+              <p><code>.rpm</code> package for Fedora/RHEL-family systems.</p>
+              <a
+                class="button secondary"
+                href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-x86_64.rpm"
+              >
+                Download .rpm
+              </a>
+            </div>
+          </article>
+          <article class="download-card package-card">
+            <div class="package-logo arch-logo">
+              <img src="assets/archlinux.svg" alt="" />
+            </div>
+            <div>
+              <h3>Arch</h3>
+              <p><code>.pkg.tar.zst</code> package for pacman-based installs.</p>
+              <a
+                class="button secondary"
+                href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-x86_64.pkg.tar.zst"
+              >
+                Download pkg
+              </a>
             </div>
           </article>
         </div>
+        <p class="source-build">Source build: <code>cd main && npm install && npm run tauri build</code></p>
       </section>
     </main>
 

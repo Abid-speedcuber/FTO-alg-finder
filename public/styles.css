@@ -606,7 +606,7 @@ li + li {
 }
 
 .download-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .download-card {
@@ -616,6 +616,16 @@ li + li {
   gap: 22px;
   padding: 28px;
   color: #17120e;
+}
+
+.primary-download {
+  grid-column: span 3;
+}
+
+.package-card {
+  grid-column: span 2;
+  grid-template-columns: 54px 1fr;
+  padding: 22px;
 }
 
 .download-card img {
@@ -632,6 +642,40 @@ li + li {
   display: block;
   margin-top: 12px;
   color: #6d6256;
+  font-size: 13px;
+}
+
+.package-logo {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid #d8cbb5;
+  border-radius: 8px;
+  background: #111820;
+}
+
+.package-logo img {
+  width: 32px;
+  height: 32px;
+  filter: brightness(0) invert(1);
+}
+
+.ubuntu-logo {
+  background: #e95420;
+}
+
+.fedora-logo {
+  background: #51a2da;
+}
+
+.arch-logo {
+  background: #1793d1;
+}
+
+.source-build {
+  margin: 18px 0 0;
+  color: rgb(247 243 232 / 0.72);
   font-size: 13px;
 }
 
@@ -671,6 +715,11 @@ footer p {
   .requirement-grid,
   .download-grid {
     grid-template-columns: 1fr;
+  }
+
+  .primary-download,
+  .package-card {
+    grid-column: auto;
   }
 
   .hero {
