@@ -53,7 +53,7 @@ a {
 .brand img {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: 50%;
 }
 
 nav {
