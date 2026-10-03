@@ -6,3 +6,5 @@ main/node_modules/
 main/dist/
 main/*.tsbuildinfo
 ideas/
+builds/*
+!builds/tools/
