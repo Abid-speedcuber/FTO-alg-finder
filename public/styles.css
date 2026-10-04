@@ -419,7 +419,7 @@ figure {
 figure img {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 18.5 / 14;
   object-fit: cover;
   object-position: center top;
 }
