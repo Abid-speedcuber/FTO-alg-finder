@@ -50,10 +50,25 @@ a {
   white-space: nowrap;
 }
 
-.brand img {
+.brand-fto-viewer {
+  display: grid;
+  place-items: center;
   width: 34px;
   height: 34px;
+  overflow: hidden;
   border-radius: 50%;
+  background: #0c0f13;
+  cursor: grab;
+}
+
+.brand-fto-viewer canvas {
+  display: block;
+  width: 34px !important;
+  height: 34px !important;
+}
+
+.brand-fto-viewer:active {
+  cursor: grabbing;
 }
 
 nav {
@@ -257,86 +272,44 @@ h1 {
   transform: rotate(5deg);
 }
 
-.fto-orbit {
+.hero-viewer-frame {
   position: absolute;
   top: 50%;
   left: 50%;
   width: min(520px, 80vw);
   aspect-ratio: 1;
-  transform: translate(-50%, -50%) rotate(-10deg);
+  transform: translate(-50%, -50%);
   filter: drop-shadow(0 30px 60px rgb(0 0 0 / 0.5));
 }
 
-.fto-orbit::before,
-.fto-orbit::after {
+.hero-viewer-frame::before,
+.hero-viewer-frame::after {
   content: "";
   position: absolute;
   inset: 9%;
   border: 1px solid rgb(247 243 232 / 0.12);
   transform: rotate(45deg);
+  pointer-events: none;
 }
 
-.fto-orbit::after {
+.hero-viewer-frame::after {
   inset: 22%;
   border-color: rgb(247 211 92 / 0.18);
 }
 
-.fto-core,
-.fto-piece {
-  position: absolute;
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+.hero-fto-viewer {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
 }
 
-.fto-core {
-  inset: 25%;
-  border: 7px solid #07090d;
-  background:
-    linear-gradient(135deg, transparent 48%, #080a0d 0 52%, transparent 0),
-    linear-gradient(45deg, transparent 48%, #080a0d 0 52%, transparent 0),
-    conic-gradient(from 45deg, #f7d35c 0 12.5%, #1b55c9 0 25%, #9b2f9b 0 37.5%, #f3f1e8 0 50%, #2ab06a 0 62.5%, #a62d32 0 75%, #7b8794 0 87.5%, #e97b24 0);
-}
-
-.fto-piece {
-  width: 25%;
-  aspect-ratio: 1;
-  border: 5px solid #07090d;
-  background: #f7d35c;
-}
-
-.p1 {
-  top: 0;
-  left: 37.5%;
-  background: #f7d35c;
-}
-
-.p2 {
-  top: 18%;
-  right: 9%;
-  background: #1b55c9;
-}
-
-.p3 {
-  top: 37.5%;
-  right: 0;
-  background: #a62d32;
-}
-
-.p4 {
-  right: 18%;
-  bottom: 12%;
-  background: #2ab06a;
-}
-
-.p5 {
-  bottom: 0;
-  left: 37.5%;
-  background: #f3f1e8;
-}
-
-.p6 {
-  top: 37.5%;
-  left: 0;
-  background: #e97b24;
+.hero-fto-viewer canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .section {
@@ -729,6 +702,10 @@ footer p {
   .puzzle-stage {
     min-height: 460px;
   }
+
+  .hero-viewer-frame {
+    width: min(460px, 84vw);
+  }
 }
 
 @media (max-width: 560px) {
@@ -746,6 +723,10 @@ footer p {
 
   .puzzle-stage {
     min-height: 340px;
+  }
+
+  .hero-viewer-frame {
+    width: min(340px, 92vw);
   }
 
   .scramble-line {

@@ -10,11 +10,18 @@
     />
     <link rel="icon" href="assets/app-icon.png" />
     <link rel="stylesheet" href="styles.css" />
+    <script src="fto-viewer/threemin.js" defer></script>
+    <script src="fto-viewer/pnltri.js" defer></script>
+    <script src="fto-viewer/ploy.js" defer></script>
+    <script src="fto-viewer/shim.js" defer></script>
+    <script src="fto-viewer/poly3dlib.js" defer></script>
+    <script src="fto-viewer/fto-viewer.js" defer></script>
+    <script src="hero-viewer.js" defer></script>
   </head>
   <body>
     <header class="site-header">
       <a class="brand" href="#top" aria-label="FTO Alg Finder home">
-        <img src="assets/app-icon.png" alt="" />
+        <span id="brand-fto-viewer" class="brand-fto-viewer" aria-hidden="true"></span>
         <span>FTO Alg Finder</span>
       </a>
       <nav aria-label="Primary">
@@ -47,14 +54,8 @@
         <div class="puzzle-stage" aria-hidden="true">
           <div class="scramble-line line-a">U F R' BR U' BL Fw</div>
           <div class="scramble-line line-b">depth 8 | all solutions | 12 threads</div>
-          <div class="fto-orbit">
-            <div class="fto-piece p1"></div>
-            <div class="fto-piece p2"></div>
-            <div class="fto-piece p3"></div>
-            <div class="fto-piece p4"></div>
-            <div class="fto-piece p5"></div>
-            <div class="fto-piece p6"></div>
-            <div class="fto-core"></div>
+          <div class="hero-viewer-frame">
+            <div id="hero-fto-viewer" class="hero-fto-viewer"></div>
           </div>
         </div>
       </section>
@@ -84,9 +85,12 @@
           <p>Run auto or exact-depth searches with selected moves, banned moves, threads, and all-solution mode.</p>
         </article>
         <article>
-          <span>algs</span>
-          <h3>Combine and cancel</h3>
-          <p>Try ordered pairs and triples of intermediate algorithms with optional U-slot insertion.</p>
+          <span>play</span>
+          <h3>A real virtual FTO</h3>
+          <p>
+            Scramble by swapping pieces, then solve it from the keyboard with a fully animated Face-Turning
+            Octahedron challenge.
+          </p>
         </article>
       </section>
 
