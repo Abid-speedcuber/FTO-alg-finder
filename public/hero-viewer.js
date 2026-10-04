@@ -44,6 +44,33 @@ window.addEventListener("DOMContentLoaded", function() {
     return orbitObject(new THREE.Quaternion().multiply(inverseDelta, target).normalize());
   }
 
+  function randomIndex(length) {
+    if (window.crypto && window.crypto.getRandomValues) {
+      var value = new Uint32Array(1);
+      window.crypto.getRandomValues(value);
+      return value[0] % length;
+    }
+    return Math.floor(Math.random() * length);
+  }
+
+  function randomHeroScramble(length) {
+    var faces = ["U", "F", "R", "L", "D", "B", "BR", "BL", "Rw", "Lw", "Fw", "Uw"];
+    var suffixes = ["", "'", "2"];
+    var moves = [];
+    var previousFace = "";
+
+    while (moves.length < length) {
+      var face = faces[randomIndex(faces.length)];
+      if (face === previousFace) {
+        continue;
+      }
+      previousFace = face;
+      moves.push(face + suffixes[randomIndex(suffixes.length)]);
+    }
+
+    return moves.join(" ");
+  }
+
   var faceColors = ["#ffd95a", "#2b62d3", "#c83c43", "#a935a9", "#f5f0df", "#2bb673", "#86919c", "#ff8426"];
   var brandTargetOrbit = {
     x: -0.2018569335660823,
@@ -68,12 +95,14 @@ window.addEventListener("DOMContentLoaded", function() {
   }
 
   if (heroHost) {
+    var heroScramble = randomHeroScramble(16);
+
     var viewer = window.createFtoViewer(heroHost, {
       keyboard: false,
       faceColors: faceColors,
     });
 
-    viewer.applyAlgorithmInstant("U F R' BR U' BL Fw");
+    viewer.applyAlgorithmInstant(heroScramble);
     viewer.setKeyboardEnabled(false);
 
     requestAnimationFrame(function() {
