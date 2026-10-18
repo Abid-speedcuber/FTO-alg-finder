@@ -580,6 +580,22 @@ function InstanceSetupModal({
   const [name, setName] = useState(initialName);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(initialMoves));
   const [moreOpen, setMoreOpen] = useState(false);
+  const visibleMoves = moreOpen ? moves : defaultInstanceMoves;
+  const activeMoves = visibleMoves.filter((move) => selected.has(move));
+
+  const selectVisibleMoves = (selectAll: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const move of visibleMoves) {
+        if (selectAll) {
+          next.add(move);
+        } else {
+          next.delete(move);
+        }
+      }
+      return next;
+    });
+  };
 
   const toggleMove = (move: string) => {
     setSelected((current) => {
@@ -593,7 +609,7 @@ function InstanceSetupModal({
     });
   };
 
-  const canSave = selected.size > 0;
+  const canSave = activeMoves.length > 0;
   const renderMoveButton = (move: string) => (
     <button
       key={move}
@@ -625,10 +641,10 @@ function InstanceSetupModal({
               <span>Moves this instance uses</span>
             </div>
             <div className="mini-actions">
-              <button className="secondary" onClick={() => setSelected(new Set(moves))}>
+              <button className="secondary" onClick={() => selectVisibleMoves(true)}>
                 All
               </button>
-              <button className="secondary" onClick={() => setSelected(new Set())}>
+              <button className="secondary" onClick={() => selectVisibleMoves(false)}>
                 None
               </button>
             </div>
@@ -656,7 +672,7 @@ function InstanceSetupModal({
           <button
             className="primary"
             disabled={!canSave}
-            onClick={() => onSave(name, moves.filter((move) => selected.has(move)))}
+            onClick={() => onSave(name, activeMoves)}
           >
             {confirmLabel}
           </button>

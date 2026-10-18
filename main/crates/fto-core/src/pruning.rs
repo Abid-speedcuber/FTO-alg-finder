@@ -2,8 +2,9 @@ use std::{
     fs::File,
     io::{self, BufWriter, Read, Write},
     path::Path,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     thread,
+    time::Instant,
 };
 
 use crate::{
@@ -820,6 +821,164 @@ fn build_pruning_table_from_index_threaded(
     )
 }
 
+// These face turns generate the full FTO group. Only certify products of
+// independent piece orbits; overlapping coordinates can contain impossible pairs.
+fn full_coordinate_reachability(spec: &CandidateSpec, moves: &[Move]) -> bool {
+    if !(0..8).all(|axis| moves.iter().any(|mv| usize::from(mv.axis()) == axis)) {
+        return false;
+    }
+    let mut orbits = [false; 4];
+    for component in &spec.components {
+        let orbit = match component {
+            Component::Corner => 0,
+            Component::E0
+            | Component::E1
+            | Component::E2
+            | Component::E3
+            | Component::Edge3
+            | Component::Edge4 => 1,
+            Component::UfCenter
+            | Component::UfCenter2
+            | Component::UfCenter3
+            | Component::LlUfCenterA
+            | Component::LlUfCenterB => 2,
+            Component::RlCenter | Component::RlCenter2 | Component::RlCenter3 => 3,
+        };
+        if orbits[orbit] {
+            return false;
+        }
+        orbits[orbit] = true;
+    }
+    true
+}
+
+// Search backward to an exact entry, increasing the TOTAL solution bound.
+// Missing entries have lower bound completed_depth + 1, not heuristic 255.
+// Exhausting the budget abandons this case, never treating it as unreachable.
+fn bounded_reverse_path(
+    start: usize,
+    completed_depth: u8,
+    moves: &[Move],
+    get: &impl Fn(usize) -> u8,
+    next: &mut impl FnMut(usize, Move) -> usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<Option<(u8, Vec<usize>)>, String> {
+    if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+        return Err(CANCELLED.to_owned());
+    }
+    fn visit(
+        path: &mut Vec<usize>,
+        bound: u16,
+        lower: u16,
+        moves: &[Move],
+        get: &impl Fn(usize) -> u8,
+        next: &mut impl FnMut(usize, Move) -> usize,
+        budget: &mut usize,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<bool, String> {
+        let idx = *path.last().unwrap();
+        let distance = get(idx);
+        let spent = (path.len() - 1) as u16;
+        if distance != UNVISITED {
+            return Ok(spent + u16::from(distance) <= bound);
+        }
+        if spent + lower > bound {
+            return Ok(false);
+        }
+        for &mv in moves {
+            if *budget == 0 {
+                return Ok(false);
+            }
+            *budget -= 1;
+            if *budget & 63 == 0 && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(CANCELLED.to_owned());
+            }
+            let previous = next(idx, mv.inverse());
+            if path.contains(&previous) {
+                continue;
+            }
+            path.push(previous);
+            if visit(path, bound, lower, moves, get, next, budget, cancel)? {
+                return Ok(true);
+            }
+            path.pop();
+            if *budget == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    }
+    let lower = u16::from(completed_depth) + 1;
+    let mut budget = 2048;
+    for bound in lower..=(lower + 3).min(254) {
+        let mut path = vec![start];
+        if visit(
+            &mut path,
+            bound,
+            lower,
+            moves,
+            get,
+            next,
+            &mut budget,
+            cancel,
+        )? {
+            // Every intermediate node lies on a proven shortest path too.
+            let distance = (path.len() - 1) as u8 + get(*path.last().unwrap());
+            return Ok(Some((distance, path)));
+        }
+        if budget == 0 {
+            break;
+        }
+    }
+    Ok(None)
+}
+
+// Read-only trial against the actual recent BFS discovery rate. Failed trials
+// are bounded, and only a winning trial is committed by the caller.
+fn probe_reverse_paths(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    moves: &[Move],
+    size: usize,
+    seed: usize,
+    depth: u8,
+    bfs_rate: f64,
+    get: impl Fn(usize) -> u8,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<(usize, u8)>, String> {
+    let started = Instant::now();
+    let mut found = Vec::new();
+    let mut tried = 0;
+    let mut values = vec![0; spec.components.len()];
+    let mut next_values = values.clone();
+    let mut next = |idx, mv| spec.next_index(idx, mv, tables, &mut values, &mut next_values);
+    for sample in 0..size.min(1024) {
+        let idx = (sample * (size / size.min(1024)) + seed) % size;
+        if get(idx) != UNVISITED {
+            continue;
+        }
+        tried += 1;
+        if let Some((distance, path)) =
+            bounded_reverse_path(idx, depth, moves, &get, &mut next, cancel)?
+        {
+            for (step, node) in path.into_iter().enumerate() {
+                if get(node) == UNVISITED && !found.iter().any(|&(other, _)| other == node) {
+                    found.push((node, distance - step as u8));
+                }
+            }
+        }
+        if tried == 4 {
+            break;
+        }
+    }
+    let rate = found.len() as f64 / started.elapsed().as_secs_f64().max(1e-9);
+    if rate > bfs_rate * 1.25 {
+        Ok(found)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 fn build_pruning_table_from_index(
     spec: &CandidateSpec,
     tables: &TransitionTables,
@@ -830,119 +989,17 @@ fn build_pruning_table_from_index(
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
-    let size = spec
-        .size()
-        .ok_or_else(|| format!("{} size overflows usize", spec.name()))?;
-    if size > max_entries {
-        return Err(format!(
-            "{} has {size} entries, above cap {max_entries}",
-            spec.name()
-        ));
-    }
-
-    let mut table = vec![UNVISITED; size];
-    table[root_index] = 0;
-
-    let mut values = vec![0; spec.components.len()];
-    let mut next_values = vec![0; spec.components.len()];
-    let mut reached = 1_usize;
-    let mut histogram = vec![1_usize];
-    let mut depth_sum = 0_u64;
-    let mut max_depth = 0_u8;
-    let mut expanded = 0_usize;
-    let mut next_progress = progress_interval;
-    let cancel_check_mask: usize = 8191;
-    let mut empty_depths = 0_usize;
-
-    for depth in 0..u8::MAX {
-        if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
-            return Err(CANCELLED.to_owned());
-        }
-        let mut next_frontier = 0_usize;
-        for idx in 0..size {
-            if table[idx] != depth {
-                continue;
-            }
-            expanded += 1;
-            if progress_interval > 0 && expanded >= next_progress {
-                eprintln!(
-                    "  {}: expanded {}, reached {}, depth {}",
-                    spec.name(),
-                    expanded,
-                    reached,
-                    depth
-                );
-                if let Some(report) = report {
-                    report(PruningProgress {
-                        name: spec.name(),
-                        depth: depth.into(),
-                        expanded,
-                        reached,
-                        total: size,
-                    });
-                }
-                next_progress = next_progress.saturating_add(progress_interval);
-                if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
-                    return Err(CANCELLED.to_owned());
-                }
-            }
-            if expanded & cancel_check_mask == 0
-                && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
-            {
-                return Err(CANCELLED.to_owned());
-            }
-            for &mv in moves {
-                let next = spec.next_index(idx, mv, tables, &mut values, &mut next_values);
-                if table[next] == UNVISITED {
-                    let next_depth = depth + 1;
-                    table[next] = next_depth;
-                    reached += 1;
-                    next_frontier += 1;
-                    depth_sum += u64::from(next_depth);
-                    max_depth = max_depth.max(next_depth);
-                    let hist_idx = usize::from(next_depth);
-                    if histogram.len() <= hist_idx {
-                        histogram.resize(hist_idx + 1, 0);
-                    }
-                    histogram[hist_idx] += 1;
-                }
-            }
-        }
-        if progress_interval > 0 {
-            eprintln!(
-                "  {}: finished depth {}, new {}, reached {}",
-                spec.name(),
-                depth,
-                next_frontier,
-                reached
-            );
-        }
-        if next_frontier == 0 {
-            empty_depths += 1;
-            if empty_depths >= 2 {
-                if progress_interval > 0 {
-                    eprintln!(
-                        "  {}: no new states for two consecutive depths, done",
-                        spec.name()
-                    );
-                }
-                break;
-            }
-        } else {
-            empty_depths = 0;
-        }
-    }
-
-    let stats = PruningStats {
-        name: spec.name(),
-        table_entries: size,
-        table_bytes: size,
-        reached,
-        max_depth,
-        average_depth_milli: ((depth_sum * 1000) / reached as u64) as u32,
-        histogram,
-    };
-    Ok((stats, table))
+    build_pruning_table_from_index_parallel(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        root_index,
+        moves,
+        1,
+        cancel,
+        report,
+    )
 }
 
 fn build_pruning_table_from_index_parallel(
@@ -979,13 +1036,19 @@ fn build_pruning_table_from_index_parallel(
     let mut max_depth = 0_u8;
     let mut expanded = 0_usize;
     let mut next_progress = progress_interval;
-    let mut empty_depths = 0_usize;
+    let tail_allowed = full_coordinate_reachability(spec, moves);
 
     for depth in 0..u8::MAX {
+        if reached == size {
+            break;
+        }
         if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
             return Err(CANCELLED.to_owned());
         }
 
+        let remaining = AtomicUsize::new(size - reached);
+        let can_fill = histogram[usize::from(depth)].saturating_mul(moves.len()) >= size - reached;
+        let track_remaining = can_fill || (tail_allowed && reached >= size / 2);
         let next_depth = depth + 1;
         let mut depth_expanded = 0_usize;
         let mut next_frontier = 0_usize;
@@ -1000,15 +1063,31 @@ fn build_pruning_table_from_index_parallel(
                     continue;
                 }
                 let table = &table;
+                let remaining = &remaining;
                 handles.push(scope.spawn(move || {
                     let mut values = vec![0; spec.components.len()];
                     let mut next_values = vec![0; spec.components.len()];
                     let mut local_expanded = 0_usize;
                     let mut local_reached = 0_usize;
                     let mut local_depth_sum = 0_u64;
+                    let mut local_histogram = vec![0_usize; 255];
+                    let mut window_start = Instant::now();
+                    let mut window_reached = 0_usize;
+                    let mut local_next_progress = next_progress.saturating_sub(expanded);
                     for idx in start..end {
+                        if idx & 8191 == 0 {
+                            if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+                                return Err(CANCELLED.to_owned());
+                            }
+                            if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
+                                break;
+                            }
+                        }
                         if table[idx].load(Ordering::Relaxed) != depth {
                             continue;
+                        }
+                        if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
+                            break;
                         }
                         local_expanded += 1;
                         if (local_expanded & 8191) == 0
@@ -1019,31 +1098,125 @@ fn build_pruning_table_from_index_parallel(
                         for &mv in moves {
                             let next =
                                 spec.next_index(idx, mv, tables, &mut values, &mut next_values);
-                            if table[next]
-                                .compare_exchange(
-                                    UNVISITED,
-                                    next_depth,
-                                    Ordering::Relaxed,
-                                    Ordering::Relaxed,
-                                )
-                                .is_ok()
+                            if table[next].load(Ordering::Relaxed) == UNVISITED
+                                && table[next]
+                                    .compare_exchange(
+                                        UNVISITED,
+                                        next_depth,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    )
+                                    .is_ok()
                             {
+                                if next_depth == UNVISITED {
+                                    return Err(
+                                        "pruning distance exceeds the table's byte representation"
+                                            .to_owned(),
+                                    );
+                                }
                                 local_reached += 1;
                                 local_depth_sum += u64::from(next_depth);
+                                local_histogram[usize::from(next_depth)] += 1;
+                                let last = track_remaining
+                                    && remaining.fetch_sub(1, Ordering::Relaxed) == 1;
+                                if last {
+                                    break;
+                                }
                             }
                         }
+                        if local_expanded % 2048 == 0 {
+                            let new = local_reached - window_reached;
+                            let bfs_rate =
+                                new as f64 / window_start.elapsed().as_secs_f64().max(1e-9);
+                            if tail_allowed
+                                && track_remaining
+                                && new < 512
+                                && remaining.load(Ordering::Relaxed) < size / 2
+                            {
+                                // Try small batches inside this unfinished BFS layer.
+                                // Recheck throughput after each batch and resume BFS if it loses.
+                                for batch in 0..16 {
+                                    let started = Instant::now();
+                                    let paths = probe_reverse_paths(
+                                        spec,
+                                        tables,
+                                        moves,
+                                        size,
+                                        idx.wrapping_add(batch * 7919),
+                                        depth,
+                                        bfs_rate,
+                                        |node| table[node].load(Ordering::Relaxed),
+                                        cancel,
+                                    )?;
+                                    let mut added = 0;
+                                    for (node, distance) in paths {
+                                        if table[node]
+                                            .compare_exchange(
+                                                UNVISITED,
+                                                distance,
+                                                Ordering::Relaxed,
+                                                Ordering::Relaxed,
+                                            )
+                                            .is_ok()
+                                        {
+                                            added += 1;
+                                            local_reached += 1;
+                                            local_depth_sum += u64::from(distance);
+                                            local_histogram[usize::from(distance)] += 1;
+                                            remaining.fetch_sub(1, Ordering::Relaxed);
+                                        }
+                                    }
+                                    if added == 0
+                                        || added as f64 / started.elapsed().as_secs_f64().max(1e-9)
+                                            <= bfs_rate * 1.25
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            window_start = Instant::now();
+                            window_reached = local_reached;
+                        }
+                        if worker_count == 1
+                            && progress_interval > 0
+                            && local_expanded >= local_next_progress
+                        {
+                            if let Some(report) = report {
+                                report(PruningProgress {
+                                    name: spec.name(),
+                                    depth: depth.into(),
+                                    expanded: expanded + local_expanded,
+                                    reached: reached + local_reached,
+                                    total: size,
+                                });
+                            }
+                            local_next_progress =
+                                local_next_progress.saturating_add(progress_interval);
+                        }
                     }
-                    Ok((local_expanded, local_reached, local_depth_sum))
+                    Ok((
+                        local_expanded,
+                        local_reached,
+                        local_depth_sum,
+                        local_histogram,
+                    ))
                 }));
             }
 
             for handle in handles {
-                let (local_expanded, local_reached, local_depth_sum) = handle
+                let (local_expanded, local_reached, local_depth_sum, local_histogram) = handle
                     .join()
                     .map_err(|_| "parallel pruning worker panicked".to_owned())??;
                 depth_expanded += local_expanded;
                 next_frontier += local_reached;
                 depth_sum_delta += local_depth_sum;
+                for (distance, count) in local_histogram.into_iter().enumerate() {
+                    if count > 0 {
+                        histogram.resize(histogram.len().max(distance + 1), 0);
+                        histogram[distance] += count;
+                        max_depth = max_depth.max(distance as u8);
+                    }
+                }
             }
             Ok(())
         })?;
@@ -1051,15 +1224,6 @@ fn build_pruning_table_from_index_parallel(
         expanded += depth_expanded;
         reached += next_frontier;
         depth_sum += depth_sum_delta;
-        if next_frontier > 0 {
-            max_depth = max_depth.max(next_depth);
-            let hist_idx = usize::from(next_depth);
-            if histogram.len() <= hist_idx {
-                histogram.resize(hist_idx + 1, 0);
-            }
-            histogram[hist_idx] = next_frontier;
-        }
-
         if progress_interval > 0 && expanded >= next_progress {
             eprintln!(
                 "  {}: expanded {}, reached {}, depth {}",
@@ -1091,19 +1255,8 @@ fn build_pruning_table_from_index_parallel(
                 reached
             );
         }
-        if next_frontier == 0 {
-            empty_depths += 1;
-            if empty_depths >= 2 {
-                if progress_interval > 0 {
-                    eprintln!(
-                        "  {}: no new states for two consecutive depths, done",
-                        spec.name()
-                    );
-                }
-                break;
-            }
-        } else {
-            empty_depths = 0;
+        if histogram.get(usize::from(next_depth)).copied().unwrap_or(0) == 0 {
+            break;
         }
     }
 
@@ -1344,10 +1497,208 @@ fn push_combinations(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicBool;
+
     use crate::{
+        moves::Move,
         pruning::{CandidateSpec, Component, evaluate_candidate},
         tables::TransitionTables,
     };
+
+    #[test]
+    fn reverse_search_fills_paths_across_an_incomplete_layer() {
+        // A directed 20-node cycle: BFS knows all distances through eight,
+        // plus one unrelated entry of the unfinished ninth-and-later layers.
+        let mut partial = [super::UNVISITED; 20];
+        for (idx, distance) in partial.iter_mut().enumerate().take(9) {
+            *distance = idx as u8;
+        }
+        partial[15] = 15;
+        for start in [9, 10, 11, 12] {
+            let (distance, path) = super::bounded_reverse_path(
+                start,
+                8,
+                &[Move::U],
+                &|idx| partial[idx],
+                &mut |idx, mv| {
+                    assert_eq!(mv, Move::Up);
+                    (idx + 19) % 20
+                },
+                None,
+            )
+            .unwrap()
+            .expect("should connect to the completed eighth layer");
+            assert_eq!(distance, start as u8);
+            assert_eq!(path, (8..=start).rev().collect::<Vec<_>>());
+            for (step, idx) in path.into_iter().enumerate() {
+                assert_eq!(distance - step as u8, idx as u8);
+            }
+        }
+        assert!(
+            super::bounded_reverse_path(
+                13,
+                8,
+                &[Move::U],
+                &|idx| partial[idx],
+                &mut |idx, _| (idx + 19) % 20,
+                None,
+            )
+            .unwrap()
+            .is_none(),
+            "a case beyond the lookahead should fall back to BFS"
+        );
+    }
+
+    #[test]
+    fn reverse_search_proves_shortest_distance_and_bounds_dead_ends() {
+        // Move U visits an exact but distant anchor first; move F reaches the
+        // eighth layer. Accepting the first anchor would overestimate 9 as 12.
+        let values = [super::UNVISITED, 11, 8];
+        let result = super::bounded_reverse_path(
+            0,
+            8,
+            &[Move::U, Move::F],
+            &|idx| values[idx],
+            &mut |_, mv| if mv == Move::Up { 1 } else { 2 },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result, (9, vec![0, 2]));
+
+        let mut steps = 0;
+        assert!(
+            super::bounded_reverse_path(
+                0,
+                8,
+                &Move::ALL,
+                &|_| super::UNVISITED,
+                &mut |idx, _| {
+                    steps += 1;
+                    idx + 1
+                },
+                None,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(steps <= 2048);
+        let cancel = AtomicBool::new(true);
+        assert_eq!(
+            super::bounded_reverse_path(
+                0,
+                8,
+                &[Move::U],
+                &|_| super::UNVISITED,
+                &mut |idx, _| idx + 1,
+                Some(&cancel),
+            )
+            .unwrap_err(),
+            super::CANCELLED
+        );
+    }
+
+    #[test]
+    fn reverse_search_requires_a_full_reachability_certificate() {
+        let corner = CandidateSpec::new(vec![Component::Corner]);
+        assert!(!super::full_coordinate_reachability(
+            &corner,
+            &[Move::R, Move::U]
+        ));
+        assert!(!super::full_coordinate_reachability(&corner, &[]));
+        assert!(super::full_coordinate_reachability(&corner, &Move::ALL));
+        assert!(super::full_coordinate_reachability(
+            &CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
+            &Move::ALL,
+        ));
+        assert!(!super::full_coordinate_reachability(
+            &CandidateSpec::new(vec![Component::E0, Component::E1]),
+            &Move::ALL,
+        ));
+    }
+
+    #[test]
+    #[ignore = "builds corner transition tables; run in release mode"]
+    fn adaptive_build_matches_queue_bfs() {
+        let tables = TransitionTables::corner_only_for_tests();
+        let spec = CandidateSpec::new(vec![Component::Corner]);
+        for moves in [
+            Move::ALL.to_vec(),
+            vec![Move::R, Move::U],
+            vec![Move::U],
+            vec![],
+        ] {
+            for root in [spec.solved_index(), 1234] {
+                let mut expected = vec![super::UNVISITED; spec.size().unwrap()];
+                expected[root] = 0;
+                let mut queue = VecDeque::from([root]);
+                let mut values = [0];
+                let mut next_values = [0];
+                while let Some(idx) = queue.pop_front() {
+                    for &mv in &moves {
+                        let next = spec.next_index(idx, mv, &tables, &mut values, &mut next_values);
+                        if expected[next] == super::UNVISITED {
+                            expected[next] = expected[idx] + 1;
+                            queue.push_back(next);
+                        }
+                    }
+                }
+                let mut expected_histogram = vec![0; 1];
+                let mut sum = 0_u64;
+                for &depth in &expected {
+                    if depth != super::UNVISITED {
+                        expected_histogram
+                            .resize(expected_histogram.len().max(depth as usize + 1), 0);
+                        expected_histogram[depth as usize] += 1;
+                        sum += u64::from(depth);
+                    }
+                }
+                let reached = expected_histogram.iter().sum::<usize>();
+                for threads in [1, 4] {
+                    let (stats, actual) = super::build_pruning_table_from_index_threaded(
+                        &spec,
+                        &tables,
+                        usize::MAX,
+                        0,
+                        root,
+                        &moves,
+                        threads,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "moves {moves:?}, root {root}, threads {threads}"
+                    );
+                    assert_eq!(stats.reached, reached);
+                    assert_eq!(stats.histogram, expected_histogram);
+                    assert_eq!(stats.max_depth as usize + 1, expected_histogram.len());
+                    assert_eq!(
+                        stats.average_depth_milli,
+                        ((sum * 1000) / reached as u64) as u32
+                    );
+                }
+            }
+        }
+
+        let cancel = AtomicBool::new(true);
+        for threads in [1, 4] {
+            let result = super::build_pruning_table_from_index_threaded(
+                &spec,
+                &tables,
+                usize::MAX,
+                0,
+                spec.solved_index(),
+                &Move::ALL,
+                threads,
+                Some(&cancel),
+                None,
+            );
+            assert_eq!(result.unwrap_err(), super::CANCELLED);
+        }
+    }
 
     #[test]
     #[ignore = "builds full transition tables"]

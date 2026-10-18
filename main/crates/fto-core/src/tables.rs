@@ -37,6 +37,22 @@ pub struct TransitionTables {
 }
 
 impl TransitionTables {
+    #[cfg(test)]
+    pub(crate) fn corner_only_for_tests() -> Self {
+        Self {
+            corner: build_corner_table(&move_cubies(), None),
+            edge_choice: Vec::new(),
+            edge3: Vec::new(),
+            edge4: Vec::new(),
+            uf_center: Vec::new(),
+            rl_center: Vec::new(),
+            uf_center2: Vec::new(),
+            uf_center3: Vec::new(),
+            rl_center2: Vec::new(),
+            rl_center3: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn build() -> Self {
         Self::build_reporting(None)
