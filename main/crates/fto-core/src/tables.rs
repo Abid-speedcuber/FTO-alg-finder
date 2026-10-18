@@ -38,6 +38,51 @@ pub struct TransitionTables {
 
 impl TransitionTables {
     #[cfg(test)]
+    pub(crate) fn add_ru_search_transitions_for_tests(&mut self) {
+        let moves = move_cubies();
+        self.edge_choice = build_edge_choice_table(&moves, None);
+        let root = FtoCoord::solved();
+        for (table, is_uf, start) in [
+            (&mut self.uf_center, true, root.uf_center),
+            (&mut self.rl_center, false, root.rl_center),
+        ] {
+            *table = vec![[0; MOVE_COUNT]; CENTER_COUNT];
+            let mut seen = vec![false; CENTER_COUNT];
+            let mut queue = vec![start];
+            seen[start as usize] = true;
+            let mut head = 0;
+            while head < queue.len() {
+                let value = queue[head];
+                head += 1;
+                let colors = unrank_center_colors(value);
+                for mv in [Move::R, Move::Rp, Move::U, Move::Up] {
+                    let permutation = if is_uf {
+                        &moves[mv.idx()].uf
+                    } else {
+                        &moves[mv.idx()].rl
+                    };
+                    let next = rank_center_colors(&apply_color_perm(&colors, permutation));
+                    table[value as usize][mv.idx()] = next;
+                    if !seen[next as usize] {
+                        seen[next as usize] = true;
+                        queue.push(next);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn solver_components_for_tests() -> Self {
+        let mut tables = Self::corner_only_for_tests();
+        let moves = move_cubies();
+        tables.edge3 = build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS, None);
+        tables.uf_center3 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS, None);
+        tables
+    }
+
+    #[cfg(test)]
     pub(crate) fn corner_only_for_tests() -> Self {
         Self {
             corner: build_corner_table(&move_cubies(), None),

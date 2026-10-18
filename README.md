@@ -95,6 +95,7 @@ Alg combiner:
 - Search cost rises quickly as the allowed move set grows.
 - Search cost also rises quickly as the requested depth increases.
 - The pruning table is large. Searches can require substantial memory and disk cache.
+- Restricted solver tables use compact coordinate orbits when they substantially reduce RAM. Move tables precompute compact pruning indices, keeping heuristic reads direct; generation uses the reduced spaces too. Existing cache files remain compatible. Large coordinate orbits retain dense storage.
 - Because the app is divided into solver instances, different instance move sets may need different pruning-table data. In practice, that can mean more than one set of pruning tables on disk.
 - The GUI links the Rust solver core directly, so desktop builds produce a single app binary.
 - Very deep exact searches may need bidirectional memory measured in GiB.

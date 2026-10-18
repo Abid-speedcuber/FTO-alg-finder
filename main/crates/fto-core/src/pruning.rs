@@ -14,6 +14,9 @@ use crate::{
     tables::TransitionTables,
 };
 
+mod subgroup;
+use subgroup::CompactIndexing;
+
 const UNVISITED: u8 = u8::MAX;
 const PRUN_MAGIC: &[u8; 16] = b"FTO_PRUN_V1\0\0\0\0\0";
 
@@ -168,6 +171,7 @@ impl PatternDatabases {
 pub struct SolverPruning {
     edge3_uf3: Vec<u8>,
     corner_uf3: Vec<u8>,
+    compact: Option<CompactIndexing>,
 }
 
 impl SolverPruning {
@@ -220,6 +224,27 @@ impl SolverPruning {
         let file_suffix = move_set_codename(&suffix);
         let edge_path = out_dir.join(format!("e3cf3_{file_suffix}.prun"));
         let corner_path = out_dir.join(format!("ccf3_{file_suffix}.prun"));
+        if let Some(compact) = CompactIndexing::build(tables, moves, FtoCoord::solved()) {
+            let edge3_uf3 = compact.load_or_build(
+                subgroup::Kind::Edge,
+                &edge_path,
+                progress_interval,
+                cancel,
+                report,
+            )?;
+            let corner_uf3 = compact.load_or_build(
+                subgroup::Kind::Corner,
+                &corner_path,
+                progress_interval,
+                cancel,
+                report,
+            )?;
+            return Ok(Self {
+                edge3_uf3,
+                corner_uf3,
+                compact: Some(compact),
+            });
+        }
         let edge3_uf3 = load_or_build_solver_table(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             tables,
@@ -243,6 +268,7 @@ impl SolverPruning {
         Ok(Self {
             edge3_uf3,
             corner_uf3,
+            compact: None,
         })
     }
 
@@ -270,6 +296,17 @@ impl SolverPruning {
         moves: &[Move],
         threads: usize,
     ) -> Result<Self, String> {
+        if let Some(compact) = CompactIndexing::build(tables, moves, root) {
+            let edge3_uf3 =
+                compact.build_table(subgroup::Kind::Edge, progress_interval, None, None)?;
+            let corner_uf3 =
+                compact.build_table(subgroup::Kind::Corner, progress_interval, None, None)?;
+            return Ok(Self {
+                edge3_uf3,
+                corner_uf3,
+                compact: Some(compact),
+            });
+        }
         let edge3_uf3 = build_solver_table_from_root(
             CandidateSpec::new(vec![Component::Edge3, Component::UfCenter3]),
             root,
@@ -289,12 +326,88 @@ impl SolverPruning {
         Ok(Self {
             edge3_uf3,
             corner_uf3,
+            compact: None,
         })
     }
 
+    #[inline]
     #[must_use]
     pub fn heuristic(&self, edge3_uf3_idx: usize, corner_uf3_idx: usize) -> u8 {
+        if let Some(compact) = &self.compact {
+            return compact
+                .value(subgroup::Kind::Edge, &self.edge3_uf3, edge3_uf3_idx)
+                .max(compact.value(subgroup::Kind::Corner, &self.corner_uf3, corner_uf3_idx));
+        }
         live_depth(self.edge3_uf3[edge3_uf3_idx]).max(live_depth(self.corner_uf3[corner_uf3_idx]))
+    }
+
+    /// Reads indices already carried in the search state's coordinate system.
+    #[inline]
+    pub(crate) fn heuristic_cached(&self, edge: usize, corner: usize) -> u8 {
+        self.edge3_uf3[edge].max(self.corner_uf3[corner])
+    }
+
+    /// Select the move strategy once; dense searches keep their original path.
+    pub(crate) fn for_moves(&self) -> Option<&Self> {
+        self.compact.as_ref().map(|_| self)
+    }
+
+    #[inline(always)]
+    pub(crate) fn compact_step(
+        &self,
+        tables: &TransitionTables,
+        corner: u16,
+        edge: u16,
+        uf: u16,
+        mv: Move,
+    ) -> Option<subgroup::CompactChild> {
+        let compact = self.compact.as_ref()?;
+        if let Some(child) = compact.step(corner, edge, uf, mv) {
+            return Some(child);
+        }
+        let corner = tables.corner_move(corner, mv);
+        let edge3 = tables.edge3_move(edge, mv);
+        let uf3 = tables.uf_center3_move(uf, mv);
+        let (edge_index, corner_index) = compact.cache_indices(corner, edge3, uf3, false);
+        Some(subgroup::CompactChild {
+            corner,
+            edge3,
+            uf3,
+            edge_index,
+            corner_index,
+        })
+    }
+
+    #[inline]
+    pub(crate) fn cache_indices(
+        &self,
+        corner: u16,
+        edge: u16,
+        uf: u16,
+        reject_outside: bool,
+    ) -> Option<(usize, usize)> {
+        Some(
+            self.compact
+                .as_ref()?
+                .cache_indices(corner, edge, uf, reject_outside),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dense_reference_for_tests(&self) -> Self {
+        let compact = self.compact.as_ref().expect("needs a compact source");
+        Self {
+            edge3_uf3: compact.expand_for_tests(subgroup::Kind::Edge, &self.edge3_uf3),
+            corner_uf3: compact.expand_for_tests(subgroup::Kind::Corner, &self.corner_uf3),
+            compact: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verify_distances_for_tests(&self, tables: &TransitionTables) {
+        let compact = self.compact.as_ref().expect("needs compact storage");
+        compact.verify_distances_for_tests(subgroup::Kind::Edge, &self.edge3_uf3, tables);
+        compact.verify_distances_for_tests(subgroup::Kind::Corner, &self.corner_uf3, tables);
     }
 
     #[must_use]
@@ -317,7 +430,9 @@ impl SolverPruning {
 
     #[must_use]
     pub fn total_bytes(&self) -> usize {
-        self.edge3_uf3.len() + self.corner_uf3.len()
+        self.edge3_uf3.len()
+            + self.corner_uf3.len()
+            + self.compact.as_ref().map_or(0, CompactIndexing::bytes)
     }
 }
 
