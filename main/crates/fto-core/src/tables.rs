@@ -39,6 +39,11 @@ pub struct TransitionTables {
 impl TransitionTables {
     #[cfg(test)]
     pub(crate) fn add_ru_search_transitions_for_tests(&mut self) {
+        self.add_search_transitions_for_tests(&[Move::R, Move::Rp, Move::U, Move::Up]);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_search_transitions_for_tests(&mut self, allowed: &[Move]) {
         let moves = move_cubies();
         self.edge_choice = build_edge_choice_table(&moves, None);
         let root = FtoCoord::solved();
@@ -55,7 +60,7 @@ impl TransitionTables {
                 let value = queue[head];
                 head += 1;
                 let colors = unrank_center_colors(value);
-                for mv in [Move::R, Move::Rp, Move::U, Move::Up] {
+                for &mv in allowed {
                     let permutation = if is_uf {
                         &moves[mv.idx()].uf
                     } else {

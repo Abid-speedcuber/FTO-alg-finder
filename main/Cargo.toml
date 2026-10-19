@@ -10,6 +10,14 @@ resolver = "3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
+# Keep Tauri's development workflow while compiling the solver at release speed.
+[profile.dev.package.fto-core]
+opt-level = 3
+codegen-units = 16
+incremental = false
+debug-assertions = false
+overflow-checks = false
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

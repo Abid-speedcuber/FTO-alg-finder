@@ -172,6 +172,7 @@ pub struct SolverPruning {
     edge3_uf3: Vec<u8>,
     corner_uf3: Vec<u8>,
     compact: Option<CompactIndexing>,
+    orbit_swap: Option<crate::symmetry::OrbitSwap>,
 }
 
 impl SolverPruning {
@@ -243,6 +244,7 @@ impl SolverPruning {
                 edge3_uf3,
                 corner_uf3,
                 compact: Some(compact),
+                orbit_swap: crate::symmetry::OrbitSwap::for_moves(moves),
             });
         }
         let edge3_uf3 = load_or_build_solver_table(
@@ -269,6 +271,7 @@ impl SolverPruning {
             edge3_uf3,
             corner_uf3,
             compact: None,
+            orbit_swap: crate::symmetry::OrbitSwap::for_moves(moves),
         })
     }
 
@@ -305,6 +308,9 @@ impl SolverPruning {
                 edge3_uf3,
                 corner_uf3,
                 compact: Some(compact),
+                orbit_swap: (root == FtoCoord::solved())
+                    .then(|| crate::symmetry::OrbitSwap::for_moves(moves))
+                    .flatten(),
             });
         }
         let edge3_uf3 = build_solver_table_from_root(
@@ -327,6 +333,9 @@ impl SolverPruning {
             edge3_uf3,
             corner_uf3,
             compact: None,
+            orbit_swap: (root == FtoCoord::solved())
+                .then(|| crate::symmetry::OrbitSwap::for_moves(moves))
+                .flatten(),
         })
     }
 
@@ -347,9 +356,58 @@ impl SolverPruning {
         self.edge3_uf3[edge].max(self.corner_uf3[corner])
     }
 
-    /// Select the move strategy once; dense searches keep their original path.
+    /// Select extra coordinate work once; ordinary dense searches keep their original path.
     pub(crate) fn for_moves(&self) -> Option<&Self> {
-        self.compact.as_ref().map(|_| self)
+        (self.compact.is_some() || self.orbit_swap.is_some()).then_some(self)
+    }
+
+    #[inline]
+    pub(crate) fn has_orbit_swap(&self) -> bool {
+        self.orbit_swap.is_some()
+    }
+
+    pub(crate) fn swapped_root(&self, coord: FtoCoord) -> crate::symmetry::SwappedPruning {
+        let Some(swap) = &self.orbit_swap else {
+            return crate::symmetry::SwappedPruning::default();
+        };
+        let mut projected = crate::symmetry::OrbitSwap::project(coord);
+        projected.bound = self.swapped_bound(swap.corner(coord.corner), projected);
+        projected
+    }
+
+    #[inline]
+    pub(crate) fn swapped_step(
+        &self,
+        tables: &TransitionTables,
+        parent: crate::symmetry::SwappedPruning,
+        corner: u16,
+        mv: Move,
+    ) -> crate::symmetry::SwappedPruning {
+        let Some(swap) = &self.orbit_swap else {
+            return crate::symmetry::SwappedPruning::default();
+        };
+        let mapped = crate::symmetry::OrbitSwap::map_move(mv)
+            .expect("orbit-swap pruning requires a symmetry-closed move set");
+        let mut child = crate::symmetry::SwappedPruning {
+            edge3: tables.edge3_move(parent.edge3, mapped),
+            uf3: tables.uf_center3_move(parent.uf3, mapped),
+            bound: 0,
+        };
+        child.bound = self.swapped_bound(swap.corner(corner), child);
+        child
+    }
+
+    #[inline]
+    fn swapped_bound(&self, corner: u16, projected: crate::symmetry::SwappedPruning) -> u8 {
+        let (edge_index, corner_index) = self
+            .cache_indices(corner, projected.edge3, projected.uf3, false)
+            .unwrap_or_else(|| {
+                (
+                    Self::edge3_uf3_index(projected.edge3, projected.uf3),
+                    Self::corner_uf3_index(corner, projected.uf3),
+                )
+            });
+        self.heuristic_cached(edge_index, corner_index)
     }
 
     #[inline(always)]
@@ -394,12 +452,20 @@ impl SolverPruning {
     }
 
     #[cfg(test)]
+    pub(crate) fn without_swap_for_tests(&self) -> Self {
+        let mut copy = self.clone();
+        copy.orbit_swap = None;
+        copy
+    }
+
+    #[cfg(test)]
     pub(crate) fn dense_reference_for_tests(&self) -> Self {
         let compact = self.compact.as_ref().expect("needs a compact source");
         Self {
             edge3_uf3: compact.expand_for_tests(subgroup::Kind::Edge, &self.edge3_uf3),
             corner_uf3: compact.expand_for_tests(subgroup::Kind::Corner, &self.corner_uf3),
             compact: None,
+            orbit_swap: self.orbit_swap.clone(),
         }
     }
 
@@ -416,6 +482,7 @@ impl SolverPruning {
             Self::edge3_uf3_index(coord.edge3, coord.uf_center3),
             Self::corner_uf3_index(coord.corner, coord.uf_center3),
         )
+        .max(self.swapped_root(coord).bound)
     }
 
     #[must_use]
@@ -433,6 +500,10 @@ impl SolverPruning {
         self.edge3_uf3.len()
             + self.corner_uf3.len()
             + self.compact.as_ref().map_or(0, CompactIndexing::bytes)
+            + self
+                .orbit_swap
+                .as_ref()
+                .map_or(0, crate::symmetry::OrbitSwap::bytes)
     }
 }
 

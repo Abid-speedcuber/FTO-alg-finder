@@ -126,11 +126,16 @@ function FaceColorSwatch({
   }
 
   useEffect(() => {
-    if (!anchorRef.current || pickrRef.current) {
+    const anchor = anchorRef.current;
+    if (!anchor || pickrRef.current) {
       return;
     }
+    // Pickr replaces its mount node. Keep React's host intact so effect
+    // cleanup/setup can run again in StrictMode and during hot reloads.
+    const mount = document.createElement("div");
+    anchor.appendChild(mount);
     const pickr = Pickr.create({
-      el: anchorRef.current,
+      el: mount,
       theme: "nano",
       appClass: "fto-pickr-app",
       default: color,
@@ -184,12 +189,14 @@ function FaceColorSwatch({
     }
     paintPickrButton(pickr, color);
     pickr.on("init", () => paintPickrButton(pickr, color));
-    requestAnimationFrame(() => paintPickrButton(pickr, color));
-    window.setTimeout(() => paintPickrButton(pickr, color), 50);
+    const paintFrame = requestAnimationFrame(() => paintPickrButton(pickr, color));
+    const paintTimeout = window.setTimeout(() => paintPickrButton(pickr, color), 50);
     pickrRef.current = pickr;
     return () => {
-      pickr.destroyAndRemove();
+      cancelAnimationFrame(paintFrame);
+      window.clearTimeout(paintTimeout);
       pickrRef.current = null;
+      pickr.destroyAndRemove();
     };
   }, [index]);
 

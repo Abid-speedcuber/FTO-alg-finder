@@ -2,6 +2,7 @@ use crate::{
     FtoCoord, FtoCubie,
     moves::{MOVE_COUNT, Move, move_cubies},
     pruning::{PatternDatabases, SolverPruning},
+    symmetry::SwappedPruning,
     tables::TransitionTables,
 };
 use std::{
@@ -438,7 +439,7 @@ pub fn should_use_bidirectional_exact_with_pruning(
     max_stored_paths: usize,
     endpoint_count: usize,
 ) -> BidirectionalChoice {
-    let start = SearchState::from_coord(coord).with_pruning_indices(pruning, true);
+    let start = SearchState::from_coord(coord).with_pruning_indices(pruning, true, coord);
     let solved = SearchState::from_coord(FtoCoord::solved());
     let fwd_depth = depth / 2;
     let back_depth = depth - fwd_depth;
@@ -531,7 +532,8 @@ fn estimate_pruned_tree(
                 if last_move.is_some_and(|last| should_skip_after(&commute, last, mv)) {
                     continue;
                 }
-                let pruning_child = state.apply_pruning_with(tables, mv, move_pruning);
+                let pruning_child =
+                    state.apply_pruning_bounded(tables, mv, move_pruning, goal_slack + child_depth);
                 if pruning_value_for_child(pruning_child, pruning) > goal_slack + child_depth {
                     continue;
                 }
@@ -601,13 +603,21 @@ fn scaled_ceil(value: u128, factor: f64) -> u128 {
 
 fn pruning_value_for_state(state: SearchState, pruning: Option<&SolverPruning>) -> u8 {
     pruning
-        .map(|pruning| pruning.heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx))
+        .map(|pruning| {
+            pruning
+                .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
+                .max(state.swapped.bound)
+        })
         .unwrap_or(0)
 }
 
 fn pruning_value_for_child(child: PruningChild, pruning: Option<&SolverPruning>) -> u8 {
     pruning
-        .map(|pruning| pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx))
+        .map(|pruning| {
+            pruning
+                .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                .max(child.swapped.bound)
+        })
         .unwrap_or(0)
 }
 
@@ -898,7 +908,7 @@ fn solve_with_pruning_threads_impl(
     }
 
     let root = SearchState::from_coord(coord)
-        .with_pruning_indices(pruning, !config.free_u_ends)
+        .with_pruning_indices(pruning, !config.free_u_ends, coord)
         .with_mini_indices(coord, mini);
     let solved = SearchState::from_coord(FtoCoord::solved());
     let solved_u = SearchState::from_coord(FtoCubie::solved().apply(Move::U).coord());
@@ -921,7 +931,9 @@ fn solve_with_pruning_threads_impl(
             {
                 total.nodes += 1;
                 let raw_pruning = pruning.map(|pruning| {
-                    pruning.heuristic_cached(start.edge3_uf3_idx, start.corner_uf3_idx)
+                    pruning
+                        .heuristic_cached(start.edge3_uf3_idx, start.corner_uf3_idx)
+                        .max(start.swapped.bound)
                 });
                 if let Some(suffix) = free_u_suffix_with_raw_pruning(
                     start,
@@ -1062,7 +1074,7 @@ pub fn solve_bidirectional(
     let back_depth = config.depth - fwd_depth;
     let commute = move_commutation();
     let solved = SearchState::from_coord(FtoCoord::solved());
-    let start = SearchState::from_coord(coord).with_pruning_indices(pruning, true);
+    let start = SearchState::from_coord(coord).with_pruning_indices(pruning, true, coord);
     let allowed_moves = config.allowed_moves.as_slice();
     let start_pruning = if config.use_start_pruning {
         eprintln!("building temporary start-centered bidirectional pruning tables...");
@@ -1090,7 +1102,7 @@ pub fn solve_bidirectional(
         paths: HashMap::new(),
     };
     back.build(
-        solved.with_pruning_indices(start_pruning.as_ref(), true),
+        solved.with_pruning_indices(start_pruning.as_ref(), true, FtoCoord::solved()),
         back_depth,
         None,
         0,
@@ -1298,7 +1310,7 @@ fn solve_with_pruning_single(
         nodes: 0,
     };
     let state = SearchState::from_coord(coord)
-        .with_pruning_indices(pruning, !config.free_u_ends)
+        .with_pruning_indices(pruning, !config.free_u_ends, coord)
         .with_mini_indices(coord, mini);
 
     for depth in config.min_depth..=config.max_depth {
@@ -1567,10 +1579,11 @@ impl SearchContext<'_> {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
+            let pruning_child = state.apply_pruning_bounded(
                 self.tables,
                 mv,
                 if COMPACT { self.move_pruning } else { None },
+                child_depth.saturating_add(u8::from(self.config.free_u_ends)),
             );
             let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
             let pruning_value = raw_child_pruning
@@ -1615,13 +1628,19 @@ impl SearchContext<'_> {
     }
 
     fn raw_pruning_value(&self, state: SearchState) -> Option<u8> {
-        self.pruning
-            .map(|pruning| pruning.heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx))
+        self.pruning.map(|pruning| {
+            pruning
+                .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
+                .max(state.swapped.bound)
+        })
     }
 
     fn raw_pruning_value_for_child(&self, child: PruningChild) -> Option<u8> {
-        self.pruning
-            .map(|pruning| pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx))
+        self.pruning.map(|pruning| {
+            pruning
+                .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                .max(child.swapped.bound)
+        })
     }
 
     fn should_skip_after(&self, last: Move, current: Move) -> bool {
@@ -1764,10 +1783,11 @@ impl SearchRootCollector<'_> {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
+            let pruning_child = state.apply_pruning_bounded(
                 self.tables,
                 mv,
                 if COMPACT { self.move_pruning } else { None },
+                child_depth.saturating_add(u8::from(self.config.free_u_ends)),
             );
             let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
             let pruning_value = raw_child_pruning
@@ -1804,13 +1824,19 @@ impl SearchRootCollector<'_> {
     }
 
     fn raw_pruning_value(&self, state: SearchState) -> Option<u8> {
-        self.pruning
-            .map(|pruning| pruning.heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx))
+        self.pruning.map(|pruning| {
+            pruning
+                .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
+                .max(state.swapped.bound)
+        })
     }
 
     fn raw_pruning_value_for_child(&self, child: PruningChild) -> Option<u8> {
-        self.pruning
-            .map(|pruning| pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx))
+        self.pruning.map(|pruning| {
+            pruning
+                .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                .max(child.swapped.bound)
+        })
     }
 }
 
@@ -2166,10 +2192,11 @@ impl BackwardBuilder<'_> {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
+            let pruning_child = state.apply_pruning_bounded(
                 self.tables,
                 mv,
                 if COMPACT { self.move_pruning } else { None },
+                self.goal_slack + depth_left - 1,
             );
             if self.pruning_value_for_child(pruning_child) > self.goal_slack + depth_left - 1 {
                 continue;
@@ -2187,13 +2214,21 @@ impl BackwardBuilder<'_> {
 
     fn pruning_value(&self, state: SearchState) -> u8 {
         self.pruning
-            .map(|pruning| pruning.heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx))
+            .map(|pruning| {
+                pruning
+                    .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
+                    .max(state.swapped.bound)
+            })
             .unwrap_or(0)
     }
 
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
         self.pruning
-            .map(|pruning| pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx))
+            .map(|pruning| {
+                pruning
+                    .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                    .max(child.swapped.bound)
+            })
             .unwrap_or(0)
     }
 }
@@ -2255,10 +2290,11 @@ impl ForwardMatcher<'_> {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
+            let pruning_child = state.apply_pruning_bounded(
                 self.tables,
                 mv,
                 if COMPACT { self.move_pruning } else { None },
+                self.goal_slack + depth_left - 1,
             );
             if self.pruning_value_for_child(pruning_child) > self.goal_slack + depth_left - 1 {
                 continue;
@@ -2275,13 +2311,21 @@ impl ForwardMatcher<'_> {
 
     fn pruning_value(&self, state: SearchState) -> u8 {
         self.pruning
-            .map(|pruning| pruning.heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx))
+            .map(|pruning| {
+                pruning
+                    .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
+                    .max(state.swapped.bound)
+            })
             .unwrap_or(0)
     }
 
     fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
         self.pruning
-            .map(|pruning| pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx))
+            .map(|pruning| {
+                pruning
+                    .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                    .max(child.swapped.bound)
+            })
             .unwrap_or(0)
     }
 }
@@ -2519,6 +2563,7 @@ struct SearchState {
     edge3_uf3_idx: usize,
     corner_uf3_idx: usize,
     mini_indices: [usize; MAX_MINI_TABLES],
+    swapped: SwappedPruning,
 }
 
 impl PartialEq for SearchState {
@@ -2644,6 +2689,7 @@ impl LastLayerState {
                 ll_uf_center_b: tables.uf_center3_move(self.ll_uf_center_b, mv),
                 edge3_uf3_idx: child.edge_index,
                 corner_uf3_idx: child.corner_index,
+                swapped: SwappedPruning::default(),
             };
         }
         self.apply_pruning(tables, mv)
@@ -2663,6 +2709,7 @@ impl LastLayerState {
             ll_uf_center_b,
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
             corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+            swapped: SwappedPruning::default(),
         }
     }
 
@@ -2706,6 +2753,7 @@ impl SearchState {
             edge3_uf3_idx: SolverPruning::edge3_uf3_index(coord.edge3, coord.uf_center3),
             corner_uf3_idx: SolverPruning::corner_uf3_index(coord.corner, coord.uf_center3),
             mini_indices: [0; MAX_MINI_TABLES],
+            swapped: SwappedPruning::default(),
         }
     }
 
@@ -2713,12 +2761,16 @@ impl SearchState {
         mut self,
         pruning: Option<&SolverPruning>,
         reject_outside: bool,
+        coord: FtoCoord,
     ) -> Self {
         if let Some((edge, corner)) = pruning.and_then(|pruning| {
             pruning.cache_indices(self.corner, self.edge3, self.uf3, reject_outside)
         }) {
             self.edge3_uf3_idx = edge;
             self.corner_uf3_idx = corner;
+        }
+        if let Some(pruning) = pruning {
+            self.swapped = pruning.swapped_root(coord);
         }
         self
     }
@@ -2742,10 +2794,22 @@ impl SearchState {
         mv: Move,
         pruning: Option<&SolverPruning>,
     ) -> PruningChild {
-        if let Some(child) = pruning
+        self.apply_pruning_bounded(tables, mv, pruning, u8::MAX)
+    }
+
+    /// Skip the rotated projection when the original bound already rejects the child.
+    #[inline(always)]
+    fn apply_pruning_bounded(
+        self,
+        tables: &TransitionTables,
+        mv: Move,
+        pruning: Option<&SolverPruning>,
+        bound: u8,
+    ) -> PruningChild {
+        let mut child = if let Some(child) = pruning
             .and_then(|pruning| pruning.compact_step(tables, self.corner, self.edge3, self.uf3, mv))
         {
-            return PruningChild {
+            PruningChild {
                 corner: child.corner,
                 edge3: child.edge3,
                 uf3: child.uf3,
@@ -2753,20 +2817,31 @@ impl SearchState {
                 ll_uf_center_b: 0,
                 edge3_uf3_idx: child.edge_index,
                 corner_uf3_idx: child.corner_index,
-            };
+                swapped: SwappedPruning::default(),
+            }
+        } else {
+            let corner = tables.corner_move(self.corner, mv);
+            let edge3 = tables.edge3_move(self.edge3, mv);
+            let uf3 = tables.uf_center3_move(self.uf3, mv);
+            PruningChild {
+                corner,
+                edge3,
+                uf3,
+                ll_uf_center_a: 0,
+                ll_uf_center_b: 0,
+                edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
+                corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+                swapped: SwappedPruning::default(),
+            }
+        };
+        if let Some(pruning) = pruning {
+            if pruning.has_orbit_swap()
+                && pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx) <= bound
+            {
+                child.swapped = pruning.swapped_step(tables, self.swapped, child.corner, mv);
+            }
         }
-        let corner = tables.corner_move(self.corner, mv);
-        let edge3 = tables.edge3_move(self.edge3, mv);
-        let uf3 = tables.uf_center3_move(self.uf3, mv);
-        PruningChild {
-            corner,
-            edge3,
-            uf3,
-            ll_uf_center_a: 0,
-            ll_uf_center_b: 0,
-            edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
-            corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
-        }
+        child
     }
 
     fn apply_with_pruning_child(
@@ -2786,6 +2861,7 @@ impl SearchState {
             edge3_uf3_idx: pruning_child.edge3_uf3_idx,
             corner_uf3_idx: pruning_child.corner_uf3_idx,
             mini_indices: self.mini_indices,
+            swapped: pruning_child.swapped,
         }
     }
 
@@ -2813,6 +2889,7 @@ struct PruningChild {
     ll_uf_center_b: u16,
     edge3_uf3_idx: usize,
     corner_uf3_idx: usize,
+    swapped: SwappedPruning,
 }
 
 impl PruningChild {
@@ -2858,9 +2935,235 @@ mod tests {
         FtoCoord, FtoCubie,
         coord::EdgeCoord,
         moves::Move,
-        search::{SearchConfig, SearchState},
+        search::{SearchConfig, SearchState, SwappedPruning},
         tables::TransitionTables,
     };
+
+    #[test]
+    #[ignore = "builds real pruning/transition tables and a dense reference; run in release mode"]
+    fn orbit_swap_pruning_is_admissible_and_preserves_solutions() {
+        use std::collections::{HashMap, VecDeque};
+        let mut tables = TransitionTables::solver_components_for_tests();
+        let moves = [Move::F, Move::Fp, Move::R, Move::Rp];
+        let pruning =
+            SolverPruning::build_from_coord_with_moves(FtoCoord::solved(), &tables, 0, &moves)
+                .unwrap();
+        let baseline = pruning.without_swap_for_tests();
+        assert_eq!(pruning.total_bytes() - baseline.total_bytes(), 23_040);
+        let dense = pruning.dense_reference_for_tests();
+
+        // Independent full-cubie BFS gives exact distances, including states
+        // whose rotated edge coloring cannot be recovered from the old edge3.
+        let solved = FtoCubie::solved();
+        let mut distances = HashMap::from([(solved, 0_u8)]);
+        let mut queue = VecDeque::from([solved]);
+        while let Some(cubie) = queue.pop_front() {
+            let distance = distances[&cubie];
+            let coord = cubie.coord();
+            assert!(pruning.heuristic_for_coord(coord) <= distance);
+            if distance == 6 {
+                continue;
+            }
+            for mv in moves {
+                let child = cubie.apply(mv);
+                if let std::collections::hash_map::Entry::Vacant(entry) = distances.entry(child) {
+                    entry.insert(distance + 1);
+                    queue.push_back(child);
+                }
+            }
+        }
+        eprintln!(
+            "verified admissibility against {} exact full-cubie distances",
+            distances.len()
+        );
+
+        let mut cubie = solved;
+        let mut state = SearchState::from_coord(cubie.coord()).with_pruning_indices(
+            Some(&pruning),
+            true,
+            cubie.coord(),
+        );
+        let mut dense_state = SearchState::from_coord(cubie.coord()).with_pruning_indices(
+            Some(&dense),
+            true,
+            cubie.coord(),
+        );
+        let mut stronger = 0;
+        let mut random = 834719_u64;
+        for _ in 0..2000 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mv = moves[(random >> 32) as usize % moves.len()];
+            cubie = cubie.apply(mv);
+            let child = state.apply_pruning_with(&tables, mv, pruning.for_moves());
+            let dense_child = dense_state.apply_pruning_with(&tables, mv, dense.for_moves());
+            let rotated = crate::symmetry::transform(cubie).coord();
+            assert_eq!(child.swapped.edge3, rotated.edge3);
+            assert_eq!(child.swapped.uf3, rotated.uf_center3);
+            assert_eq!(child.swapped.bound, baseline.heuristic_for_coord(rotated));
+            assert_eq!(child.swapped, dense_child.swapped);
+            let bound = pruning
+                .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+                .max(child.swapped.bound);
+            assert_eq!(
+                bound,
+                dense
+                    .heuristic_cached(dense_child.edge3_uf3_idx, dense_child.corner_uf3_idx)
+                    .max(dense_child.swapped.bound)
+            );
+            assert_eq!(bound, pruning.heuristic_for_coord(cubie.coord()));
+            stronger += usize::from(bound > baseline.heuristic_for_coord(cubie.coord()));
+            for (state, child) in [(&mut state, child), (&mut dense_state, dense_child)] {
+                state.corner = child.corner;
+                state.edge3 = child.edge3;
+                state.uf3 = child.uf3;
+                state.edge3_uf3_idx = child.edge3_uf3_idx;
+                state.corner_uf3_idx = child.corner_uf3_idx;
+                state.swapped = child.swapped;
+            }
+        }
+        assert!(
+            stronger > 0,
+            "the unused orbit must contribute a stronger bound"
+        );
+        eprintln!("unused orbit strengthened {stronger}/2000 sampled bounds");
+        tables.add_search_transitions_for_tests(&moves);
+        let normalized = |result: &super::SearchResult| {
+            let mut solutions = result
+                .solutions
+                .iter()
+                .map(|alg| format_solution(alg))
+                .collect::<Vec<_>>();
+            solutions.sort();
+            solutions
+        };
+        let scrambled = [Move::F, Move::R, Move::Fp, Move::R, Move::F]
+            .into_iter()
+            .fold(solved, |cube, mv| cube.apply(mv));
+        let config = SearchConfig {
+            max_depth: 5,
+            allowed_moves: moves.to_vec(),
+            ..SearchConfig::default()
+        };
+        let unpruned = super::solve(scrambled.coord(), &tables, &config);
+        assert!(!unpruned.solutions.is_empty());
+        for threads in [1, 4] {
+            for pruning in [&pruning, &dense] {
+                let actual = super::solve_with_pruning_threads(
+                    scrambled.coord(),
+                    &tables,
+                    Some(pruning),
+                    &config,
+                    threads,
+                );
+                assert_eq!(normalized(&actual), normalized(&unpruned));
+                for solution in &actual.solutions {
+                    assert_eq!(
+                        solution.iter().fold(scrambled, |cube, &mv| cube.apply(mv)),
+                        solved
+                    );
+                }
+            }
+        }
+        drop(dense);
+        for use_start_pruning in [false, true] {
+            let config = super::BidirectionalConfig {
+                depth: 5,
+                find_all: true,
+                max_stored_paths: 100000,
+                threads: 4,
+                use_start_pruning,
+                progress_interval: 0,
+                allowed_moves: moves.to_vec(),
+            };
+            let actual =
+                super::solve_bidirectional(scrambled.coord(), &tables, Some(&pruning), &config)
+                    .unwrap();
+            assert_eq!(normalized(&actual), normalized(&unpruned));
+        }
+
+        // Compare real search time and node counts, not just isolated lookups.
+        let mut old_nodes = 0;
+        let mut new_nodes = 0;
+        let mut old_time = std::time::Duration::ZERO;
+        let mut new_time = std::time::Duration::ZERO;
+        for sample in 0..12 {
+            let mut cube = solved;
+            for ply in 0..18 {
+                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                cube = cube.apply(moves[(ply % 2) * 2 + ((random >> 32) as usize & 1)]);
+            }
+            let config = SearchConfig {
+                max_depth: 18,
+                find_all: false,
+                allowed_moves: moves.to_vec(),
+                ..SearchConfig::default()
+            };
+            let mut solution_length = None;
+            for swapped in if sample % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let started = Instant::now();
+                let result = super::solve_with_pruning(
+                    cube.coord(),
+                    &tables,
+                    Some(if swapped { &pruning } else { &baseline }),
+                    &config,
+                );
+                let elapsed = started.elapsed();
+                assert!(!result.solutions.is_empty());
+                let solution = &result.solutions[0];
+                assert_eq!(
+                    solution.iter().fold(cube, |state, &mv| state.apply(mv)),
+                    solved
+                );
+                if let Some(length) = solution_length {
+                    assert_eq!(solution.len(), length);
+                }
+                solution_length = Some(solution.len());
+                if swapped {
+                    new_nodes += result.nodes;
+                    new_time += elapsed;
+                } else {
+                    old_nodes += result.nodes;
+                    old_time += elapsed;
+                }
+            }
+        }
+        eprintln!(
+            "12 F/R searches: original {old_nodes} nodes / {old_time:?}; orbit swap {new_nodes} nodes / {new_time:?}"
+        );
+
+        // Free U prefixes/suffixes must update the rotated projection as D
+        // turns, and still use the existing one-move goal slack.
+        let ud_moves = [Move::U, Move::Up, Move::D, Move::Dp];
+        let ud_pruning =
+            SolverPruning::build_from_coord_with_moves(FtoCoord::solved(), &tables, 0, &ud_moves)
+                .unwrap();
+        assert!(ud_pruning.has_orbit_swap());
+        tables.add_search_transitions_for_tests(&ud_moves);
+        let scrambled = solved.apply(Move::D).apply(Move::U);
+        for free_u_ends in [false, true] {
+            let config = SearchConfig {
+                max_depth: 3,
+                free_u_ends,
+                allowed_moves: ud_moves.to_vec(),
+                ..SearchConfig::default()
+            };
+            let expected = super::solve(scrambled.coord(), &tables, &config);
+            for threads in [1, 4] {
+                let actual = super::solve_with_pruning_threads(
+                    scrambled.coord(),
+                    &tables,
+                    Some(&ud_pruning),
+                    &config,
+                    threads,
+                );
+                assert_eq!(normalized(&actual), normalized(&expected));
+            }
+        }
+    }
 
     #[test]
     #[ignore = "builds coordinate tables and benchmarks a real R/U subgroup; run in release mode"]
@@ -2893,7 +3196,7 @@ mod tests {
             state.corner_uf3_idx = child.corner_uf3_idx;
         }
         let mut normal = SearchState::from_coord(FtoCoord::solved());
-        let mut small = normal.with_pruning_indices(Some(&compact), true);
+        let mut small = normal.with_pruning_indices(Some(&compact), true, FtoCoord::solved());
         for mv in path
             .iter()
             .copied()
@@ -2918,8 +3221,11 @@ mod tests {
             tables: &TransitionTables,
             path: &[Move],
         ) -> (std::time::Duration, u64) {
-            let mut state = SearchState::from_coord(FtoCoord::solved())
-                .with_pruning_indices(Some(pruning), true);
+            let mut state = SearchState::from_coord(FtoCoord::solved()).with_pruning_indices(
+                Some(pruning),
+                true,
+                FtoCoord::solved(),
+            );
             let move_pruning = pruning.for_moves();
             let started = Instant::now();
             let mut sum = 0_u64;
@@ -3164,6 +3470,7 @@ mod tests {
                 ll_uf_center_b: 0,
                 edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
                 corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+                swapped: SwappedPruning::default(),
             }
         }
 
@@ -3231,6 +3538,7 @@ mod tests {
                 ll_uf_center_b: 0,
                 edge3_uf3_idx: SolverPruning::edge3_uf3_index(edge3, uf3),
                 corner_uf3_idx: SolverPruning::corner_uf3_index(corner, uf3),
+                swapped: SwappedPruning::default(),
             }
         }
 

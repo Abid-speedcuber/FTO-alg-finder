@@ -6,6 +6,7 @@ pub mod moves;
 pub mod partial;
 pub mod pruning;
 pub mod search;
+mod symmetry;
 pub mod tables;
 
 pub use coord::FtoCoord;
