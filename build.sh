@@ -93,15 +93,15 @@ build_windows() {
     npx @tauri-apps/cli build --target x86_64-pc-windows-gnu
     local nsis_dir="$MAIN_DIR/target/x86_64-pc-windows-gnu/release/nsis/x64"
     if [ -f "$nsis_dir/nsis-output.exe" ]; then
-        cp "$nsis_dir/nsis-output.exe" "$OUTPUT_DIR/windows/FTO-Alg-Finder-0.1.0-x64.exe"
-        log_success "Windows installer: $OUTPUT_DIR/windows/FTO-Alg-Finder-0.1.0-x64.exe"
+        cp "$nsis_dir/nsis-output.exe" "$OUTPUT_DIR/windows/FTO-Alg-Finder-windows-x64.exe"
+        log_success "Windows installer: $OUTPUT_DIR/windows/FTO-Alg-Finder-windows-x64.exe"
         return 0
     fi
     local bundle_installer
     bundle_installer="$(find "$MAIN_DIR/target/x86_64-pc-windows-gnu/release/bundle/nsis" -maxdepth 1 -name "*setup.exe" -type f 2>/dev/null | head -n 1)"
     if [ -n "$bundle_installer" ]; then
-        cp "$bundle_installer" "$OUTPUT_DIR/windows/FTO-Alg-Finder-0.1.0-x64.exe"
-        log_success "Windows installer: $OUTPUT_DIR/windows/FTO-Alg-Finder-0.1.0-x64.exe"
+        cp "$bundle_installer" "$OUTPUT_DIR/windows/FTO-Alg-Finder-windows-x64.exe"
+        log_success "Windows installer: $OUTPUT_DIR/windows/FTO-Alg-Finder-windows-x64.exe"
         return 0
     fi
     log_error "NSIS output not found"
@@ -114,11 +114,58 @@ build_linux_all() {
     cd "$MAIN_DIR"
     npx @tauri-apps/cli build --target x86_64-unknown-linux-gnu
     local bundle="$MAIN_DIR/target/x86_64-unknown-linux-gnu/release/bundle"
+    local fmt extension asset source
     for fmt in deb rpm appimage pacman; do
-        [ -d "$bundle/$fmt" ] && cp "$bundle/$fmt"/* "$OUTPUT_DIR/linux/" 2>/dev/null || true
+        case "$fmt" in
+            deb) extension="deb"; asset="FTO-Alg-Finder-linux-amd64.deb" ;;
+            rpm) extension="rpm"; asset="FTO-Alg-Finder-linux-x86_64.rpm" ;;
+            appimage) extension="AppImage"; asset="FTO-Alg-Finder-linux-x86_64.AppImage" ;;
+            pacman) extension="pkg.tar.zst"; asset="FTO-Alg-Finder-linux-x86_64.pkg.tar.zst" ;;
+        esac
+        [ -d "$bundle/$fmt" ] || continue
+        source="$(find "$bundle/$fmt" -maxdepth 1 -type f -name "*.$extension" -print -quit)"
+        [ -n "$source" ] && cp "$source" "$OUTPUT_DIR/linux/$asset"
     done
     find "$OUTPUT_DIR/linux" -name "*.AppImage" -exec chmod +x {} \; 2>/dev/null || true
     log_success "Linux packages in $OUTPUT_DIR/linux"
+}
+
+prepare_release_assets() {
+    # Stable asset names keep releases/latest/download links valid across versions.
+    python3 - "$OUTPUT_DIR" << 'PYRELEASE'
+from pathlib import Path
+import hashlib
+import shutil
+import sys
+
+root = Path(sys.argv[1])
+release = root / "release"
+release.mkdir(exist_ok=True)
+assets = []
+names = {
+    "windows": ("FTO-Alg-Finder-windows-x64.exe",),
+    "linux": (
+        "FTO-Alg-Finder-linux-amd64.deb",
+        "FTO-Alg-Finder-linux-x86_64.rpm",
+        "FTO-Alg-Finder-linux-x86_64.AppImage",
+        "FTO-Alg-Finder-linux-x86_64.pkg.tar.zst",
+    ),
+}
+for folder, filenames in names.items():
+    for name in filenames:
+        source = root / folder / name
+        if not source.is_file():
+            continue
+        destination = release / name
+        shutil.copy2(source, destination)
+        assets.append(destination)
+checksums = []
+for path in sorted(assets):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    checksums.append(f"{digest}  {path.name}\n")
+(release / "SHA256SUMS").write_text("".join(checksums))
+PYRELEASE
+    log_success "Release assets and SHA256SUMS: $OUTPUT_DIR/release"
 }
 
 main() {
@@ -144,6 +191,7 @@ main() {
     mkdir -p "$OUTPUT_DIR"
     if $bw; then build_windows; fi
     if $bl || $bdeb || $brpm || $bpkg || $bapp; then build_linux_all; fi
+    if $bw || $bl || $bdeb || $brpm || $bpkg || $bapp; then prepare_release_assets; fi
     log_success "Done"
 }
 

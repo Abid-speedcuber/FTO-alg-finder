@@ -123,6 +123,30 @@ Notes:
 - Pruning cache size depends on the selected move set and pruning settings.
 - The app stores generated cache files under `main/cache/` when run from this workspace.
 
+## Downloads and releases
+
+Get installers from the [latest GitHub release](https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest).
+The landing page links directly to version-independent asset names under
+`releases/latest/download/`, so new stable releases need no website edits.
+
+To prepare the release downloads:
+
+```sh
+./build.sh --all
+```
+
+Upload the files in `builds/release/`, including `SHA256SUMS`, to the new GitHub
+release and mark it as latest. Keep the generated filenames unchanged. For
+example, after committing and pushing the release source:
+
+```sh
+gh release create v1.1.0 builds/release/* --latest --generate-notes
+```
+
+Windows uses `FTO-Alg-Finder-windows-x64.exe`; Linux uses
+`FTO-Alg-Finder-linux-x86_64.AppImage`, `FTO-Alg-Finder-linux-amd64.deb`, and
+`FTO-Alg-Finder-linux-x86_64.rpm`. Arch users can use the AppImage.
+
 ## Build From Source
 
 From a fresh clone, enter the app workspace:
