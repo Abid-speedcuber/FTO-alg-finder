@@ -477,7 +477,7 @@
         applyMoveInstant({ axis: parsed[i][0], pow: parsed[i][1] });
       }
       if (lastLayerMode) {
-        applyLastLayerMarksBySlot();
+        assignLastLayerCenterMarks();
       }
       render();
     }
@@ -874,27 +874,28 @@
       }
     }
 
-    function applyLastLayerMarksBySlot() {
-      var fixedSlotByColor = [null, 3, 8, 10];
+    function assignLastLayerCenterMarks() {
       lastLayerCenterMarks = new Array(12).fill(null);
-      centerTargets.rlTopSources = [[], [], [], []];
       for (var color = 1; color <= 3; color++) {
-        var fixedSlot = fixedSlotByColor[color];
-        lastLayerCenterMarks[fixedSlot] = "fixed";
-        centerTargets.rl[color] = fixedSlot;
-        centerTargets.rlSources[color] = fixedSlot;
+        var slots = [];
         for (var slot = 0; slot < rlCenterFacelets.length; slot++) {
-          if (Math.floor(slot / 3) !== color || slot === fixedSlot) {
-            continue;
+          var faceColor = faceletColors[rlCenterFacelets[slot]];
+          if (isLastLayerCenterColor(faceColor) && selectedCenterGroupForColor(faceColor).color === color) {
+            slots.push(slot);
           }
-          lastLayerCenterMarks[slot] = "top";
-          centerTargets.rlTopSources[color].push(slot);
+        }
+        // Keep the home center dark when possible; otherwise choose a center
+        // of the same color without changing the puzzle's stickers.
+        var fixedSlot = slots.indexOf(lastLayerUniqueCenterSlot[color]) !== -1
+          ? lastLayerUniqueCenterSlot[color] : slots[0];
+        for (var i = 0; i < slots.length; i++) {
+          lastLayerCenterMarks[slots[i]] = slots[i] === fixedSlot ? "fixed" : "top";
         }
       }
+      rebuildLastLayerTargetsFromMarks();
       for (var i = 0; i < rlCenterFacelets.length; i++) {
         refreshStickerDisplayByFacelet(rlCenterFacelets[i]);
       }
-      notifyCenterTargets();
     }
 
     function setFacelets(colors) {
@@ -911,7 +912,7 @@
         setStickerColor(stickerIndex, colors[f]);
       }
       if (lastLayerMode) {
-        applyLastLayerMarksBySlot();
+        assignLastLayerCenterMarks();
       }
       render();
       notifyState();
@@ -1384,10 +1385,13 @@
         applyFaceColors(colors, true);
       },
       setLastLayerMode: function(enabled) {
+        var wasEnabled = lastLayerMode;
         lastLayerMode = !!enabled;
         clearCenterTargetPick();
         if (!lastLayerMode) {
           clearLastLayerCenterMarks();
+        } else if (!wasEnabled) {
+          assignLastLayerCenterMarks();
         }
         for (var i = 0; i < cubePieces.length; i++) {
           if (cubePieces[i]) {

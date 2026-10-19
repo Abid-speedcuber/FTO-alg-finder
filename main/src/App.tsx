@@ -745,6 +745,7 @@ function App() {
   const [pruningStartedAt, setPruningStartedAt] = useState<number | null>(null);
   const validationRun = useRef(0);
   const lineId = useRef(0);
+  const streamedSolutions = useRef(new Set<string>());
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
@@ -801,6 +802,9 @@ function App() {
           kind: "solution",
           text: solution,
         })),
+        ...(lastTerminalLine?.kind === "cancel" || lastTerminalLine?.kind === "error"
+          ? [lastTerminalLine]
+          : []),
       ];
     }
     const lines: TerminalLine[] = [];
@@ -918,6 +922,12 @@ function App() {
   }, []);
 
   const appendLine = useCallback((kind: string, text: string, createdAt = Date.now()) => {
+    if (kind === "solution") {
+      streamedSolutions.current.add(text);
+    }
+    if (kind === "cancel" && text === "solve cancelled") {
+      text = "Search stopped early.";
+    }
     const id = ++lineId.current;
     setTerminal((lines) => {
       const next = [...lines, { id, kind, text, createdAt }];
@@ -926,7 +936,15 @@ function App() {
   }, []);
 
   const clearTerminal = useCallback(() => {
+    streamedSolutions.current.clear();
     setTerminal([]);
+  }, []);
+
+  const retainStreamedSolutions = useCallback(() => {
+    const solutions = Array.from(streamedSolutions.current);
+    if (solutions.length) {
+      setResult((previous) => ({ nodes: previous?.nodes ?? 0, solutions }));
+    }
   }, []);
 
   const resetPruningTimer = useCallback(() => {
@@ -1001,6 +1019,7 @@ function App() {
           refreshCacheStatus();
         }),
         listen<string>("solve-error", (event) => {
+          retainStreamedSolutions();
           appendLine("error", `error: ${event.payload}`);
           setRunning(false);
           resetPruningTimer();
@@ -1008,12 +1027,13 @@ function App() {
           refreshCacheStatus();
         }),
         listen("solve-cancelled", () => {
+          retainStreamedSolutions();
           setTerminal((lines) => {
             if (lines[lines.length - 1]?.kind === "cancel") {
               return lines;
             }
             const id = ++lineId.current;
-            const next = [...lines, { id, kind: "cancel", text: "solve cancelled" }];
+            const next = [...lines, { id, kind: "cancel", text: "Search stopped early." }];
             return next.length > 500 ? next.slice(next.length - 500) : next;
           });
           setRunning(false);
@@ -1039,7 +1059,7 @@ function App() {
       disposed = true;
       unlisteners.forEach((fn) => fn());
     };
-  }, [appendLine, refreshCacheStatus, refreshPruningTables, resetPruningTimer]);
+  }, [appendLine, refreshCacheStatus, refreshPruningTables, resetPruningTimer, retainStreamedSolutions]);
 
   useEffect(() => {
     if (terminalRef.current) {
