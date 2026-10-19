@@ -6,7 +6,7 @@
     <title>FTO Alg Finder</title>
     <meta
       name="description"
-      content="FTO Alg Finder is a desktop solver and algorithm search app for the Face-Turning Octahedron."
+      content="FTO Alg Finder is a desktop solver to help you gen the ideal FTO algs. Think Cube Explorer but for FTO: we support graphical input, partial pieces, alg to set state, restricted movesets, last-layer mode, and center disambiguation."
     />
     <link rel="icon" href="assets/app-icon.png" />
     <link rel="stylesheet" href="styles.css" />
@@ -25,8 +25,8 @@
         <span>FTO Alg Finder</span>
       </a>
       <nav aria-label="Primary">
-        <a href="#screenshots">Screenshots</a>
-        <a href="#requirements">Requirements</a>
+        <a href="#demos">Demos</a>
+        <a href="#prerequisites">Prerequisites</a>
         <a href="#downloads">Downloads</a>
       </nav>
     </header>
@@ -34,21 +34,19 @@
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-content">
-          <p class="eyebrow">Face-Turning Octahedron Solver</p>
-          <h1 id="hero-title">Hunt cleaner FTO algs.</h1>
+          <p class="eyebrow">Built by Abid & Matt</p>
+          <h1 id="hero-title">FTO Alg Finder</h1>
           <p class="lede">
-            Paint the puzzle, restrict the moves you actually use, and let the Rust solver grind through exact
-            depths, last-layer cases, and alg combinations.
+            Set the state, fix the moveset, and we can solve it.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#downloads">Download</a>
-            <a class="button secondary" href="#screenshots">See the app</a>
+            <a class="button secondary" href="#demos">See the app</a>
           </div>
           <div class="hero-stats" aria-label="Solver highlights">
-            <span>3D input</span>
-            <span>exact depth</span>
+            <span>graphical input</span>
+            <span>pruning tables</span>
             <span>LL mode</span>
-            <span>pruning caches</span>
           </div>
         </div>
         <div class="puzzle-stage" aria-hidden="true">
@@ -62,68 +60,63 @@
 
       <section class="section intro" aria-labelledby="intro-title">
         <div>
-          <p class="eyebrow">The idea</p>
-          <h2 id="intro-title">For FTO solvers who care about the moves, not just the answer.</h2>
+          <p class="eyebrow">The app</p>
+          <h2 id="intro-title">The first complete FTO solver.</h2>
         </div>
         <p>
-          FTO Alg Finder is a desktop solver for building and testing practical Face-Turning Octahedron algorithms.
-          It supports graphical input, setup strings, restricted movesets, saved solver instances, partial-position
-          input, last-layer searching, and an alg combiner for trying intermediate sets without doing the boring
-          bookkeeping by hand.
+          FTO Alg Finder is a desktop solver to help you gen the ideal FTO algs.<br>
+          Think Cube Explorer but for FTO: we support graphical input, partial pieces, alg to set state, restricted movesets, last-layer mode, and center disambiguation.
         </p>
       </section>
 
       <section class="feature-band" aria-label="Highlights">
         <article>
           <span>input</span>
-          <h3>Click the puzzle</h3>
-          <p>Set colors manually, swap pieces, twist corners, or use partial-position input from the viewer.</p>
+          <h3>See the state</h3>
+          <p>Set sticker colors manually, swap pieces, or set a piece to be a wildcard. Everything is graphical and from the viewer.</p>
         </article>
         <article>
           <span>search</span>
           <h3>Control the moveset</h3>
-          <p>Run auto or exact-depth searches with selected moves, banned moves, threads, and all-solution mode.</p>
+          <p>Run solves while restricting what moves the solver can use. Specify whether you want solutions at a specific move count, or just the optimal depth.</p>
         </article>
         <article>
-          <span>play</span>
-          <h3>A real virtual FTO</h3>
-          <p>
-            Scramble by swapping pieces, then solve it from the keyboard with a fully animated Face-Turning
-            Octahedron challenge.
-          </p>
+          <span>modes</span>
+          <h3>Separate the centers</h3>
+          <p>In LL mode, you can mark a center as belonging in the top layer or otherwise. You can also control which slot a specific center should go to.</p>
         </article>
       </section>
 
-      <section id="screenshots" class="section screenshots" aria-labelledby="screenshots-title">
+      <section id="demos" class="section demos" aria-labelledby="demos-title">
         <div class="section-heading">
-          <p class="eyebrow">Screenshots</p>
-          <h2 id="screenshots-title">The actual workspace</h2>
+          <p class="eyebrow">demos</p>
+          <h2 id="demos-title">The workspace</h2>
         </div>
-        <div class="screenshot-grid">
-          <figure class="screenshot-large screenshot-main">
+        <div class="demo-grid">
+          <figure class="demo-large demo-main">
             <img src="screenshots/app-main.png" alt="Default instance setup in FTO Alg Finder" />
-            <figcaption>All 15th depth solution of the position with allowed movesets</figcaption>
+            <figcaption>All 15-move RUL solutions of the state</figcaption>
           </figure>
-          <figure class="screenshot-modal">
+          <figure class="demo-modal">
             <img src="screenshots/app-main3.png" alt="Default instance creation modal in FTO Alg Finder" />
-            <figcaption>First-run instance setup for choosing the move set that powers the generated tables.</figcaption>
+            <figcaption>Choosing what moves you want to allow for this solver</figcaption>
           </figure>
-          <figure class="screenshot-progress">
+          <figure class="demo-progress">
             <img
               src="screenshots/app-pruning-progress.png"
               alt="Pruning table generation progress in FTO Alg Finder"
             />
-            <figcaption>Running pruning table generation with live terminal progress and status notes.</figcaption>
+            <figcaption>Generating pruning tables in terminal</figcaption>
           </figure>
         </div>
       </section>
 
-      <section id="requirements" class="section requirements" aria-labelledby="requirements-title">
+      <section id="prerequisites" class="section prerequisites" aria-labelledby="prerequisites-title">
         <div class="section-heading">
-          <p class="eyebrow">System requirements</p>
-          <h2 id="requirements-title">Table generation wants breathing room.</h2>
+          <p class="eyebrow">prerequisites</p>
+          <h2 id="prerequisites-title">System prerequisites</h2>
         </div>
-        <div class="requirement-grid">
+        <div class="prerequisite-grid">
           <article>
             <h3>Minimum practical setup</h3>
             <ul>
@@ -147,22 +140,21 @@
 
       <section id="downloads" class="section downloads" aria-labelledby="downloads-title">
         <div class="section-heading">
-          <p class="eyebrow">Downloads</p>
-          <h2 id="downloads-title">Grab a build</h2>
+          <p class="eyebrow">Builds</p>
+          <h2 id="downloads-title">Download today!</h2>
         </div>
         <div class="download-grid">
           <article class="download-card primary-download">
             <img src="assets/windows.svg" alt="" />
             <div>
               <h3>Windows</h3>
-              <p>Standalone 64-bit installer for FTO Alg Finder 0.1.0.</p>
+              <p>Standalone 64-bit .exe.</p>
               <a
                 class="button primary"
                 href="https://github.com/Abid-speedcuber/FTO-alg-finder/releases/latest/download/FTO-Alg-Finder-0.1.0-x64.exe"
               >
                 Download for Windows
               </a>
-              <small id="windows-size">EXE installer</small>
             </div>
           </article>
           <article class="download-card primary-download">
@@ -176,7 +168,6 @@
               >
                 Download AppImage
               </a>
-              <small>Universal Linux build</small>
             </div>
           </article>
           <article class="download-card package-card">
@@ -232,12 +223,5 @@
     <footer>
       <p>Created by Abid Ibn Ashraf. Licensed under GPL-3.0-or-later.</p>
     </footer>
-
-    <script>
-      const windowsSize = document.getElementById("windows-size");
-      if (windowsSize) {
-        windowsSize.textContent = "4.1 MB EXE installer";
-      }
-    </script>
   </body>
 </html>
