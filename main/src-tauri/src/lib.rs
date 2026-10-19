@@ -1,3 +1,5 @@
+mod validation;
+
 use fto_core::{
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
@@ -348,8 +350,8 @@ fn reset_app_data(
 }
 
 #[tauri::command]
-fn validate_facelets(facelets: Vec<u8>) -> Result<CubieState, String> {
-    cubie_from_facelets_for_solving(&facelets).map(cubie_to_state)
+fn validate_facelets(facelets: Vec<u8>) -> validation::ValidationReport {
+    validation::validate(&facelets)
 }
 
 fn run_solve_blocking(

@@ -15,6 +15,9 @@ type CubieState = {
   rl: number[];
 };
 
+type ValidationIssue = { message: string; color: number | null };
+type ValidationReport = { state: CubieState | null; errors: ValidationIssue[] };
+
 type SolveResult = {
   nodes: number;
   solutions: string[];
@@ -728,7 +731,9 @@ function App() {
   const [facelets, setFacelets] = useState<number[]>([]);
   const [centerTargets, setCenterTargets] = useState<CenterTargets>(emptyCenterTargets);
   const [cubieState, setCubieState] = useState<CubieState | null>(solved);
-  const [stateError, setStateError] = useState("");
+  const [stateErrors, setStateErrors] = useState<ValidationIssue[]>([]);
+  const [stateErrorsOpen, setStateErrorsOpen] = useState(false);
+  const stateErrorsDialog = useRef<HTMLDialogElement | null>(null);
   const [depth, setDepth] = useState("");
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
@@ -749,6 +754,7 @@ function App() {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
+    stateErrorsOpen ||
     settingsOpen ||
     pruningOpen ||
     storageOpen ||
@@ -955,24 +961,30 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (stateErrorsOpen) {
+      stateErrorsDialog.current?.showModal();
+    }
+  }, [stateErrorsOpen]);
+
+  useEffect(() => {
     if (facelets.length !== 72) {
       return;
     }
     const run = ++validationRun.current;
-    invoke<CubieState>("validate_facelets", { facelets })
-      .then((state) => {
+    invoke<ValidationReport>("validate_facelets", { facelets })
+      .then((report) => {
         if (run !== validationRun.current) {
           return;
         }
-        setCubieState(state);
-        setStateError("");
+        setCubieState(report.state);
+        setStateErrors(report.errors);
       })
       .catch((error) => {
         if (run !== validationRun.current) {
           return;
         }
         setCubieState(null);
-        setStateError(String(error));
+        setStateErrors([{ message: String(error), color: null }]);
       });
   }, [facelets]);
 
@@ -1293,6 +1305,11 @@ function App() {
     setFaceColors((colors) => colors.map((current, i) => (i === index ? normalized : current)));
   }
 
+  function closeStateErrors() {
+    stateErrorsDialog.current?.close();
+    setStateErrorsOpen(false);
+  }
+
   return (
     <main>
       <header className="app-header">
@@ -1373,6 +1390,47 @@ function App() {
             Delete {contextInstance?.name ?? "instance"}
           </button>
         </div>
+      ) : null}
+
+      {stateErrorsOpen ? (
+        <dialog
+          ref={stateErrorsDialog}
+          className="modal validation-modal"
+          aria-labelledby="state-errors-title"
+          onClose={() => setStateErrorsOpen(false)}
+          onCancel={(event) => { event.preventDefault(); closeStateErrors(); }}
+          onClick={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right ||
+                event.clientY < bounds.top || event.clientY > bounds.bottom) {
+              closeStateErrors();
+            }
+          }}
+        >
+          <div className="modal-title-row">
+            <h2 id="state-errors-title">Invalid state</h2>
+            <button className="validation-close" autoFocus onClick={closeStateErrors}>Close</button>
+          </div>
+          {stateErrors.length ? (
+            <>
+              <p className="validation-summary">{stateErrors.length} {stateErrors.length === 1 ? "problem needs" : "problems need"} attention.</p>
+              <ul className="validation-errors">
+                {stateErrors.map((error, index) => (
+                  <li key={index}>
+                    {error.color !== null ? <>
+                      Color{" "}
+                      <span className="validation-color" style={{ backgroundColor: faceColors[error.color] }}
+                        role="img" aria-label={`${faceColorSlots.find((slot) => slot.index === error.color)?.label ?? "Face"} color ${faceColors[error.color]}`}
+                        title={`${faceColorSlots.find((slot) => slot.index === error.color)?.label ?? "Face"} (${faceColors[error.color]})`} />
+                      {" "}
+                    </> : null}
+                    {error.message}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : <p>The puzzle is now valid.</p>}
+        </dialog>
       ) : null}
 
       {settingsOpen ? (
@@ -1667,7 +1725,7 @@ function App() {
 
           <FtoViewer
             viewerApiRef={viewerApiRef}
-            active={mode === "solver"}
+            active={mode === "solver" && !stateErrorsOpen}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
@@ -1675,8 +1733,9 @@ function App() {
             onFacelets={handleFacelets}
             onCenterTargets={setCenterTargets}
             faceColors={faceColors}
-            stateText={stateError ? "invalid state" : "valid state"}
-            stateInvalid={!!stateError}
+            stateText={stateErrors.length ? "invalid state" : "valid state"}
+            stateInvalid={stateErrors.length > 0}
+            onInvalidStateClick={() => setStateErrorsOpen(true)}
             footer={
               <div className="terminal" ref={terminalRef}>
                 {displayTerminal.length === 0 ? (
@@ -1818,7 +1877,6 @@ function App() {
             <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !cacheStatus.hasPruning}>
               Unload pruning table from RAM
             </button>
-            {stateError ? <div className="state-error">{stateError}</div> : null}
           </section>
         </div>
         </section>

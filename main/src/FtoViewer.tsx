@@ -50,6 +50,7 @@ type Props = {
   faceColors?: string[];
   stateText?: string;
   stateInvalid?: boolean;
+  onInvalidStateClick?: () => void;
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
   active?: boolean;
@@ -65,6 +66,7 @@ function FtoViewer({
   faceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"],
   stateText,
   stateInvalid = false,
+  onInvalidStateClick,
   viewerApiRef,
   footer,
   active = true,
@@ -163,7 +165,12 @@ function FtoViewer({
     <div className="fto-viewer-panel">
       <div className="fto-stage">
         <div ref={hostRef} className="fto-canvas-host" />
-        {stateText ? (
+        {stateText && stateInvalid && onInvalidStateClick ? (
+          <button type="button" className="viewer-state invalid" onClick={onInvalidStateClick}
+            aria-label="Invalid state: show all problems" aria-haspopup="dialog">
+            {stateText}
+          </button>
+        ) : stateText ? (
           <div className={stateInvalid ? "viewer-state invalid" : "viewer-state"}>
             {stateText}
           </div>

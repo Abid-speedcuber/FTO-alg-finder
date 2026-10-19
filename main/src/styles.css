@@ -1094,6 +1094,82 @@ h2 {
   color: #f29a9f;
 }
 
+button.viewer-state.invalid {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.viewer-state.invalid:hover {
+  color: #ffc0c4;
+}
+
+.validation-modal {
+  width: min(460px, calc(100vw - 40px));
+  height: fit-content;
+  min-height: 0;
+  align-content: start;
+  gap: 12px;
+  margin: auto;
+  padding: 18px;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.16);
+  color: #1f2328;
+  font-size: 13px;
+}
+
+.validation-modal h2 {
+  font-size: 14px;
+}
+
+.validation-close {
+  min-height: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #59636e;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.validation-modal::backdrop {
+  background: rgb(23 26 31 / 0.25);
+}
+
+.validation-modal:not([open]) {
+  display: none;
+}
+
+.validation-summary {
+  margin: 0;
+  color: #59636e;
+}
+
+.validation-errors {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.5;
+}
+
+.validation-errors li + li {
+  margin-top: 6px;
+}
+
+.validation-color {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 1px solid #59636e;
+  border-radius: 3px;
+  vertical-align: -2px;
+}
+
 .fto-canvas-host canvas {
   display: block;
 }
