@@ -62,7 +62,7 @@ a {
   height: 34px;
   overflow: hidden;
   border-radius: 50%;
-  background: #0c0f13;
+  background: transparent;
   cursor: grab;
 }
 
@@ -274,7 +274,7 @@ h1 {
 
 .line-b {
   right: 0;
-  bottom: 74px;
+  bottom: 16px;
   transform: rotate(5deg);
 }
 
