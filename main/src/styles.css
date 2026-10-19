@@ -636,12 +636,27 @@ main {
   overflow-wrap: anywhere;
 }
 
+.about-authors {
+  display: grid;
+  gap: 18px;
+}
+
+.about-author {
+  display: grid;
+  gap: 8px;
+}
+
 .about-links {
+  flex-wrap: wrap;
   display: flex;
   gap: 10px;
 }
 
 .about-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
   color: #2478ac;
   font-weight: 650;
 }

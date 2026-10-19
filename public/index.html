@@ -25,8 +25,8 @@
         <span>FTO Alg Finder</span>
       </a>
       <nav aria-label="Primary">
-        <a href="#demos">Demos</a>
-        <a href="#prerequisites">Prerequisites</a>
+        <a href="#demos">Screenshots</a>
+        <a href="#prerequisites">Requirements</a>
         <a href="#downloads">Downloads</a>
       </nav>
     </header>
@@ -37,7 +37,7 @@
           <p class="eyebrow">Built by Abid & Matt</p>
           <h1 id="hero-title">FTO Alg Finder</h1>
           <p class="lede">
-            Set the state, fix the moveset, and we can solve it.
+            Best software to generate FTO algs and create your own dream algset.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#downloads">Download</a>
@@ -89,7 +89,7 @@
 
       <section id="demos" class="section demos" aria-labelledby="demos-title">
         <div class="section-heading">
-          <p class="eyebrow">demos</p>
+          <p class="eyebrow">screenshots</p>
           <h2 id="demos-title">The workspace</h2>
         </div>
         <div class="demo-grid">
@@ -99,40 +99,38 @@
           </figure>
           <figure class="demo-modal">
             <img src="screenshots/app-main3.png" alt="Default instance creation modal in FTO Alg Finder" />
-            <figcaption>Choosing what moves you want to allow for this solver</figcaption>
+            <figcaption>Selecting the moves you actually use <br> to solve faster with tighter pruning</figcaption>
           </figure>
           <figure class="demo-progress">
             <img
               src="screenshots/app-pruning-progress.png"
               alt="Pruning table generation progress in FTO Alg Finder"
             />
-            <figcaption>Generating pruning tables in terminal</figcaption>
+            <figcaption>One-time pruning table generation</figcaption>
           </figure>
         </div>
       </section>
 
       <section id="prerequisites" class="section prerequisites" aria-labelledby="prerequisites-title">
         <div class="section-heading">
-          <p class="eyebrow">prerequisites</p>
-          <h2 id="prerequisites-title">System prerequisites</h2>
+          <p class="eyebrow">Requirements</p>
+          <h2 id="prerequisites-title">System Requirements</h2>
         </div>
         <div class="prerequisite-grid">
           <article>
             <h3>Minimum practical setup</h3>
             <ul>
               <li>64-bit Windows or Linux desktop.</li>
-              <li>8 GiB RAM for shallow and moderate searches.</li>
-              <li>At least 1.2 GiB available RAM for pruning and transition tables.</li>
-              <li>2 GiB free disk space for dependencies, builds, and normal caches.</li>
+              <li>8 GiB total RAM with at least 1.2 Gib available, ready to go.</li>
+              <li>2 GiB free disk space for pre-generated tables of one solver instance.</li>
             </ul>
           </article>
           <article>
             <h3>Recommended for heavier use</h3>
             <ul>
-              <li>5-10 GiB free disk space for several solver instances or pruning caches.</li>
+              <li>5-10 GiB free disk space for several solver instances and pruning tables.</li>
               <li>Multiple CPU cores when using the thread setting.</li>
-              <li>Rust Edition 2024 toolchain, Node.js 18+, and npm when building from source.</li>
-              <li>More memory for deep exact-depth CLI searches.</li>
+              <li>16 GiB ram for multitasking while the app has pruning tables loaded.</li>
             </ul>
           </article>
         </div>
@@ -221,7 +219,7 @@
     </main>
 
     <footer>
-      <p>Created by Abid Ibn Ashraf. Licensed under GPL-3.0-or-later.</p>
+      <p>Licensed under GPL-3.0-or-later.</p>
     </footer>
   </body>
 </html>

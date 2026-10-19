@@ -135,13 +135,24 @@ To prepare the release downloads:
 ./build.sh --all
 ```
 
-Upload the files in `builds/release/`, including `SHA256SUMS`, to the new GitHub
-release and mark it as latest. Keep the generated filenames unchanged. For
-example, after committing and pushing the release source:
+Check the latest published tag:
 
 ```sh
-gh release create v1.1.0 builds/release/* --latest --generate-notes
+./release --current
 ```
+
+After committing and pushing the source used for the builds, publish a new tag:
+
+```sh
+./release v1.0.0.209
+```
+
+`./release.sh` accepts the same commands. The script verifies every installer
+against `builds/release/SHA256SUMS`, uploads the assets as a draft, then publishes
+the release and marks it latest. Existing tags are never overwritten. Sign in
+with `gh auth login` first. It does not rebuild, change app version metadata,
+commit, or push source. The landing-page links automatically follow the latest
+published release.
 
 Windows uses `FTO-Alg-Finder-windows-x64.exe`; Linux uses
 `FTO-Alg-Finder-linux-x86_64.AppImage`, `FTO-Alg-Finder-linux-amd64.deb`, and

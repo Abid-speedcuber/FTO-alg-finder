@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Pickr from "@simonwep/pickr";
 import "@simonwep/pickr/dist/themes/nano.min.css";
+import wcaLogo from "./assets/wca.svg";
+import githubLogo from "./assets/github.svg";
 import AlgCombiner from "./AlgCombiner";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
@@ -318,98 +320,77 @@ const pruningFirstSlowLine =
   "Progress isn't linear here. The progress gets slower as the depth increases. You might as well grab a popcorn meanwhile";
 const pruningSecondSlowLine =
   "Uh-oh, looks like I miscalculated. It will take a lil bit longer than I was hoping. Should still be faster than the previous table tho. You might wanna grab a second popcorn, maybe?";
-const pruningExpensiveDoneLine = "Yay, we're done with the exxxpensive table, this one should be FAST.";
+const pruningExpensiveDoneLine = "Yay, we're done with the exxxpensive table, this one should be faster than the previous one.";
 const pruningHangTightLine = "Hang tight, we're almost there.";
-const pruningAnotherTableLine = "btw, we have another table left, it wont take this long i promise";
+const pruningAnotherTableLine = "btw, we have another table left, it wont take this long I promise";
 
 function isExpensivePruningTable(name: string): boolean {
   const normalized = name.toLowerCase();
   return normalized.includes("edge3") || normalized.includes("e3cf3");
 }
 
-const pruningLinesOpening = [
-  "All right, the table is on. Everybody act natural.",
-  "The solver just rolled up its sleeves, metaphorically and with concern.",
-  "This is the quiet part before the numbers start asking for favors.",
-  "Small ceremony first: we light the CPU and hope the cache is kind.",
-  "The table is getting its bearings. It has refused coffee, suspiciously.",
-  "A lot of future impatience is being paid off right now.",
-  "The first few seconds always look innocent. That is how they get you.",
-  "We are not lost yet. We have only begun drawing the map.",
+// FTO history and geometry sources (checked October 2026):
+// https://patents.google.com/patent/US4451039A/
+// https://patents.google.com/patent/DE3206560A1/de
+// https://patents.google.com/patent/US20050006842A1/en
+// https://www.pitcherpuzzles.com/the-archives
+// https://twistypuzzles.com/app/museum/museum_showitem.php?pkey=1663
+// https://twistypuzzles.com/forum/viewtopic.php?p=392974
+// https://en.wikipedia.org/wiki/Face_Turning_Octahedron (2018 Bencisco / 2021 RexTO)
+// https://ruwix.com/twisty-puzzles/face-turning-octahedron-fto/ (community growth)
+// https://www.worldcubeassociation.org/posts/changes-to-the-wca-s-list-of-official-events-june-2026
+// https://www.jaapsch.net/puzzles/octaface.htm
+// https://math.ucr.edu/home/baez/platonic.html (convex regular polytopes)
+// https://math.ucr.edu/home/baez/week155.html (two-coloring)
+// https://mathworld.wolfram.com/RegularOctahedron.html (geometry and symmetries)
+// Search explanations match fto-core/src/search.rs and fto-core/src/pruning.rs.
+const pruningFtoFacts = [
+  "FTO was already on paper in 1982: Clarence W. Hewlett Jr. filed a US patent for a face-turning octahedron on February 9 that year; it was granted on May 29, 1984.",
+  "Two inventors filed FTO patents just 15 days apart in 1982: Clarence W. Hewlett Jr. in the US on February 9, and Karl Rohrbach in Germany on February 24.",
+  "David Pitcher independently reinvented FTO in the early 2000s, building a working mechanism roughly twenty years after the first FTO patents.",
+  "An FTO doesn't need eight colors: inventor David Pitcher's original used four, with opposite faces sharing a color. That still distinguishes every piece.",
+  "FTO speedsolving got a dedicated method in 2018, when Ben Streeter began developing Bencisco, his method for solving the face-turning octahedron.",
+  "Ben Streeter helped turn FTO into a speedsolving event through his Bencisco method and tutorial; rankings and the FTO Fan Club helped spread it during the pandemic.",
+  "Before modern FTO hardware, Ben Streeter's 2021 RexTO was a common way of converting a Rex Cube into an FTO shape using 3D-printed extensions.",
+  "The first official FTO competition was on January 2, 2027, as announced in June 2026. It is the first event added since Skewb in 2014.",
+  "FTO has 42 moving pieces: 6 corners, 12 edges, and 24 centers. More than half the pieces are centers.",
+  "FTO has 31,408,133,379,194,880,000,000 reachable positions, treating same-colored centers as identical and ignoring whole-puzzle rotations.",
+  "The octahedron is the cube's evil twin, geometrically: the shapes are duals, swapping 6 faces and 8 vertices for 8 faces and 6 vertices.",
+  "Join the centers of neighboring faces on a cube and you get an octahedron. Do the same to an octahedron and you get a cube.",
+  "A cube and a regular octahedron have the same rotational symmetries: 24 ways to rotate either shape onto itself.",
+  "A regular octahedron is two square pyramids joined base to base. The square in the middle is hidden inside the solid.",
+  "The octahedron is the only Platonic solid whose faces can alternate between two colors without matching colors sharing an edge.",
+  "There are exactly five convex Platonic solids in 3D. The octahedron is one; the cube, tetrahedron, dodecahedron, and icosahedron are the others.",
+  "There are six convex regular polytopes in 4D, but only three in every dimension above four: the simplex, hypercube, and cross-polytope.",
+  "The octahedron's higher-dimensional family survives in every dimension: the cross-polytopes, duals of the hypercubes.",
+  "The 4D cousin of an octahedron is the 16-cell. Its boundary consists of 16 tetrahedra, not octahedra.",
+  "A 4D regular polytope called the 24-cell has a boundary made of 24 octahedra. It has no regular counterpart in 3D.",
+  "The octahedron has 6 vertices, 12 edges, and 8 faces: 6 - 12 + 8 = 2, an example of Euler's polyhedron formula.",
 ];
 
-const pruningLinesSteady = [
-  "Still moving. Not glamorous, but deeply employed.",
-  "Somewhere in there, a state just found out it is farther away than expected.",
-  "This is what optimization looks like before it becomes convenient.",
-  "The progress bar has entered its serious actor phase.",
-  "It is doing the thing. The thing is huge, but it is doing it.",
-  "Future solves are standing nearby with tiny thank-you cards.",
-  "I would call this dramatic tension, but it is mostly RAM and decisions.",
-  "The table is building character, which is what software says when it is busy.",
-  "Nothing is broken. This is just the algorithm speaking in long sentences.",
-  "Good news: every boring second here makes later searches less boring.",
-  "The solver is making a list, checking it recursively.",
-  "This is a one-time investment, which is also what expensive hobbies say.",
+const pruningSearchNotes = [
+  "Solver: 5 moves left.\nTable: At least 6 needed.\nResult: skip this branch and everything below it.",
+  "Solver: 5 moves left.\nTable: At least 4 needed.\nResult: keep searching; the bound permits a solution but doesn't guarantee one.",
+  "Solver: Edges need 5, corners need 4.\nBound: 5, not 9. The same moves can solve both.",
+  "A pruning table solves a smaller problem: track some pieces and ignore the rest. The full puzzle needs at least as many moves as that smaller problem.",
+  "Pruning tables store lower bounds on distance, not algorithms. The solver uses those bounds to reject branches that cannot fit the move limit.",
+  "The pruning tables here are generated with a couple of pieces, not all of them.",
+  "One extra move of search means another layer of choices on every surviving branch. Search time grows exponentially with additional allowed moves.",
+  "A transition table stores what each move does to a pattern. A pruning table stores how far that pattern is from solved.",
+  "Generating a pruning table pays the calculation cost up front. Later solves reuse the stored distances.",
 ];
 
-const pruningLinesSlow = [
-  "We are progressing, slowly but with legal documentation.",
-  "The table is not frozen. It is simply taking the scenic route through math.",
-  "This is the part where the montage would save us three minutes.",
-  "If the fan gets louder, that is applause in computer language.",
-  "The solver has opened a very large spreadsheet and immediately regretted it.",
-  "I asked the progress bar for an ETA. It changed the subject.",
-  "This table is doing honest work, the kind nobody claps for until it is cached.",
-  "There is movement. It is not fast movement, but it has witnesses.",
-  "The algorithm is currently discovering why shortcuts have consequences.",
-  "This is still fine. Slightly theatrical, but fine.",
-  "At this speed, we have time to name the table and write its backstory.",
-  "The cache is going to be unbearably pleased with itself after this.",
+const pruningJokes = [
+  "The table generates faster when you're not looking. Trust.",
+  "This would be finished by now if you were not lookig by the way, this one is on you.",
+  "These pruning tables can speed up a search by tens of thousands of times."
 ];
 
-const pruningLinesHeavyTable = [
-  "Ah, the big table. It walked in wearing a long coat and asking for CPU time.",
-  "Edge-heavy pruning has arrived, and yes, it brought paperwork.",
-  "This one is the expensive dinner. The receipt will be useful later.",
-  "The table is lifting the heavy stuff while pretending it meant to do this.",
-  "This is why we cache things: so we only have to be brave once.",
-  "The solver is currently turning a large problem into a reusable bad decision.",
-  "This table has main-character runtime and supporting-character manners.",
-  "If this feels personal, that is just combinatorics making eye contact.",
-  "The good news is that the next solve gets to act like this was easy.",
-  "This is the table people warn younger tables about.",
-];
-
-const pruningLinesLong = [
-  "We have crossed into snack territory. Not emergency snacks, just honest ones.",
-  "Still going. Still valid. Still not a betrayal.",
-  "The table has requested patience and a chair with lumbar support.",
-  "At this point the progress bar and I are on speaking terms.",
-  "The computer is doing that thing where silence technically means confidence.",
-  "If you changed tabs, no judgment. The table will still be here, being intense.",
-  "This is less a delay and more a very boring origin story.",
-  "The solver is making future-you look like a genius with excellent timing.",
-  "This would be the scene where the clock on the wall gets a close-up.",
-  "The table is not late. It is arriving in exhaustive order.",
-  "We are deep enough now that optimism needs a loading indicator.",
-  "One day this file will just load from disk and act like it was always easy.",
-];
-
-const pruningLinesMarathon = [
-  "Okay, this table has become a feature film.",
-  "We are no longer waiting. We are participating in a computing event.",
-  "The solver is still alive. It is just making a very long point.",
-  "This runtime has stopped being a number and started being a lifestyle.",
-  "I would say 'almost there,' but my lawyer says words have meanings.",
-  "Some tables are born quick. Some tables make you remember them.",
-  "This is the kind of wait that makes the cache feel like a personal friend.",
-  "If patience had a benchmark, you would be passing it right now.",
-  "The algorithm is not stuck. It is just refusing to summarize.",
-  "When this finishes, the save file deserves a tiny velvet rope.",
-  "We are in the director's cut of pruning table generation.",
-  "The table has now taken enough time to develop opinions.",
-];
+// Interleave the topics so every wait gets facts, explanations, and a few jokes.
+const pruningRotatingLines = Array.from(
+  { length: Math.max(pruningFtoFacts.length, pruningSearchNotes.length, pruningJokes.length) },
+  (_, index) => [pruningFtoFacts[index], pruningSearchNotes[index], pruningJokes[index]],
+).flat().filter((line): line is string => line !== undefined);
 
 type PruningProgressPoint = {
   name: string;
@@ -434,28 +415,10 @@ function pruningTableWasSlow(points: PruningProgressPoint[], observedAt?: number
   return !!lastPoint && (observedAt ?? lastPoint.createdAt) - startedAt >= pruningSlowGateMs;
 }
 
-function pickTimedPruningLine(name: string, tableElapsedMs: number, slot: number): string {
-  const elapsedSeconds = tableElapsedMs / 1000;
-  const heavyTable = isExpensivePruningTable(name);
-  const seed = slot;
-  const pick = (lines: string[]) => lines[Math.abs(seed) % lines.length];
-
-  if (elapsedSeconds >= 420) {
-    return pick(pruningLinesMarathon);
-  }
-  if (elapsedSeconds >= 180) {
-    return pick(pruningLinesLong);
-  }
-  if (heavyTable && elapsedSeconds >= 45) {
-    return pick(pruningLinesHeavyTable);
-  }
-  if (elapsedSeconds >= 60) {
-    return pick(pruningLinesSlow);
-  }
-  if (elapsedSeconds >= 12) {
-    return pick(pruningLinesSteady);
-  }
-  return pick(pruningLinesOpening);
+function pickRotatingPruningLine(name: string, slot: number): string {
+  // Different tables start at different places; each then visits the whole pool.
+  const offset = Array.from(name).reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 0);
+  return pruningRotatingLines[(offset + slot - 1) % pruningRotatingLines.length];
 }
 
 function pickPruningOneLiner(
@@ -523,7 +486,7 @@ function pickPruningOneLiner(
     }
   }
 
-  return pickTimedPruningLine(currentName, tableElapsedMs, slot - usedForcedSlots);
+  return pickRotatingPruningLine(currentName, slot - usedForcedSlots);
 }
 
 function normalizeHexColor(value: string): string | null {
@@ -1318,7 +1281,7 @@ function App() {
       <header className="app-header">
         <div>
           <h1>{mode === "combiner" ? "FTO Alg Combiner" : "FTO Alg Finder"}</h1>
-          <p>By Abid Ibn Ashraf</p>
+          <p>by Abid &amp; Matt</p>
         </div>
         <div className="topbar-right">
           <div className="settings-menu">
@@ -1636,14 +1599,31 @@ function App() {
               <h2>About</h2>
               <button className="secondary" onClick={() => setAboutOpen(false)}>Close</button>
             </div>
-            <p>Created by Abid Ibn Ashraf.</p>
-            <div className="about-links">
-              <a href="https://www.worldcubeassociation.org/persons/2024ASHR02" target="_blank" rel="noreferrer">
-                WCA: 2024ASHR02
-              </a>
-              <a href="https://github.com/Abid-speedcuber" target="_blank" rel="noreferrer">
-                GitHub
-              </a>
+            <p>Created by Abid and Matt.</p>
+            <div className="about-authors">
+              {[
+                { name: "Abid", wcaId: "2024ASHR02", github: "https://github.com/Abid-speedcuber" },
+                { name: "Matt", wcaId: "2023MAOS01", github: "https://github.com/Mattttttttttttttttttttttttttttttt" },
+              ].map((author) => (
+                <div className="about-author" key={author.name}>
+                  <strong>{author.name}</strong>
+                  <div className="about-links">
+                    <a
+                      href={`https://www.worldcubeassociation.org/persons/${author.wcaId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`${author.name}'s WCA profile (${author.wcaId})`}
+                    >
+                      <img src={wcaLogo} alt="" width="24" height="24" />
+                      {author.wcaId}
+                    </a>
+                    <a href={author.github} target="_blank" rel="noreferrer" aria-label={`${author.name}'s GitHub profile`}>
+                      <img src={githubLogo} alt="" width="24" height="24" />
+                      GitHub
+                    </a>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
