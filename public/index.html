@@ -6,7 +6,7 @@
     <title>FTO Alg Finder</title>
     <meta
       name="description"
-      content="FTO Alg Finder is a desktop solver to help you gen the ideal FTO algs. Think Cube Explorer but for FTO: we support graphical input, partial pieces, alg to set state, restricted movesets, last-layer mode, and center disambiguation."
+      content="FTO Alg Finder is a desktop solver to help you generate the ideal FTO algs. Think Cube Explorer but for FTO: we support graphical input, partial pieces, alg to set state, restricted movesets, last-layer mode, and center disambiguation."
     />
     <link rel="icon" href="assets/app-icon.png" />
     <link rel="stylesheet" href="styles.css" />
@@ -17,6 +17,7 @@
     <script src="fto-viewer/poly3dlib.js" defer></script>
     <script src="fto-viewer/fto-viewer.js" defer></script>
     <script src="hero-viewer.js" defer></script>
+    <script src="screenshots.js" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -37,7 +38,7 @@
           <p class="eyebrow">Built by Abid & Matt</p>
           <h1 id="hero-title">FTO Alg Finder</h1>
           <p class="lede">
-            Best software to generate FTO algs and create your own dream algset.
+            The best software for generating move-optimal and speed-optimal FTO algs.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#downloads">Download</a>
@@ -64,7 +65,7 @@
           <h2 id="intro-title">The first complete FTO solver.</h2>
         </div>
         <p>
-          FTO Alg Finder is a desktop solver to help you gen the ideal FTO algs.<br>
+          FTO Alg Finder is a desktop solver to help you generate the ideal FTO algs.<br>
           Think Cube Explorer but for FTO: we support graphical input, partial pieces, alg to set state, restricted movesets, last-layer mode, and center disambiguation.
         </p>
       </section>
@@ -94,18 +95,18 @@
         </div>
         <div class="demo-grid">
           <figure class="demo-large demo-main">
-            <img src="screenshots/app-main.png" alt="Default instance setup in FTO Alg Finder" />
+            <a class="screenshot-link" href="screenshots/app-main.png" aria-label="Enlarge screenshot"><img src="screenshots/app-main.png" alt="Default instance setup in FTO Alg Finder" /></a>
             <figcaption>All 15-move RUL solutions of the state</figcaption>
           </figure>
           <figure class="demo-modal">
-            <img src="screenshots/app-main3.png" alt="Default instance creation modal in FTO Alg Finder" />
+            <a class="screenshot-link" href="screenshots/app-main3.png" aria-label="Enlarge screenshot"><img src="screenshots/app-main3.png" alt="Default instance creation modal in FTO Alg Finder" /></a>
             <figcaption>Selecting the moves you actually use <br> to solve faster with tighter pruning</figcaption>
           </figure>
           <figure class="demo-progress">
-            <img
+            <a class="screenshot-link" href="screenshots/app-pruning-progress.png" aria-label="Enlarge screenshot"><img
               src="screenshots/app-pruning-progress.png"
               alt="Pruning table generation progress in FTO Alg Finder"
-            />
+            /></a>
             <figcaption>One-time pruning table generation</figcaption>
           </figure>
         </div>
@@ -121,7 +122,7 @@
             <h3>Minimum practical setup</h3>
             <ul>
               <li>64-bit Windows or Linux desktop.</li>
-              <li>8 GiB total RAM with at least 1.2 Gib available, ready to go.</li>
+              <li>8 GiB total RAM with at least 1.2 GiB available, ready to go.</li>
               <li>2 GiB free disk space for pre-generated tables of one solver instance.</li>
             </ul>
           </article>
@@ -130,7 +131,7 @@
             <ul>
               <li>5-10 GiB free disk space for several solver instances and pruning tables.</li>
               <li>Multiple CPU cores when using the thread setting.</li>
-              <li>16 GiB ram for multitasking while the app has pruning tables loaded.</li>
+              <li>16 GiB RAM for multitasking while the app has pruning tables loaded.</li>
             </ul>
           </article>
         </div>
@@ -214,9 +215,19 @@
             </div>
           </article>
         </div>
-        <p class="source-build">Source build: <code>cd main && npm install && npm run tauri build</code></p>
+        <div class="source-contact">
+          <p>Find the source code on <a class="github-link" href="https://github.com/Abid-speedcuber/FTO-alg-finder"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.09c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27.93.1-.72.39-1.22.71-1.5-2.5-.29-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.09 1.15a10.8 10.8 0 0 1 5.62 0c2.15-1.45 3.09-1.15 3.09-1.15.61 1.55.23 2.7.11 2.98.72.79 1.16 1.79 1.16 3.02 0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.03.76 2.08v3.1c0 .3.2.65.77.54A11.25 11.25 0 0 0 12 .75Z"/></svg> <strong>GitHub</strong></a>.</p>
+          <p>Found a bug? <a href="https://github.com/Abid-speedcuber/FTO-alg-finder/issues">Open a GitHub issue</a> or contact me on Discord: <strong>abid_ibn_ashraf</strong>.</p>
+        </div>
       </section>
     </main>
+
+    <dialog class="screenshot-dialog" aria-label="Screenshot preview">
+      <button type="button" class="screenshot-close" aria-label="Close screenshot preview" autofocus>×</button>
+      <div class="screenshot-viewport">
+        <img class="screenshot-full" alt="" draggable="false" />
+      </div>
+    </dialog>
 
     <footer>
       <p>Licensed under GPL-3.0-or-later.</p>
