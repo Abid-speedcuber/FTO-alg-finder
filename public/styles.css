@@ -1,11 +1,11 @@
 :root {
   color: #f7f3e8;
   background: #0c0f13;
-  --screenshot-main-ratio: 2 / 1.5;
-  --screenshot-modal-ratio: 2 / 1.65;
-  --screenshot-progress-ratio: 2 / 0.32;
-  --screenshot-left-column: 1.55fr;
-  --screenshot-right-column: 1fr;
+  --demo-main-ratio: 2 / 1.5;
+  --demo-modal-ratio: 2 / 1.65;
+  --demo-progress-ratio: 2 / 0.32;
+  --demo-left-column: 1.55fr;
+  --demo-right-column: 1fr;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -153,7 +153,7 @@ nav a:hover {
 }
 
 .hero .eyebrow,
-.screenshots .eyebrow,
+.demos .eyebrow,
 .downloads .eyebrow {
   color: #77d5ff;
 }
@@ -166,11 +166,12 @@ p {
 }
 
 h1 {
-  max-width: 720px;
+  max-width: 10ch;
   margin-bottom: 20px;
-  font-size: clamp(52px, 8.4vw, 112px);
-  line-height: 0.9;
-  letter-spacing: 0;
+  font-size: clamp(52px, 7vw, 92px);
+  line-height: 0.94;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
 }
 
 .lede {
@@ -184,8 +185,8 @@ h1 {
 
 .hero-actions,
 .download-grid,
-.screenshot-grid,
-.requirement-grid,
+.demo-grid,
+.prerequisite-grid,
 .feature-band {
   display: grid;
   gap: 18px;
@@ -329,7 +330,7 @@ h1 {
 h2 {
   margin-bottom: 14px;
   font-size: clamp(30px, 4vw, 52px);
-  line-height: 1.05;
+  line-height: 1.5;
   letter-spacing: 0;
 }
 
@@ -348,6 +349,8 @@ h3 {
 }
 
 .intro p:last-child {
+  display: flex;
+  align-items: center;
   margin: 0;
   color: #4d4138;
   font-size: 18px;
@@ -362,7 +365,7 @@ h3 {
 }
 
 .feature-band article,
-.requirement-grid article,
+.prerequisite-grid article,
 .download-card,
 figure {
   border: 1px solid #d8cbb5;
@@ -397,7 +400,7 @@ figure {
 }
 
 .feature-band p,
-.requirement-grid li,
+.prerequisite-grid li,
 .download-card p,
 figcaption,
 footer {
@@ -405,31 +408,31 @@ footer {
   line-height: 1.55;
 }
 
-.screenshots {
+.demos {
   color: #f7f3e8;
   background: linear-gradient(180deg, #10151b, #0c0f13);
 }
 
-.screenshot-grid {
-  grid-template-columns: minmax(0, var(--screenshot-left-column)) minmax(280px, var(--screenshot-right-column));
+.demo-grid {
+  grid-template-columns: minmax(0, var(--demo-left-column)) minmax(280px, var(--demo-right-column));
   grid-template-rows: auto auto;
   align-items: stretch;
 }
 
-.screenshot-large {
+.demo-large {
   grid-row: span 2;
 }
 
-.screenshot-main {
-  --screenshot-ratio: var(--screenshot-main-ratio);
+.demo-main {
+  --demo-ratio: var(--demo-main-ratio);
 }
 
-.screenshot-modal {
-  --screenshot-ratio: var(--screenshot-modal-ratio);
+.demo-modal {
+  --demo-ratio: var(--demo-modal-ratio);
 }
 
-.screenshot-progress {
-  --screenshot-ratio: var(--screenshot-progress-ratio);
+.demo-progress {
+  --demo-ratio: var(--demo-progress-ratio);
 }
 
 figure {
@@ -442,13 +445,13 @@ figure {
 figure img {
   display: block;
   width: 100%;
-  aspect-ratio: var(--screenshot-ratio, 16 / 10);
+  aspect-ratio: var(--demo-ratio, 16 / 10);
   object-fit: contain;
   object-position: center top;
   background: #0e141b;
 }
 
-.screenshot-large img {
+.demo-large img {
   height: calc(100% - 66px);
   min-height: 0;
   aspect-ratio: auto;
@@ -459,18 +462,19 @@ figcaption {
   color: rgb(247 243 232 / 0.72);
   font-size: 14px;
   font-weight: 650;
+  text-align: center;
 }
 
-.requirements {
+.prerequisites {
   color: #17120e;
   background: #f7f3e8;
 }
 
-.requirement-grid {
+.prerequisite-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.requirement-grid article {
+.prerequisite-grid article {
   padding: 28px;
 }
 
@@ -522,13 +526,6 @@ li + li {
 
 .download-card p {
   min-height: 50px;
-}
-
-.download-card small {
-  display: block;
-  margin-top: 12px;
-  color: #6d6256;
-  font-size: 13px;
 }
 
 .package-logo {
@@ -597,8 +594,8 @@ footer p {
   .hero,
   .intro,
   .feature-band,
-  .screenshot-grid,
-  .requirement-grid,
+  .demo-grid,
+  .prerequisite-grid,
   .download-grid {
     grid-template-columns: 1fr;
   }
@@ -608,13 +605,13 @@ footer p {
     grid-column: auto;
   }
 
-  .screenshot-large {
+  .demo-large {
     grid-row: auto;
   }
 
-  .screenshot-large img {
+  .demo-large img {
     height: auto;
-    aspect-ratio: var(--screenshot-ratio, 16 / 10);
+    aspect-ratio: var(--demo-ratio, 16 / 10);
   }
 
   .hero {
