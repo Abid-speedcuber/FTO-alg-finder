@@ -6,6 +6,7 @@ import "@simonwep/pickr/dist/themes/nano.min.css";
 import AlgCombiner from "./AlgCombiner";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
+import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm } from "./rotation";
 
 type CubieState = {
   cp: number[];
@@ -745,6 +746,8 @@ function App() {
   const [result, setResult] = useState<SolveResult | null>(null);
   const [running, setRunning] = useState(false);
   const [terminal, setTerminal] = useState<TerminalLine[]>([]);
+  const [rotationInput, setRotationInput] = useState("U,F");
+  const [executionHold, setExecutionHold] = useState(DEFAULT_HOLD);
   const [pruningProgressHistory, setPruningProgressHistory] = useState<PruningProgressPoint[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [pruningStartedAt, setPruningStartedAt] = useState<number | null>(null);
@@ -1737,24 +1740,54 @@ function App() {
             stateInvalid={stateErrors.length > 0}
             onInvalidStateClick={() => setStateErrorsOpen(true)}
             footer={
-              <div className="terminal" ref={terminalRef}>
-                {displayTerminal.length === 0 ? (
-                  <div className="terminal-placeholder">solutions and solver logs will appear here</div>
-                ) : (
-                  displayTerminal.map((line) => (
-                    <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
-                      {line.text}
-                      {line.kind === "progress" ? (
-                        <div className="terminal-progress-track">
-                          <div
-                            className="terminal-progress-fill"
-                            style={{ width: `${pruningProgressPercent(line.text)}%` }}
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  ))
-                )}
+              <div className="solver-output">
+                <div className="output-toolbar">
+                  <input
+                    className="output-rotation"
+                    aria-label="Execution rotation: original faces at U and F"
+                    aria-invalid={!parseExecutionHold(rotationInput)}
+                    title={parseExecutionHold(rotationInput)
+                      ? `Execution hold (${executionHold.notation}): original faces at U,F. U,F is unchanged; R,F uses EIF.`
+                      : "Use two distinct, non-opposite faces, such as U,F or R,F. The last valid hold is still shown."}
+                    value={rotationInput}
+                    placeholder="U,F"
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    onChange={(event) => {
+                      const input = event.target.value;
+                      setRotationInput(input);
+                      const hold = parseExecutionHold(input);
+                      if (hold) setExecutionHold(hold);
+                    }}
+                    onBlur={() => setRotationInput(executionHold.input)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === "Escape") {
+                        setRotationInput(executionHold.input);
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="terminal" ref={terminalRef}>
+                  {displayTerminal.length === 0 ? (
+                    <div className="terminal-placeholder">solutions and solver logs will appear here</div>
+                  ) : (
+                    displayTerminal.map((line) => (
+                      <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
+                        {line.kind === "solution" ? rotateAlgorithm(line.text, executionHold) : line.text}
+                        {line.kind === "progress" ? (
+                          <div className="terminal-progress-track">
+                            <div
+                              className="terminal-progress-fill"
+                              style={{ width: `${pruningProgressPercent(line.text)}%` }}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             }
           />

@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "tauri": "tauri",
-    "check": "tsc -b"
+    "check": "tsc -b",
+    "test:rotation": "node tests/rotation.test.mjs"
   },
   "dependencies": {
     "@simonwep/pickr": "^1.10.2",

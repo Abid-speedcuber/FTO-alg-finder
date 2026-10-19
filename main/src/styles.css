@@ -1227,6 +1227,45 @@ button.viewer-state.invalid:hover {
   box-shadow: inset 0 0 0 2px #ffffff, 0 0 0 1px #263238;
 }
 
+.solver-output {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 160px;
+  overflow: hidden;
+  border: 1px solid #161a1f;
+  border-radius: 8px;
+  background: #171a1f;
+}
+
+.output-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 5px 8px 0;
+}
+
+input.output-rotation {
+  width: 76px;
+  min-height: 0;
+  height: 22px;
+  padding: 1px 5px;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  background: transparent;
+  color: #c8d0d8;
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.output-rotation[aria-invalid="true"] {
+  border-color: #79565c;
+}
+
+.solver-output .terminal {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
 .terminal {
   min-height: 160px;
   height: 100%;
