@@ -52,6 +52,28 @@ Solver app:
 - Right click on a piece on the graphical FTO to do Partial-position input.
 - If only one center is partially defined of a color, the ability to choose exactly where the center should end up after the solve.
 
+Bloom tables are available under **Menu → Pruning → Bloom tables**. Choose the
+moves, depth (1–20), and memory cap (up to 512 MiB), then generate. Size estimation
+is not included yet. Generation runs in the background with progress and can be
+cancelled with **Stop**. If the table fills up, generation stops without saving an
+incomplete table or replacing an existing one.
+
+Select **Last-layer mode** (enabled by default) to build a table for the last-layer
+solver's goal: free leading/trailing U or U′, the distinct UF center groups, and the
+three fixed RL center identities. Depth counts the moves between the free U
+adjustments. These adjustments work even when U is not in the chosen move set.
+Uncheck it to build a full-position table instead.
+
+Completed tables are saved by goal mode, move set, and depth. Searches load the
+deepest compatible saved table automatically, including tables covering a superset
+of the search's allowed moves. These supplement the existing pattern tables;
+full-position and last-layer caches are never mixed. Partial-position searches
+keep their existing pruning. Manage saved Bloom tables in **Settings → Manage
+storage**, or use **Unload pruning table from RAM** to release the loaded tables.
+Bloom membership is checked when the remaining search depth reaches the saved
+radius; a possible match still undergoes normal search and the mode's exact goal
+check.
+
 CLI solver:
 
 - Reads a scramble from `--scramble`, JSON from `--json`, JSON from stdin, or solved state by default.

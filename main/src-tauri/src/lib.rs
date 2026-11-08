@@ -1,3 +1,4 @@
+mod bloom_cache;
 mod validation;
 
 use fto_core::{
@@ -154,6 +155,7 @@ struct SolveLine {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PruningCacheStatus {
+    has_bloom: bool,
     has_tables: bool,
     has_pruning: bool,
 }
@@ -161,6 +163,9 @@ struct PruningCacheStatus {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PruningTableInfo {
+    last_layer_mode: bool,
+    kind: String,
+    depth: Option<u8>,
     id: String,
     codename: String,
     moves: Vec<String>,
@@ -176,6 +181,7 @@ struct SolverState {
 
 #[derive(Default)]
 struct SolverCache {
+    bloom: Option<bloom_cache::CachedBloom>,
     tables: Option<Arc<TransitionTables>>,
     pruning: Option<CachedPruning>,
     ll_pruning: Option<CachedLlPruning>,
@@ -283,6 +289,8 @@ fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
     cache.tables = None;
     cache.pruning = None;
+    cache.ll_pruning = None;
+    cache.bloom = None;
     Ok(())
 }
 
@@ -295,6 +303,7 @@ fn pruning_cache_status(
         .lock()
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
     Ok(PruningCacheStatus {
+        has_bloom: cache.bloom.is_some(),
         has_tables: cache.tables.is_some(),
         has_pruning: cache.pruning.is_some(),
     })
@@ -462,6 +471,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             solve_fto,
             generate_pruning_table,
+            bloom_cache::generate_bloom_table,
             stop_solve,
             unload_pruning_table,
             pruning_cache_status,
@@ -674,6 +684,7 @@ fn run_in_process_solve(
             allowed_moves: allowed_moves.clone(),
             free_u_ends: request.last_layer_mode,
             cancel: Some(cancel.clone()),
+            bloom: None,
             solution_reporter: Some(reporter),
         };
         emit_line(app, "info", "using dynamic partial pruning tables");
@@ -736,6 +747,16 @@ fn run_in_process_solve(
         None
     };
 
+    let bloom = bloom_cache::load(
+        cache,
+        &pruning_dir,
+        &allowed_moves,
+        request.max_depth,
+        request.last_layer_mode,
+        cancel,
+        app,
+    )?;
+
     let result = if let Some(max_depth) = request.max_depth {
         solve_once(
             cubie,
@@ -743,6 +764,7 @@ fn run_in_process_solve(
             pruning.as_deref(),
             ll_pruning.as_deref(),
             mini.as_ref(),
+            bloom.as_ref(),
             max_depth,
             true,
             request.find_all,
@@ -759,6 +781,7 @@ fn run_in_process_solve(
             pruning.as_deref(),
             ll_pruning.as_deref(),
             mini.as_ref(),
+            bloom.as_ref(),
             request.find_all,
             request.threads.max(1),
             allowed_moves.clone(),
@@ -1072,6 +1095,7 @@ fn solve_once(
     pruning: Option<&SolverPruning>,
     ll_pruning: Option<&PatternDatabases>,
     mini: Option<&MiniPruning>,
+    bloom: Option<&Arc<fto_core::bloom::BloomTable>>,
     max_depth: u8,
     exact_depth: bool,
     find_all: bool,
@@ -1090,6 +1114,7 @@ fn solve_once(
         allowed_moves,
         free_u_ends: last_layer_mode,
         cancel: Some(cancel.clone()),
+        bloom: bloom.cloned(),
         solution_reporter: Some(reporter),
     };
     let result = if last_layer_mode {
@@ -1118,6 +1143,7 @@ fn solve_incrementally(
     pruning: Option<&SolverPruning>,
     ll_pruning: Option<&PatternDatabases>,
     mini: Option<&MiniPruning>,
+    bloom: Option<&Arc<fto_core::bloom::BloomTable>>,
     find_all: bool,
     threads: usize,
     allowed_moves: Vec<Move>,
@@ -1147,6 +1173,7 @@ fn solve_incrementally(
             allowed_moves: allowed_moves.clone(),
             free_u_ends: last_layer_mode,
             cancel: Some(cancel.clone()),
+            bloom: bloom.cloned(),
             solution_reporter: Some(reporter),
         };
         let mut result = if last_layer_mode {
@@ -1229,6 +1256,9 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
                 .map_err(|error| error.to_string())
         })?;
         tables.push(PruningTableInfo {
+            last_layer_mode: false,
+            kind: "pattern".into(),
+            depth: None,
             id: file_suffix.clone(),
             codename: pruning_codename(&file_suffix),
             moves: moves.iter().map(|mv| format!("{mv:?}")).collect(),
@@ -1236,6 +1266,7 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
             bytes,
         });
     }
+    tables.extend(bloom_cache::discover(out_dir)?);
     tables.sort_by(|a, b| a.codename.cmp(&b.codename));
     Ok(tables)
 }

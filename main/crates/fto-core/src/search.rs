@@ -1,3 +1,8 @@
+#[cfg(test)]
+mod bloom_bench;
+#[cfg(test)]
+mod bloom_last_layer_tests;
+
 use crate::{
     FtoCoord, FtoCubie,
     moves::{MOVE_COUNT, Move, move_cubies},
@@ -23,6 +28,7 @@ pub struct SearchConfig {
     pub allowed_moves: Vec<Move>,
     pub free_u_ends: bool,
     pub cancel: Option<Arc<AtomicBool>>,
+    pub bloom: Option<Arc<crate::bloom::BloomTable>>,
     pub solution_reporter: Option<Arc<SolutionReporter>>,
 }
 
@@ -38,6 +44,7 @@ impl std::fmt::Debug for SearchConfig {
             .field("allowed_moves", &self.allowed_moves)
             .field("free_u_ends", &self.free_u_ends)
             .field("cancel", &self.cancel.is_some())
+            .field("bloom", &self.bloom.as_ref().map(|table| table.info()))
             .field("solution_reporter", &self.solution_reporter.is_some())
             .finish()
     }
@@ -52,6 +59,7 @@ impl Default for SearchConfig {
             allowed_moves: Move::ALL.to_vec(),
             free_u_ends: false,
             cancel: None,
+            bloom: None,
             solution_reporter: None,
         }
     }
@@ -82,7 +90,7 @@ struct ParallelLastLayerRoot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LastLayerState {
+pub(crate) struct LastLayerState {
     corner: u16,
     edge0: u16,
     edge1: u16,
@@ -710,6 +718,7 @@ fn solve_last_layer_with_pruning_kind_threads(
         allowed_moves: config.allowed_moves.clone(),
         free_u_ends: true,
         cancel: config.cancel.clone(),
+        bloom: config.bloom.clone(),
         solution_reporter: config.solution_reporter.clone(),
     };
     solve_last_layer_impl(
@@ -777,6 +786,7 @@ fn solve_last_layer_impl(
 
         let split_ply = parallel_split_ply(depth, threads);
         let mut collector = LastLayerRootCollector {
+            tail_bloom: last_layer_bloom_for_config(config),
             tables,
             pruning,
             move_pruning: pruning.and_then(LastLayerPruning::for_moves),
@@ -968,6 +978,7 @@ fn solve_with_pruning_threads_impl(
 
         let split_ply = parallel_split_ply(depth, threads);
         let mut collector = SearchRootCollector {
+            tail_bloom: bloom_for_config(config),
             tables,
             pruning,
             move_pruning: pruning.and_then(SolverPruning::for_moves),
@@ -1007,6 +1018,9 @@ fn solve_with_pruning_threads_impl(
                 let next_root = &next_root;
                 handles.push(scope.spawn(move || {
                     let mut ctx = SearchContext {
+                        tail_bloom: bloom_for_config(config),
+                        #[cfg(test)]
+                        bloom: None,
                         tables,
                         pruning,
                         move_pruning: pruning.and_then(SolverPruning::for_moves),
@@ -1125,6 +1139,10 @@ pub fn solve_bidirectional(
     }
 
     let mut matcher = ForwardMatcher {
+        #[cfg(test)]
+        bloom: None,
+        #[cfg(test)]
+        lookup_stats: bloom_bench::LookupStats::default(),
         tables,
         pruning,
         move_pruning: pruning.and_then(SolverPruning::for_moves),
@@ -1251,6 +1269,10 @@ fn match_bidirectional_parallel(
         for chunk in roots.chunks(chunk_size) {
             handles.push(scope.spawn(move || {
                 let mut matcher = ForwardMatcher {
+                    #[cfg(test)]
+                    bloom: None,
+                    #[cfg(test)]
+                    lookup_stats: bloom_bench::LookupStats::default(),
                     tables,
                     pruning,
                     move_pruning: pruning.and_then(SolverPruning::for_moves),
@@ -1296,6 +1318,9 @@ fn solve_with_pruning_single(
     report: Option<&DepthReporter<'_>>,
 ) -> SearchResult {
     let mut ctx = SearchContext {
+        tail_bloom: bloom_for_config(config),
+        #[cfg(test)]
+        bloom: None,
         tables,
         pruning,
         move_pruning: pruning.and_then(SolverPruning::for_moves),
@@ -1346,6 +1371,9 @@ fn solve_with_pruning_single(
 }
 
 struct SearchContext<'a> {
+    tail_bloom: Option<&'a crate::bloom::BloomTable>,
+    #[cfg(test)]
+    bloom: Option<&'a bloom_bench::BloomTable>,
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     move_pruning: Option<&'a SolverPruning>,
@@ -1361,6 +1389,7 @@ struct SearchContext<'a> {
 }
 
 struct LastLayerSearchContext<'a> {
+    tail_bloom: Option<&'a crate::bloom::BloomTable>,
     tables: &'a TransitionTables,
     pruning: Option<LastLayerPruning<'a>>,
     move_pruning: Option<LastLayerPruning<'a>>,
@@ -1383,6 +1412,7 @@ impl<'a> LastLayerSearchContext<'a> {
         goal: LastLayerGoal,
     ) -> Self {
         Self {
+            tail_bloom: last_layer_bloom_for_config(config),
             tables,
             pruning,
             move_pruning: pruning.and_then(LastLayerPruning::for_moves),
@@ -1423,6 +1453,11 @@ impl<'a> LastLayerSearchContext<'a> {
         }
         self.nodes += 1;
         if !pruning_checked && self.pruning_value(state) > depth_left {
+            return;
+        }
+        if self.tail_bloom.is_some_and(|table| {
+            depth_left == table.depth() && !table.contains_hashes(state.bloom_hashes())
+        }) {
             return;
         }
         if depth_left == 0 {
@@ -1550,6 +1585,18 @@ impl SearchContext<'_> {
         if mini_pruning_value > depth_left {
             return;
         }
+        if self.tail_bloom.is_some_and(|table| {
+            depth_left == table.depth() && !table.contains(state.bloom_state())
+        }) {
+            return;
+        }
+        #[cfg(test)]
+        if self
+            .bloom
+            .is_some_and(|filter| depth_left == filter.depth && !filter.contains(state))
+        {
+            return;
+        }
         if depth_left == 0 {
             if let Some(suffix) = free_u_suffix_with_raw_pruning(
                 state,
@@ -1648,6 +1695,24 @@ impl SearchContext<'_> {
     }
 }
 
+fn bloom_for_config(config: &SearchConfig) -> Option<&crate::bloom::BloomTable> {
+    config.bloom.as_deref().filter(|table| {
+        !config.free_u_ends
+            && table.mode() == crate::bloom::BloomMode::FullPosition
+            && table.covers(&config.allowed_moves)
+    })
+}
+
+fn last_layer_bloom_for_config(config: &SearchConfig) -> Option<&crate::bloom::BloomTable> {
+    config.bloom.as_deref().filter(|table| {
+        table.mode() == crate::bloom::BloomMode::LastLayer && table.covers(&config.allowed_moves)
+    })
+}
+
+pub(crate) fn last_layer_position_moves() -> [[u8; 12]; MOVE_COUNT] {
+    center_position_moves(CenterOrbitForPosition::Rl)
+}
+
 fn is_cancelled(config: &SearchConfig) -> bool {
     config
         .cancel
@@ -1709,6 +1774,7 @@ fn parallel_split_ply(depth: u8, threads: usize) -> u8 {
 }
 
 struct SearchRootCollector<'a> {
+    tail_bloom: Option<&'a crate::bloom::BloomTable>,
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     move_pruning: Option<&'a SolverPruning>,
@@ -1764,6 +1830,11 @@ impl SearchRootCollector<'_> {
             })
             .unwrap_or(0);
         if mini_pruning_value > depth_left {
+            return;
+        }
+        if self.tail_bloom.is_some_and(|table| {
+            depth_left == table.depth() && !table.contains(state.bloom_state())
+        }) {
             return;
         }
         if depth_left == 0 || ply >= self.split_ply {
@@ -1841,6 +1912,7 @@ impl SearchRootCollector<'_> {
 }
 
 struct LastLayerRootCollector<'a> {
+    tail_bloom: Option<&'a crate::bloom::BloomTable>,
     tables: &'a TransitionTables,
     pruning: Option<LastLayerPruning<'a>>,
     move_pruning: Option<LastLayerPruning<'a>>,
@@ -1900,6 +1972,11 @@ impl LastLayerRootCollector<'_> {
             return;
         }
         if !pruning_checked && self.pruning_value(state) > depth_left {
+            return;
+        }
+        if self.tail_bloom.is_some_and(|table| {
+            depth_left == table.depth() && !table.contains_hashes(state.bloom_hashes())
+        }) {
             return;
         }
         if depth_left == 0 || ply >= self.split_ply {
@@ -2234,6 +2311,10 @@ impl BackwardBuilder<'_> {
 }
 
 struct ForwardMatcher<'a> {
+    #[cfg(test)]
+    bloom: Option<&'a bloom_bench::BloomTable>,
+    #[cfg(test)]
+    lookup_stats: bloom_bench::LookupStats,
     tables: &'a TransitionTables,
     pruning: Option<&'a SolverPruning>,
     move_pruning: Option<&'a SolverPruning>,
@@ -2267,7 +2348,20 @@ impl ForwardMatcher<'_> {
             return;
         }
         if depth_left == 0 {
+            #[cfg(test)]
+            {
+                self.lookup_stats.queries += 1;
+                if self.bloom.is_some_and(|filter| !filter.contains(state)) {
+                    self.lookup_stats.rejected += 1;
+                    return;
+                }
+                self.lookup_stats.exact_probes += 1;
+            }
             if let Some(back_paths) = self.back_paths.get(&state) {
+                #[cfg(test)]
+                {
+                    self.lookup_stats.hits += 1;
+                }
                 for &encoded_back in back_paths {
                     let suffix = decode_inverse_path(encoded_back);
                     if let (Some(&last), Some(&first)) = (self.path.last(), suffix.first()) {
@@ -2595,7 +2689,30 @@ impl Hash for SearchState {
 const LL_RL_FIXED_PIECES: [u8; 3] = [3, 8, 10];
 
 impl LastLayerState {
-    fn from_cubie(cubie: FtoCubie) -> Self {
+    // Exactly the terminal goal fields: do not hash heuristic-only uf3 or
+    // duplicate center labels that this goal deliberately treats as equivalent.
+    pub(crate) fn bloom_hashes(self) -> (u64, u64) {
+        let a = u64::from(self.corner)
+            | (u64::from(self.edge0) << 16)
+            | (u64::from(self.edge1) << 32)
+            | (u64::from(self.edge3) << 48);
+        let b = u64::from(self.ll_uf_center_a)
+            | (u64::from(self.ll_uf_center_b) << 16)
+            | (u64::from(self.rl_center) << 32);
+        let c = u64::from(self.rl_fixed_pos[0])
+            | (u64::from(self.rl_fixed_pos[1]) << 4)
+            | (u64::from(self.rl_fixed_pos[2]) << 8);
+        crate::bloom::last_layer_hashes(a, b, c)
+    }
+    pub(crate) fn bloom_step(
+        self,
+        tables: &TransitionTables,
+        mv: Move,
+        positions: &[[u8; 12]; MOVE_COUNT],
+    ) -> Self {
+        self.apply_with_pruning_child(tables, mv, self.apply_pruning(tables, mv), positions)
+    }
+    pub(crate) fn from_cubie(cubie: FtoCubie) -> Self {
         let coord = cubie.coord();
         Self::from_coord_and_rl(coord, &cubie.rl)
     }
@@ -2741,6 +2858,18 @@ impl LastLayerState {
 }
 
 impl SearchState {
+    fn bloom_state(self) -> crate::bloom::BloomState {
+        crate::bloom::BloomState {
+            corner: self.corner,
+            edge0: self.edge0,
+            edge1: self.edge1,
+            edge3: self.edge3,
+            uf_center: self.uf_center,
+            uf3: self.uf3,
+            rl_center: self.rl_center,
+        }
+    }
+
     fn from_coord(coord: FtoCoord) -> Self {
         Self {
             corner: coord.corner,
@@ -3295,6 +3424,7 @@ mod tests {
                     allowed_moves: moves.to_vec(),
                     free_u_ends,
                     cancel: None,
+                    bloom: None,
                     solution_reporter: None,
                 };
                 let actual = super::solve_with_pruning_threads(
@@ -3370,6 +3500,7 @@ mod tests {
                 allowed_moves: moves.to_vec(),
                 free_u_ends: true,
                 cancel: None,
+                bloom: None,
                 solution_reporter: None,
             };
             let actual = super::solve_last_layer_with_pruning_threads(
@@ -3425,6 +3556,7 @@ mod tests {
                 allowed_moves: Move::ALL.to_vec(),
                 free_u_ends: false,
                 cancel: None,
+                bloom: None,
                 solution_reporter: None,
             },
         );

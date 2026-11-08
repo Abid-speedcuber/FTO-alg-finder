@@ -34,11 +34,15 @@ type SolveLine = {
 type PruningCacheStatus = {
   hasTables: boolean;
   hasPruning: boolean;
+  hasBloom: boolean;
 };
 
 type PruningTableInfo = {
   id: string;
   codename: string;
+  kind: "pattern" | "bloom";
+  lastLayerMode: boolean;
+  depth: number | null;
   moves: string[];
   files: string[];
   bytes: number;
@@ -279,6 +283,7 @@ function transitionProgressName(text: string): string {
 
 function isProgressLine(text: string): boolean {
   return (
+    text.startsWith("bloom progress:") ||
     text.startsWith("pruning progress:") ||
     text.startsWith("loading pruning table progress:") ||
     text.startsWith("saving pruning table progress:") ||
@@ -293,6 +298,7 @@ function isGeneratingPruningProgress(text: string): boolean {
 }
 
 function progressHeading(line: TerminalLine): string {
+  if (line.text.startsWith("bloom progress:")) return "generating Bloom table...";
   if (line.text.startsWith("loading pruning table progress:")) {
     return "loading pruning table...";
   }
@@ -668,6 +674,14 @@ function App() {
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pruningOpen, setPruningOpen] = useState(false);
+  const [pruningKind, setPruningKind] = useState<"pattern" | "bloom">("pattern");
+  const [bloomMoves, setBloomMoves] = useState<string[]>([]);
+  const [bloomLastLayer, setBloomLastLayer] = useState(true);
+  const [bloomDepth, setBloomDepth] = useState("8");
+  const [bloomMemory, setBloomMemory] = useState("200");
+  const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
+    Number(bloomDepth) >= 1 && Number(bloomDepth) <= 20 && Number.isInteger(Number(bloomMemory)) &&
+    Number(bloomMemory) >= 1 && Number(bloomMemory) <= 512;
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -685,7 +699,7 @@ function App() {
     }
     return defaultFaceColors;
   });
-  const [cacheStatus, setCacheStatus] = useState<PruningCacheStatus>({ hasTables: false, hasPruning: false });
+  const [cacheStatus, setCacheStatus] = useState<PruningCacheStatus>({ hasTables: false, hasPruning: false, hasBloom: false });
   const [pruningTables, setPruningTables] = useState<PruningTableInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
@@ -748,6 +762,9 @@ function App() {
       return [lastTerminalLine];
     }
     if (!result?.solutions.length && lastTerminalLine?.kind === "error") {
+      return [lastTerminalLine];
+    }
+    if (!running && lastTerminalLine?.kind === "done" && status === "Bloom table generated") {
       return [lastTerminalLine];
     }
     if (result?.solutions.length) {
@@ -837,7 +854,7 @@ function App() {
       lines.push(...streamedSolutions);
     }
     return lines;
-  }, [now, pruningProgressHistory, result, running, showDebugInfo, terminal]);
+  }, [now, pruningProgressHistory, result, running, showDebugInfo, status, terminal]);
 
   useEffect(() => {
     try {
@@ -858,7 +875,7 @@ function App() {
   const refreshCacheStatus = useCallback(() => {
     invoke<PruningCacheStatus>("pruning_cache_status")
       .then(setCacheStatus)
-      .catch(() => setCacheStatus({ hasTables: false, hasPruning: false }));
+      .catch(() => setCacheStatus({ hasTables: false, hasPruning: false, hasBloom: false }));
   }, []);
 
   const refreshPruningTables = useCallback(() => {
@@ -1018,6 +1035,13 @@ function App() {
           resetPruningTimer();
           setStatus("Stopped");
           refreshCacheStatus();
+        }),
+        listen("bloom-generated", () => {
+          setRunning(false);
+          resetPruningTimer();
+          setStatus("Bloom table generated");
+          refreshCacheStatus();
+          refreshPruningTables();
         }),
         listen("pruning-generated", () => {
           setRunning(false);
@@ -1210,6 +1234,28 @@ function App() {
     }
   }
 
+  async function generateBloomTable() {
+    if (running || !validBloom) return;
+    setPruningOpen(false);
+    setRunning(true);
+    setStatus("Generating Bloom table");
+    setResult(null);
+    resetPruningTimer();
+    clearTerminal();
+    appendLine("info", `generate ${bloomLastLayer ? "last-layer " : ""}Bloom table (depth=${bloomDepth} moves=${bloomMoves.join(" ")} cap=${bloomMemory} MiB)`);
+    try {
+      await invoke("generate_bloom_table", {
+        request: { moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer },
+      });
+    } catch (error) {
+      appendLine("error", `error: ${String(error)}`);
+      setStatus(String(error));
+      setRunning(false);
+      resetPruningTimer();
+      refreshCacheStatus();
+    }
+  }
+
   async function unloadPruningTable() {
     try {
       await invoke("unload_pruning_table");
@@ -1310,6 +1356,7 @@ function App() {
                   <button
                     className="menu-command"
                     onClick={() => {
+                      setBloomMoves([...allowedMoves]);
                       setPruningOpen(true);
                       closeOverlays();
                     }}
@@ -1456,29 +1503,66 @@ function App() {
               <h2>Pruning</h2>
               <button className="secondary" onClick={() => setPruningOpen(false)}>Close</button>
             </div>
-            <div className="option-list modal-option-list">
-              <label className="check modal-check">
-                <input
-                  type="checkbox"
-                  checked={restrictedPruning}
-                  onChange={(event) => setRestrictedPruning(event.target.checked)}
-                />
-                Use only the selected moves to generate the pruning table
-              </label>
-              <label className="check modal-check">
-                <input
-                  type="checkbox"
-                  checked={pruningLastLayerMode}
-                  onChange={(event) => setPruningLastLayerMode(event.target.checked)}
-                />
-                Use last layer mode
-              </label>
+            <div className="pruning-tabs" role="tablist" aria-label="Pruning type">
+              <button role="tab" aria-selected={pruningKind === "pattern"} className={pruningKind === "pattern" ? "primary" : "secondary"} onClick={() => setPruningKind("pattern")}>Pattern tables</button>
+              <button role="tab" aria-selected={pruningKind === "bloom"} className={pruningKind === "bloom" ? "primary" : "secondary"} onClick={() => setPruningKind("bloom")}>Bloom tables</button>
             </div>
-            <div className="modal-footer">
-              <button className="primary" onClick={generatePruningTable} disabled={running || allowedMoves.length === 0}>
-                Generate pruning table
-              </button>
-            </div>
+            {pruningKind === "pattern" ? <>
+              <div className="option-list modal-option-list">
+                <label className="check modal-check">
+                  <input
+                    type="checkbox"
+                    checked={restrictedPruning}
+                    onChange={(event) => setRestrictedPruning(event.target.checked)}
+                  />
+                  Use only the selected moves to generate the pruning table
+                </label>
+                <label className="check modal-check">
+                  <input
+                    type="checkbox"
+                    checked={pruningLastLayerMode}
+                    onChange={(event) => setPruningLastLayerMode(event.target.checked)}
+                  />
+                  Use last layer mode
+                </label>
+              </div>
+              <div className="modal-footer">
+                <button className="primary" onClick={generatePruningTable} disabled={running || allowedMoves.length === 0}>
+                  Generate pruning table
+                </button>
+              </div>
+            </> : <>
+              <p className="modal-subtitle">Store positions within the chosen depth of the goal. Saved tables are used automatically for compatible searches in the same mode, alongside pattern pruning.</p>
+              <label className="check modal-check">
+                <input type="checkbox" checked={bloomLastLayer} onChange={(event) => setBloomLastLayer(event.target.checked)} />
+                Last-layer mode (free leading/trailing U, unique centers)
+              </label>
+              <div className="hint">{bloomLastLayer
+                ? "Matches the last-layer solver’s center identities and free U adjustments, even if U is absent from the selected moves. Depth counts the moves between those adjustments."
+                : "Matches the exact full-position goal, with no free U adjustments."}</div>
+              <div className="bloom-controls">
+                <label className="field">Depth
+                  <input type="number" min="1" max="20" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
+                </label>
+                <label className="field">Memory cap (MiB)
+                  <input type="number" min="1" max="512" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
+                </label>
+              </div>
+              <div className="hint">Generation stops if the table fills up. The saved table may be smaller than the cap. Deeper tables can take a long time to build; Stop cancels the build.</div>
+              <h3>Allowed moves ({bloomMoves.length})</h3>
+              <div className="bloom-move-actions">
+                <button className="secondary" onClick={() => setBloomMoves([...allowedMoves])}>Use selected moves</button>
+                <button className="secondary" onClick={() => setBloomMoves([...activeInstance.moves])}>Use instance moves</button>
+              </div>
+              <div className="modal-move-grid">
+                {activeInstance.moves.map((move) => <button key={move} className={`move-toggle${bloomMoves.includes(move) ? "" : " banned"}`} aria-pressed={bloomMoves.includes(move)} onClick={() => setBloomMoves((selected) => selected.includes(move) ? selected.filter((m) => m !== move) : [...selected, move])}>{move}</button>)}
+              </div>
+              <div className="hint">A table can cover searches using any subset of its moves in the same mode. Partial-position searches use their existing pruning.</div>
+              <div className="modal-footer">
+                <button className="primary" onClick={generateBloomTable} disabled={running || !validBloom}>Generate Bloom table</button>
+              </div>
+            </>}
+
           </div>
         </div>
       ) : null}
@@ -1518,8 +1602,9 @@ function App() {
           <div className="modal confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h2>Delete pruning table?</h2>
             <p className="modal-subtitle">
-              This removes {deleteTableConfirm.codename} from disk. It can be regenerated later, but the next solve
-              using these moves may need to rebuild it.
+              This removes {deleteTableConfirm.codename} from disk. {deleteTableConfirm.kind === "bloom"
+                ? "Future solves will continue without this Bloom table until you generate it again."
+                : "It can be regenerated later, but the next solve using these moves may need to rebuild it."}
             </p>
             <div className="storage-row confirm-summary">
               <div>
@@ -1887,7 +1972,7 @@ function App() {
               {running ? "Stop" : "Solve"}
             </button>
             </div>
-            <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !cacheStatus.hasPruning}>
+            <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !(cacheStatus.hasPruning || cacheStatus.hasBloom)}>
               Unload pruning table from RAM
             </button>
           </section>

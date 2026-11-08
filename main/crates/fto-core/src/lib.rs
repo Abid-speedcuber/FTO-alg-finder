@@ -1,5 +1,6 @@
 #![doc = "Core data structures and search scaffolding for the FTO solver."]
 
+pub mod bloom;
 pub mod coord;
 pub mod cubie;
 pub mod moves;
