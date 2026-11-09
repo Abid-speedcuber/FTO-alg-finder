@@ -41,7 +41,7 @@ Solver app:
 
 - 3D graphical FTO input. Manually color in the pieces, or swap the pieces and twist the corners to do the input.
 - Text input for setup moves or algorithms.
-- Exact-depth solving when a depth is supplied. Incremental solving when depth is left as `auto`.
+- Print-style depth selection: `12-15, 17, 20` searches those exact depths, sorted and deduplicated (0–255). With All solutions enabled, results include every selected depth; otherwise search stops at the first successful depth. Empty input or `auto` finds the first successful depth and returns one or all solutions at that depth.
 - Option to return one solution or all found solutions.
 - Configurable thread count. (Not implemented perfectly, max thread count is the max number of allowed moves)
 - Multiple solver instances saved in local storage to make sure of better and more strict pruning (faster solution) and to eliminate unwanted moves.

@@ -1,4 +1,5 @@
 mod bloom_cache;
+mod depths;
 mod validation;
 
 use fto_core::{
@@ -98,6 +99,8 @@ struct SolveRequest {
     allowed_moves: Vec<String>,
     instance_moves: Vec<String>,
     max_depth: Option<u8>,
+    #[serde(default)]
+    depths: Option<Vec<u8>>,
     find_all: bool,
     restricted_pruning: bool,
     mini_pruning: bool,
@@ -696,25 +699,39 @@ fn run_in_process_solve(
     app: &AppHandle,
     cache: &Mutex<SolverCache>,
 ) -> Result<SolveResponse, String> {
+    let selected_depths = depths::normalize(request.depths.as_deref(), request.max_depth)?;
     let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
     let pruning_dir = pruning_dir(app, workspace_root);
     let tables = load_transition_tables(cache, &tables_path, app)?;
 
     if let Some(mask) = partial_mask {
         let problem = PartialProblem { cubie, mask };
-        let reporter = solution_reporter(app.clone());
+        let output = solution_reporter(app.clone(), request.find_all);
         let config = SearchConfig {
-            min_depth: request.max_depth.unwrap_or(0),
-            max_depth: request.max_depth.unwrap_or(u8::MAX),
+            min_depth: 0,
+            max_depth: u8::MAX,
             find_all: request.find_all,
             allowed_moves: allowed_moves.clone(),
             free_u_ends: request.last_layer_mode,
             cancel: Some(cancel.clone()),
             bloom: None,
-            solution_reporter: Some(reporter),
+            solution_reporter: Some(output.reporter.clone()),
         };
         emit_line(app, "info", "using dynamic partial pruning tables");
-        let result = partial::solve_partial_threads(&problem, &config, request.threads.max(1));
+        let result = if let Some(depths) = &selected_depths {
+            let prepared = partial::PreparedPartialSearch::new(&problem, &config, None);
+            search::search_selected_depths(depths, request.find_all, Some(cancel), |depth| {
+                emit_line(app, "search", &format!("searching depth {depth}..."));
+                let result = prepared.solve_depth(&config, depth, request.threads.max(1));
+                if !result.solutions.is_empty() {
+                    emit_line(app, "info", &format!("found solution at depth {depth}"));
+                }
+                Ok(result)
+            })?
+        } else {
+            partial::solve_partial_threads(&problem, &config, request.threads.max(1))
+        };
+        let result = output.finish(result);
         let solutions = format_solutions(&result.solutions);
         emit_solve_summary(app, result.nodes, &solutions);
         return Ok(SolveResponse {
@@ -773,34 +790,44 @@ fn run_in_process_solve(
         None
     };
 
-    let bloom = bloom_cache::load(
-        cache,
-        &pruning_dir,
-        &allowed_moves,
-        request.max_depth,
-        request.last_layer_mode,
-        cancel,
-        app,
-    )?;
-
-    let result = if let Some(max_depth) = request.max_depth {
-        solve_once(
-            cubie,
-            &tables,
-            pruning.as_deref(),
-            ll_pruning.as_deref(),
-            mini.as_ref(),
-            bloom.as_ref(),
-            max_depth,
-            true,
-            request.find_all,
-            request.threads.max(1),
-            allowed_moves.clone(),
+    let result = if let Some(depths) = &selected_depths {
+        search::search_selected_depths(depths, request.find_all, Some(cancel), |depth| {
+            let bloom = bloom_cache::load(
+                cache,
+                &pruning_dir,
+                &allowed_moves,
+                Some(depth),
+                request.last_layer_mode,
+                cancel,
+                app,
+            )?;
+            solve_once(
+                cubie,
+                &tables,
+                pruning.as_deref(),
+                ll_pruning.as_deref(),
+                mini.as_ref(),
+                bloom.as_ref(),
+                depth,
+                true,
+                request.find_all,
+                request.threads.max(1),
+                allowed_moves.clone(),
+                request.last_layer_mode,
+                cancel,
+                app,
+            )
+        })?
+    } else {
+        let bloom = bloom_cache::load(
+            cache,
+            &pruning_dir,
+            &allowed_moves,
+            None,
             request.last_layer_mode,
             cancel,
             app,
-        )?
-    } else {
+        )?;
         solve_incrementally(
             cubie,
             &tables,
@@ -1132,7 +1159,7 @@ fn solve_once(
     app: &AppHandle,
 ) -> Result<search::SearchResult, String> {
     emit_line(app, "search", &format!("searching depth {max_depth}..."));
-    let reporter = solution_reporter(app.clone());
+    let output = solution_reporter(app.clone(), find_all);
     let config = SearchConfig {
         min_depth: if exact_depth { max_depth } else { 0 },
         max_depth,
@@ -1141,7 +1168,7 @@ fn solve_once(
         free_u_ends: last_layer_mode,
         cancel: Some(cancel.clone()),
         bloom: bloom.cloned(),
-        solution_reporter: Some(reporter),
+        solution_reporter: Some(output.reporter.clone()),
     };
     let result = if last_layer_mode {
         search::solve_last_layer_with_pattern_pruning_threads(
@@ -1157,6 +1184,7 @@ fn solve_once(
             threads,
         )
     };
+    let result = output.finish(result);
     if !result.solutions.is_empty() {
         emit_line(app, "info", &format!("found solution at depth {max_depth}"));
     }
@@ -1190,31 +1218,25 @@ fn solve_incrementally(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        emit_line(app, "search", &format!("searching depth {depth}..."));
-        let reporter = solution_reporter(app.clone());
-        let config = SearchConfig {
-            min_depth: depth,
-            max_depth: depth,
+        let mut result = solve_once(
+            cubie,
+            tables,
+            pruning,
+            ll_pruning,
+            mini,
+            bloom,
+            depth,
+            true,
             find_all,
-            allowed_moves: allowed_moves.clone(),
-            free_u_ends: last_layer_mode,
-            cancel: Some(cancel.clone()),
-            bloom: bloom.cloned(),
-            solution_reporter: Some(reporter),
-        };
-        let mut result = if last_layer_mode {
-            search::solve_last_layer_with_pattern_pruning_threads(
-                cubie, tables, ll_pruning, &config, threads,
-            )
-        } else {
-            search::solve_with_pruning_and_mini_threads(
-                coord, tables, pruning, mini, &config, threads,
-            )
-        };
+            threads,
+            allowed_moves.clone(),
+            last_layer_mode,
+            cancel,
+            app,
+        )?;
         total_nodes += result.nodes;
         if !result.solutions.is_empty() {
             result.nodes = total_nodes;
-            emit_line(app, "info", &format!("found solution at depth {depth}"));
             return Ok(result);
         }
     }
@@ -1229,10 +1251,45 @@ fn emit_solve_summary(app: &AppHandle, nodes: u64, solutions: &[String]) {
     }
 }
 
-fn solution_reporter(app: AppHandle) -> Arc<search::SolutionReporter> {
-    Arc::new(move |solution| {
+struct SolutionOutput {
+    reporter: Arc<search::SolutionReporter>,
+    first: Arc<Mutex<Option<Vec<Move>>>>,
+    find_all: bool,
+}
+impl SolutionOutput {
+    fn finish(&self, mut result: search::SearchResult) -> search::SearchResult {
+        if !self.find_all {
+            // Several parallel workers may finish together. Return the same
+            // single solution that was first streamed to the UI.
+            if let Some(first) = self.first.lock().ok().and_then(|v| v.clone()) {
+                result.solutions = vec![first];
+            } else {
+                result.solutions.truncate(1);
+            }
+        }
+        result
+    }
+}
+fn solution_reporter(app: AppHandle, find_all: bool) -> SolutionOutput {
+    let first = Arc::new(Mutex::new(None));
+    let first_reported = first.clone();
+    let reporter = Arc::new(move |solution: &[Move]| {
+        if !find_all {
+            let Ok(mut first) = first_reported.lock() else {
+                return;
+            };
+            if first.is_some() {
+                return;
+            }
+            *first = Some(solution.to_vec());
+        }
         emit_line(&app, "solution", &search::format_solution(solution));
-    })
+    });
+    SolutionOutput {
+        reporter,
+        first,
+        find_all,
+    }
 }
 
 fn format_solutions(solutions: &[Vec<Move>]) -> Vec<String> {

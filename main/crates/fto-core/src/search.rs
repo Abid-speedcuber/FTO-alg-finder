@@ -1,3 +1,5 @@
+mod depths;
+pub use depths::search_selected_depths;
 #[cfg(test)]
 mod bloom_bench;
 #[cfg(test)]

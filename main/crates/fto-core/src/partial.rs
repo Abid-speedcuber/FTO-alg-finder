@@ -87,32 +87,8 @@ pub fn solve_partial_threads_with_cache(
     threads: usize,
     cache_dir: Option<&Path>,
 ) -> SearchResult {
-    let coordinate_pruning = cache_dir
-        .and_then(|dir| {
-            load_coordinate_pruning_cache(&problem.mask, &config.allowed_moves, dir).ok()
-        })
-        .unwrap_or_default();
-    let pruning = if coordinate_pruning.len() > 0 {
-        eprintln!(
-            "using {} cached coordinate partial pruning tables: {}",
-            coordinate_pruning.len(),
-            coordinate_pruning.names().join(", ")
-        );
-        DynamicPruning::from_coordinate_pruning(coordinate_pruning)
-    } else {
-        let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
-        pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
-        eprintln!(
-            "using {} dynamic partial pruning tables ({:.1} MiB)",
-            pruning.tables.len(),
-            pruning.bytes() as f64 / (1024.0 * 1024.0)
-        );
-        for table in &pruning.tables {
-            eprintln!("  {}", table.name());
-        }
-        pruning
-    };
-
+    let prepared = PreparedPartialSearch::new(problem, config, cache_dir);
+    let pruning = &prepared.pruning;
     let mut total = SearchResult {
         solutions: Vec::new(),
         nodes: 0,
@@ -128,7 +104,7 @@ pub fn solve_partial_threads_with_cache(
     });
     for depth in start_depth..=config.max_depth {
         eprintln!("searching depth {depth}...");
-        let depth_result = search_indexed_threads(problem, &pruning, config, depth, threads);
+        let depth_result = prepared.solve_depth(config, depth, threads);
         let depth_nodes = depth_result.nodes;
         total.nodes += depth_nodes;
         total.solutions.extend(depth_result.solutions);
@@ -139,6 +115,50 @@ pub fn solve_partial_threads_with_cache(
         }
     }
     total
+}
+
+/// Prepares dynamic pruning once and reuses it for disjoint exact depths.
+pub struct PreparedPartialSearch<'a> {
+    problem: &'a PartialProblem,
+    pruning: DynamicPruning,
+}
+impl<'a> PreparedPartialSearch<'a> {
+    pub fn new(
+        problem: &'a PartialProblem,
+        config: &SearchConfig,
+        cache_dir: Option<&Path>,
+    ) -> Self {
+        let coordinate_pruning = cache_dir
+            .and_then(|dir| {
+                load_coordinate_pruning_cache(&problem.mask, &config.allowed_moves, dir).ok()
+            })
+            .unwrap_or_default();
+        let pruning = if coordinate_pruning.len() > 0 {
+            eprintln!(
+                "using {} cached coordinate partial pruning tables: {}",
+                coordinate_pruning.len(),
+                coordinate_pruning.names().join(", ")
+            );
+            DynamicPruning::from_coordinate_pruning(coordinate_pruning)
+        } else {
+            let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
+            pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
+            eprintln!(
+                "using {} dynamic partial pruning tables ({:.1} MiB)",
+                pruning.tables.len(),
+                pruning.bytes() as f64 / (1024.0 * 1024.0)
+            );
+            for table in &pruning.tables {
+                eprintln!("  {}", table.name());
+            }
+            pruning
+        };
+
+        Self { problem, pruning }
+    }
+    pub fn solve_depth(&self, config: &SearchConfig, depth: u8, threads: usize) -> SearchResult {
+        search_indexed_threads(self.problem, &self.pruning, config, depth, threads)
+    }
 }
 
 fn search_indexed_threads(

@@ -8,6 +8,7 @@ import githubLogo from "./assets/github.svg";
 import AlgCombiner from "./AlgCombiner";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
+import { parseDepthSelection } from "./depthSelection";
 import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm } from "./rotation";
 
 type CubieState = {
@@ -714,6 +715,10 @@ function App() {
   const [stateErrorsOpen, setStateErrorsOpen] = useState(false);
   const stateErrorsDialog = useRef<HTMLDialogElement | null>(null);
   const [depth, setDepth] = useState("");
+  const [depthHelpOpen, setDepthHelpOpen] = useState(false);
+  const depthHelpDialog = useRef<HTMLDialogElement | null>(null);
+  const depthHelpButton = useRef<HTMLButtonElement | null>(null);
+  const depthSelection = useMemo(() => parseDepthSelection(depth), [depth]);
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
   const [lastLayerMode, setLastLayerMode] = useState(false);
@@ -732,10 +737,12 @@ function App() {
   const validationRun = useRef(0);
   const lineId = useRef(0);
   const streamedSolutions = useRef(new Set<string>());
+  const foundDepths = useRef(new Set<number>());
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
     stateErrorsOpen ||
+    depthHelpOpen ||
     settingsOpen ||
     pruningOpen ||
     storageOpen ||
@@ -769,23 +776,21 @@ function App() {
       return [lastTerminalLine];
     }
     if (result?.solutions.length) {
-      const foundLine = [...terminal]
-        .reverse()
-        .find((line) => /^found solution at depth \d+/.test(line.text));
-      const depth = foundLine?.text.match(/\d+/)?.[0];
+      const successfulDepths = [...foundDepths.current].sort((a, b) => a - b);
       const solutions = Array.from(
         new Set(
-          terminal
-            .filter((line) => line.kind === "solution")
-            .map((line) => line.text)
-            .concat(result.solutions),
+          result.solutions.concat(
+            terminal.filter((line) => line.kind === "solution").map((line) => line.text),
+          ),
         ),
       );
       return [
         {
           id: -2,
           kind: "info",
-          text: depth ? `solution found at depth ${depth}` : "solution found",
+          text: successfulDepths.length > 1
+            ? `solutions found at depths ${successfulDepths.join(", ")}`
+            : successfulDepths.length ? `solution found at depth ${successfulDepths[0]}` : "solution found",
         },
         ...solutions.map((solution, index) => ({
           id: -1000 - index,
@@ -797,6 +802,7 @@ function App() {
           : []),
       ];
     }
+    if (result && !running) return [{ id: -2, kind: "info", text: "No solutions found." }];
     const lines: TerminalLine[] = [];
     const acceleration = running ? [...terminal].reverse().find((line) => line.kind === "acceleration") : undefined;
     if (acceleration) lines.push(acceleration);
@@ -917,6 +923,8 @@ function App() {
     if (kind === "solution") {
       streamedSolutions.current.add(text);
     }
+    const found = text.match(/^found solution at depth (\d+)$/);
+    if (found) foundDepths.current.add(Number(found[1]));
     if (kind === "cancel" && text === "solve cancelled") {
       text = "Search stopped early.";
     }
@@ -929,6 +937,7 @@ function App() {
 
   const clearTerminal = useCallback(() => {
     streamedSolutions.current.clear();
+    foundDepths.current.clear();
     setTerminal([]);
   }, []);
 
@@ -945,6 +954,16 @@ function App() {
     setPruningProgressHistory([]);
     setNow(Date.now());
   }, []);
+
+  function closeDepthHelp() {
+    depthHelpDialog.current?.close();
+    setDepthHelpOpen(false);
+    depthHelpButton.current?.focus();
+  }
+
+  useEffect(() => {
+    if (depthHelpOpen) depthHelpDialog.current?.showModal();
+  }, [depthHelpOpen]);
 
   useEffect(() => {
     if (stateErrorsOpen) {
@@ -1155,8 +1174,9 @@ function App() {
       return;
     }
     const trimmedDepth = depth.trim();
-    if (trimmedDepth && !/^\d+$/.test(trimmedDepth)) {
-      setStatus("Depth must be empty or numeric");
+    if (depthSelection.error) {
+      setStatus(depthSelection.error);
+      appendLine("error", depthSelection.error);
       return;
     }
     setRunning(true);
@@ -1178,7 +1198,8 @@ function App() {
           centerTargets,
           allowedMoves,
           instanceMoves: activeInstance.moves,
-          maxDepth: trimmedDepth ? Number(trimmedDepth) : null,
+          maxDepth: null,
+          depths: depthSelection.depths,
           findAll: all,
           restrictedPruning,
           miniPruning: false,
@@ -1408,6 +1429,33 @@ function App() {
             Delete {contextInstance?.name ?? "instance"}
           </button>
         </div>
+      ) : null}
+
+      {depthHelpOpen ? (
+        <dialog
+          ref={depthHelpDialog}
+          id="depth-help-dialog"
+          className="modal depth-help-modal"
+          aria-labelledby="depth-help-title"
+          onClose={() => { setDepthHelpOpen(false); depthHelpButton.current?.focus(); }}
+          onClick={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right ||
+                event.clientY < bounds.top || event.clientY > bounds.bottom) closeDepthHelp();
+          }}
+        >
+          <div className="modal-title-row">
+            <h2 id="depth-help-title">Depth selection</h2>
+            <button className="secondary" autoFocus onClick={closeDepthHelp}>Close</button>
+          </div>
+          <p>Enter a depth, a range, or a comma-separated selection, such as <code>12-15, 17, 20</code>. Ranges include both ends. Depths are searched in ascending order, with duplicates ignored.</p>
+          <ul>
+            <li><strong>All solutions:</strong> returns solutions from every selected depth.</li>
+            <li><strong>Single solution:</strong> starts at the smallest selected depth and stops at the first success.</li>
+            <li><strong>Auto or empty:</strong> finds the first successful depth, then returns one or all solutions at that depth.</li>
+          </ul>
+          <p>Depths can be 0–255. In last-layer mode, free leading and trailing U adjustments are excluded from the depth.</p>
+        </dialog>
       ) : null}
 
       {stateErrorsOpen ? (
@@ -1803,7 +1851,7 @@ function App() {
 
           <FtoViewer
             viewerApiRef={viewerApiRef}
-            active={mode === "solver" && !stateErrorsOpen}
+            active={mode === "solver" && !stateErrorsOpen && !depthHelpOpen}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
@@ -1945,20 +1993,28 @@ function App() {
               <h2>Search</h2>
             </div>
             <div className="search-grid">
-            <label>
-              Depth
+            <div className="depth-field">
+              <div className="depth-label-row">
+                <label htmlFor="search-depth">Depth</label>
+                <button ref={depthHelpButton} className="depth-info-button" type="button" aria-label="About depth selection"
+                  title="Depth help" aria-haspopup="dialog" aria-expanded={depthHelpOpen}
+                  aria-controls="depth-help-dialog" onClick={() => setDepthHelpOpen(true)}>i</button>
+              </div>
               <input
+                id="search-depth"
                 value={depth}
-                onChange={(event) => setDepth(event.target.value.replace(/\D/g, ""))}
-                inputMode="numeric"
+                onChange={(event) => setDepth(event.target.value)}
+                aria-invalid={Boolean(depthSelection.error)}
+                aria-describedby={depthSelection.error ? "depth-error" : undefined}
                 placeholder="auto"
               />
-            </label>
+            </div>
             <label>
               Threads
               <input value={threads} onChange={(event) => setThreads(event.target.value)} inputMode="numeric" />
             </label>
             </div>
+            {depthSelection.error ? <div id="depth-error" className="hint depth-error" role="alert">{depthSelection.error}</div> : null}
             <div className="option-list">
             <label className="check">
               <input type="checkbox" checked={all} onChange={(event) => setAll(event.target.checked)} />
@@ -1977,7 +2033,7 @@ function App() {
             <button
               className={running ? "primary stop" : "primary"}
               onClick={running ? stopSolve : solve}
-              disabled={!running && (!cubieState || allowedMoves.length === 0)}
+              disabled={!running && (!cubieState || allowedMoves.length === 0 || Boolean(depthSelection.error))}
             >
               {running ? "Stop" : "Solve"}
             </button>

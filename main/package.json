@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "tauri": "tauri",
     "check": "tsc -b",
-    "test:rotation": "node tests/rotation.test.mjs"
+    "test:rotation": "node tests/rotation.test.mjs",
+    "test:depths": "node tests/depthSelection.test.mjs"
   },
   "dependencies": {
     "@simonwep/pickr": "^1.10.2",
