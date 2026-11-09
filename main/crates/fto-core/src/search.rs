@@ -1,5 +1,7 @@
 mod depths;
+pub mod resume;
 pub use depths::search_selected_depths;
+pub use resume::{ResumeCheckpoint, ResumeResult, resume_exact};
 #[cfg(test)]
 mod bloom_bench;
 #[cfg(test)]

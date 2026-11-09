@@ -9,6 +9,7 @@ export type FtoViewerApi = {
   setKeyboardEnabled(enabled: boolean): void;
   getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
+  setCenterTargets(targets: CenterTargets): void;
   setMode(mode: "pan" | "paint" | "swap"): void;
   setColor(color: number): void;
   setFaceColors(colors: string[]): void;
@@ -54,6 +55,7 @@ type Props = {
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
   active?: boolean;
+  initialState?: { facelets: number[]; centerTargets?: CenterTargets };
 };
 
 function FtoViewer({
@@ -70,6 +72,7 @@ function FtoViewer({
   viewerApiRef,
   footer,
   active = true,
+  initialState,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
@@ -139,6 +142,15 @@ function FtoViewer({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applySignal]);
+
+  const initialStateRef = useRef(initialState);
+  useEffect(() => {
+    const initial = initialStateRef.current;
+    if (initial) {
+      viewerRef.current?.setFacelets(initial.facelets);
+      if (initial.centerTargets) viewerRef.current?.setCenterTargets(initial.centerTargets);
+    }
+  }, []);
 
   function setPanMode() {
     setModeState("pan");

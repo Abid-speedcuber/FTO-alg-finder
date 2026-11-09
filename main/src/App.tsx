@@ -6,8 +6,10 @@ import "@simonwep/pickr/dist/themes/nano.min.css";
 import wcaLogo from "./assets/wca.svg";
 import githubLogo from "./assets/github.svg";
 import AlgCombiner from "./AlgCombiner";
+import BatchSolver from "./BatchSolver";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
+import DepthHelp from "./DepthHelp";
 import { parseDepthSelection } from "./depthSelection";
 import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm } from "./rotation";
 
@@ -664,7 +666,8 @@ function InstanceSetupModal({
 }
 
 function App() {
-  const [mode, setMode] = useState<"solver" | "combiner">("solver");
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [mode, setMode] = useState<"solver" | "combiner" | "batch">("solver");
   const [boot] = useState(bootstrapInstances);
   const [instances, setInstances] = useState<Instance[]>(boot.instances);
   const [activeId, setActiveId] = useState(boot.activeId);
@@ -715,9 +718,6 @@ function App() {
   const [stateErrorsOpen, setStateErrorsOpen] = useState(false);
   const stateErrorsDialog = useRef<HTMLDialogElement | null>(null);
   const [depth, setDepth] = useState("");
-  const [depthHelpOpen, setDepthHelpOpen] = useState(false);
-  const depthHelpDialog = useRef<HTMLDialogElement | null>(null);
-  const depthHelpButton = useRef<HTMLButtonElement | null>(null);
   const depthSelection = useMemo(() => parseDepthSelection(depth), [depth]);
   const [all, setAll] = useState(true);
   const [restrictedPruning, setRestrictedPruning] = useState(false);
@@ -742,7 +742,6 @@ function App() {
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
     stateErrorsOpen ||
-    depthHelpOpen ||
     settingsOpen ||
     pruningOpen ||
     storageOpen ||
@@ -954,16 +953,6 @@ function App() {
     setPruningProgressHistory([]);
     setNow(Date.now());
   }, []);
-
-  function closeDepthHelp() {
-    depthHelpDialog.current?.close();
-    setDepthHelpOpen(false);
-    depthHelpButton.current?.focus();
-  }
-
-  useEffect(() => {
-    if (depthHelpOpen) depthHelpDialog.current?.showModal();
-  }, [depthHelpOpen]);
 
   useEffect(() => {
     if (stateErrorsOpen) {
@@ -1352,7 +1341,7 @@ function App() {
     <main>
       <header className="app-header">
         <div>
-          <h1>{mode === "combiner" ? "FTO Alg Combiner" : "FTO Alg Finder"}</h1>
+          <h1>{mode === "batch" ? "FTO Batch Solver" : mode === "combiner" ? "FTO Alg Combiner" : "FTO Alg Finder"}</h1>
           <p>by Abid &amp; Matt</p>
         </div>
         <div className="topbar-right">
@@ -1379,6 +1368,8 @@ function App() {
                   >
                     {mode === "solver" ? "Switch to alg combiner" : "Switch to solver mode"}
                   </button>
+                  {mode !== "batch" && <button className="menu-command" onClick={() => { setMode("batch"); closeOverlays(); }}>Switch to batch solving</button>}
+                  {mode === "batch" && <button className="menu-command" onClick={() => { setMode("combiner"); closeOverlays(); }}>Switch to alg combiner</button>}
                   <button
                     className="menu-command"
                     onClick={() => {
@@ -1429,33 +1420,6 @@ function App() {
             Delete {contextInstance?.name ?? "instance"}
           </button>
         </div>
-      ) : null}
-
-      {depthHelpOpen ? (
-        <dialog
-          ref={depthHelpDialog}
-          id="depth-help-dialog"
-          className="modal depth-help-modal"
-          aria-labelledby="depth-help-title"
-          onClose={() => { setDepthHelpOpen(false); depthHelpButton.current?.focus(); }}
-          onClick={(event) => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            if (event.clientX < bounds.left || event.clientX > bounds.right ||
-                event.clientY < bounds.top || event.clientY > bounds.bottom) closeDepthHelp();
-          }}
-        >
-          <div className="modal-title-row">
-            <h2 id="depth-help-title">Depth selection</h2>
-            <button className="secondary" autoFocus onClick={closeDepthHelp}>Close</button>
-          </div>
-          <p>Enter a depth, a range, or a comma-separated selection, such as <code>12-15, 17, 20</code>. Ranges include both ends. Depths are searched in ascending order, with duplicates ignored.</p>
-          <ul>
-            <li><strong>All solutions:</strong> returns solutions from every selected depth.</li>
-            <li><strong>Single solution:</strong> starts at the smallest selected depth and stops at the first success.</li>
-            <li><strong>Auto or empty:</strong> finds the first successful depth, then returns one or all solutions at that depth.</li>
-          </ul>
-          <p>Depths can be 0–255. In last-layer mode, free leading and trailing U adjustments are excluded from the depth.</p>
-        </dialog>
       ) : null}
 
       {stateErrorsOpen ? (
@@ -1851,7 +1815,7 @@ function App() {
 
           <FtoViewer
             viewerApiRef={viewerApiRef}
-            active={mode === "solver" && !stateErrorsOpen && !depthHelpOpen}
+            active={mode === "solver" && !stateErrorsOpen}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
@@ -1996,9 +1960,7 @@ function App() {
             <div className="depth-field">
               <div className="depth-label-row">
                 <label htmlFor="search-depth">Depth</label>
-                <button ref={depthHelpButton} className="depth-info-button" type="button" aria-label="About depth selection"
-                  title="Depth help" aria-haspopup="dialog" aria-expanded={depthHelpOpen}
-                  aria-controls="depth-help-dialog" onClick={() => setDepthHelpOpen(true)}>i</button>
+                <DepthHelp />
               </div>
               <input
                 id="search-depth"
@@ -2033,7 +1995,7 @@ function App() {
             <button
               className={running ? "primary stop" : "primary"}
               onClick={running ? stopSolve : solve}
-              disabled={!running && (!cubieState || allowedMoves.length === 0 || Boolean(depthSelection.error))}
+              disabled={batchRunning || (!running && (!cubieState || allowedMoves.length === 0 || Boolean(depthSelection.error)))}
             >
               {running ? "Stop" : "Solve"}
             </button>
@@ -2047,6 +2009,9 @@ function App() {
       </div>
       <div hidden={mode !== "combiner"}>
         <AlgCombiner active={mode === "combiner"} />
+      </div>
+      <div hidden={mode !== "batch"}>
+        <BatchSolver active={mode === "batch"} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

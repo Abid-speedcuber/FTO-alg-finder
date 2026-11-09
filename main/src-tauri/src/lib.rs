@@ -1,3 +1,4 @@
+mod batch;
 mod bloom_cache;
 mod depths;
 mod validation;
@@ -132,7 +133,7 @@ struct CubieState {
     rl: [u8; 12],
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CenterTargets {
     uf: [Option<u8>; 4],
@@ -424,7 +425,11 @@ fn with_gpu_generation<T>(enabled: bool, app: &AppHandle, action: impl FnOnce() 
 
 fn emit_line(app: &AppHandle, kind: &str, text: &str) {
     let _ = app.emit(
-        "solve-line",
+        if batch::BATCH_LOG.with(|flag| flag.get()) {
+            "batch-log"
+        } else {
+            "solve-line"
+        },
         SolveLine {
             kind: kind.to_owned(),
             text: text.to_owned(),
@@ -497,8 +502,13 @@ fn solve_fto_inner(
 pub fn run() {
     tauri::Builder::default()
         .manage(SolverState::default())
+        .manage(batch::BatchState::default())
         .invoke_handler(tauri::generate_handler![
             solve_fto,
+            batch::start_batch,
+            batch::pause_batch,
+            batch::batch_status,
+            batch::export_batch_file,
             generate_pruning_table,
             bloom_cache::generate_bloom_table,
             stop_solve,

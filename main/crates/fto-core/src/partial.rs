@@ -161,6 +161,132 @@ impl<'a> PreparedPartialSearch<'a> {
     }
 }
 
+impl PreparedPartialSearch<'_> {
+    pub fn resume_depth(
+        &self,
+        config: &SearchConfig,
+        threads: usize,
+        checkpoint: Option<&crate::search::ResumeCheckpoint>,
+    ) -> Result<crate::search::ResumeResult, String> {
+        use crate::search::resume;
+        let ctx = IndexedPartialSearchContext {
+            problem: self.problem,
+            pruning: &self.pruning,
+            config,
+            moves: move_cubies(),
+            commute: move_commutation(),
+            path: vec![],
+            free_prefix: None,
+            solutions: vec![],
+            nodes: 0,
+        };
+        let mut input = resume::signature(self.problem.cubie, config, true);
+        let mask = &self.problem.mask;
+        for bits in [
+            &mask.corners[..],
+            &mask.edges[..],
+            &mask.uf_centers[..],
+            &mask.rl_centers[..],
+        ] {
+            input.extend(bits.iter().map(|&b| u8::from(b)));
+        }
+        input.extend(
+            mask.uf_center_targets
+                .iter()
+                .chain(&mask.rl_center_targets)
+                .map(|v| v.unwrap_or(255)),
+        );
+        input.push(u8::from(mask.last_layer_centers));
+        resume::run(&PartialKernel { ctx }, config, threads, input, checkpoint)
+    }
+}
+struct PartialKernel<'a> {
+    ctx: IndexedPartialSearchContext<'a>,
+}
+impl crate::search::resume::Kernel for PartialKernel<'_> {
+    type State = IndexedPartialState;
+    fn roots(&self) -> Vec<Self::State> {
+        partial_start_states(
+            self.ctx.problem.cubie,
+            &self.ctx.moves,
+            self.ctx.config.free_u_ends,
+        )
+        .into_iter()
+        .map(|(_, cubie, _)| IndexedPartialState {
+            cubie,
+            indices: self.ctx.pruning.indices_of_state(&cubie),
+        })
+        .collect()
+    }
+    fn visit(
+        &self,
+        state: &Self::State,
+        remaining: u8,
+        root: usize,
+        path: &[Move],
+    ) -> crate::search::resume::Visit {
+        use crate::search::resume::Visit;
+        let ctx = &self.ctx;
+        let raw = ctx
+            .pruning
+            .heuristic_for_indices(&state.cubie, &state.indices);
+        if adjusted_pruning_value(raw, ctx.config.free_u_ends) > remaining {
+            return Visit::Pruned;
+        }
+        if remaining > 0 {
+            return Visit::Branch;
+        }
+        if ctx.config.free_u_ends && ends_in_u_or_up(path) {
+            return Visit::Leaf(None);
+        }
+        let prefix = [None, Some(Move::U), Some(Move::Up)][root];
+        Visit::Leaf(
+            partial_free_u_suffix_with_raw_pruning(
+                state.cubie,
+                &ctx.moves,
+                &ctx.problem.mask,
+                ctx.config.free_u_ends,
+                raw,
+                ctx.pruning.raw_zero_implies_exact_pieces(),
+            )
+            .map(|suffix| free_auf_solution(prefix, path, suffix)),
+        )
+    }
+    fn child(
+        &self,
+        state: &Self::State,
+        mv: Move,
+        remaining: u8,
+        last: Option<Move>,
+        at_root: bool,
+    ) -> Option<Self::State> {
+        let ctx = &self.ctx;
+        if (ctx.config.free_u_ends && at_root && is_u_turn(mv))
+            || last.is_some_and(|last| should_skip_after(&ctx.commute, last, mv))
+        {
+            return None;
+        }
+        let next = self.replay(state, mv);
+        if adjusted_pruning_value(
+            ctx.pruning
+                .heuristic_for_indices(&next.cubie, &next.indices),
+            ctx.config.free_u_ends,
+        ) > remaining
+        {
+            None
+        } else {
+            Some(next)
+        }
+    }
+    fn replay(&self, state: &Self::State, mv: Move) -> Self::State {
+        let cubie = state.cubie.compose(&self.ctx.moves[mv.idx()]);
+        IndexedPartialState {
+            cubie,
+            indices: self.ctx.pruning.move_indices(&cubie, &state.indices, mv),
+        }
+    }
+}
+
 fn search_indexed_threads(
     problem: &PartialProblem,
     pruning: &DynamicPruning,

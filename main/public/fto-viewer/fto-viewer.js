@@ -1279,6 +1279,29 @@
       setKeyboardEnabled: setKeyboardEnabled,
       getFaceletTransition: getFaceletTransition,
       getCenterTargets: getCenterTargets,
+      setCenterTargets: function(targets) {
+        if (!targets) return;
+        clearCenterTargetPick();
+        centerTargets = {
+          uf: targets.uf.slice(), rl: targets.rl.slice(),
+          ufSources: targets.ufSources.slice(), rlSources: targets.rlSources.slice(),
+          rlTopSources: targets.rlTopSources.map(function(sources) { return sources.slice(); }),
+        };
+        lastLayerCenterMarks = new Array(12).fill(null);
+        if (lastLayerMode) {
+          centerTargets.rlTopSources.forEach(function(sources) {
+            sources.forEach(function(slot) { lastLayerCenterMarks[slot] = "top"; });
+          });
+          centerTargets.rlSources.forEach(function(slot) {
+            if (slot != null) lastLayerCenterMarks[slot] = "fixed";
+          });
+        }
+        for (var i = 0; i < cubePieces.length; i++) {
+          if (cubePieces[i]) refreshStickerDisplayByFacelet(cubePieces[i][3]);
+        }
+        render();
+        notifyCenterTargets();
+      },
       setMode: function(nextMode) {
         mode = nextMode;
         if (mode === "swap") {

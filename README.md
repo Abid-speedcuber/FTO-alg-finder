@@ -101,6 +101,59 @@ Bloom membership is checked when the remaining search depth reaches the saved
 radius; a possible match still undergoes normal search and the mode's exact goal
 check.
 
+### Batch solving
+
+Choose **Menu → Switch to batch solving**. Enter one setup per numbered line;
+multiline paste adds cases. Press **Tab** on a setup to open the visual editor,
+including paint, swap, ignored pieces, center targets, and LL setup controls.
+Saved visual entries appear as blue **Case N** links that reopen the editor.
+The right sidebar holds the shared moves, print-style depth selection, threads,
+All solutions, and Last layer mode.
+
+The scheduler searches selected depths in ascending order across cases. A case
+with its first solution finishes that depth and waits while other cases find
+their first solutions. With **All solutions** and explicit depths, it then
+exhausts the remaining selected depths for every case. Cases with no solution
+within the selected depths, or invalid input, do not block the remaining work.
+With **auto**, each case stops after its first successful depth; single-solution
+mode returns one solution per case. Threads run different cases first; spare
+threads use the existing parallel search within a case. Shared pattern/Bloom
+tables are reused across the batch.
+
+**Defer after (seconds)** defaults to 10; set it to 0 to disable it. In All
+solutions mode, a slow first-pass search is interrupted and held at its current
+depth. Other cases, including parked ones, exhaust their selected depths up to
+that depth before the deferred cases resume last. Catch-up searches can also be
+held if they exceed the budget. Deferred continuations run without the time limit so
+they can finish. No depth is marked completed
+on timeout, and discovered solutions are retained. This catch-up also applies to
+All solutions with auto depth. It changes search order, not solvability: a hard
+case can still take a long time once everyone has caught up.
+
+**Pause** keeps completed depths, discovered solutions, and versioned DFS stack
+checkpoints for each unfinished depth. Resume continues the pending branches;
+only the active paths are reconstructed, with no completed subtree searched
+again. Checkpoints support full-position, last-layer, and partial-position
+searches, including free U ends and center targets. They survive project saves
+and JSON export/import, and can resume with a different thread count. While paused, add/remove
+cases or edit individual cases; unchanged cases keep their checkpoints. Changing
+the search settings resets results and search stacks, except when changing only the thread count or deferral budget.
+Projects autosave locally in IndexedDB and survive app restarts. **Download
+project** creates a portable checkpoint; **Open project** restores one.
+**Export CSV** writes one row per solution, including setup/state, case number,
+depth, search settings and progress; unsolved/invalid cases are included too.
+Desktop exports go to the Downloads directory without overwriting existing files.
+
+Batch checks:
+
+```sh
+cd main
+npm run test:batch
+cargo test -p optimal-fto-solver-app --lib batch::tests
+# Integration check with the existing cache/transition-table.tran:
+cargo test -p optimal-fto-solver-app --lib batch::tests::real_search -- --ignored
+```
+
 CLI solver:
 
 - Reads a scramble from `--scramble`, JSON from `--json`, JSON from stdin, or solved state by default.

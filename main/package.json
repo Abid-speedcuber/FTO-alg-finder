@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "check": "tsc -b",
     "test:rotation": "node tests/rotation.test.mjs",
-    "test:depths": "node tests/depthSelection.test.mjs"
+    "test:depths": "node tests/depthSelection.test.mjs",
+    "test:batch": "node --test tests/batchProject.test.mjs"
   },
   "dependencies": {
     "@simonwep/pickr": "^1.10.2",
