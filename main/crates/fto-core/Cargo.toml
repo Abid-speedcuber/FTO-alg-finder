@@ -6,3 +6,12 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = ["gpu"]
+gpu = ["dep:wgpu", "dep:pollster"]
+
+[dependencies]
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+wgpu = { version = "24.0.5", optional = true }
+pollster = { version = "0.4", optional = true }

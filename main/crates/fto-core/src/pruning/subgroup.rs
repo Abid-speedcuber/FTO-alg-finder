@@ -371,6 +371,70 @@ impl CompactIndexing {
             return Err(CANCELLED.to_owned());
         }
         let rows = self.row(kind);
+        #[cfg(feature = "gpu")]
+        if self.table_len(kind)
+            >= (if crate::acceleration::forced() {
+                0
+            } else {
+                1_000_000
+            })
+        {
+            if let Some(gpu) = crate::acceleration::gpu() {
+                let dimensions = [(rows.original.len() + 1) as u32, (self.uf_mask + 1) as u32];
+                let steps = match kind {
+                    Kind::Edge => &self.packed.edge,
+                    Kind::Corner => &self.packed.corner,
+                };
+                let mut transitions = Vec::new();
+                for row in 0..=rows.original.len() {
+                    for &mv in &self.moves {
+                        let next = if row == rows.original.len() {
+                            row
+                        } else {
+                            let original = usize::from(rows.original[row]);
+                            let slot = usize::from(self.packed.slots[mv.idx()]);
+                            (steps[(original << self.packed.bits) | slot] >> (16 + self.uf_bits))
+                                as usize
+                        };
+                        transitions.push(next as u32);
+                    }
+                }
+                for uf in 0..=self.uf_mask {
+                    for &mv in &self.moves {
+                        let next = if uf >= self.uf.original.len() {
+                            uf
+                        } else {
+                            let original = usize::from(self.uf.original[uf]);
+                            let slot = usize::from(self.packed.slots[mv.idx()]);
+                            (self.packed.uf[(original << self.packed.bits) | slot] >> 16) as usize
+                        };
+                        transitions.push(next as u32);
+                    }
+                }
+                match gpu.pruning(
+                    &kind.spec().name(),
+                    &dimensions,
+                    &transitions,
+                    0,
+                    self.moves.len(),
+                    cancel,
+                    report,
+                ) {
+                    Ok(Some(table)) => return Ok(table),
+                    Ok(None) => {}
+                    Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                        return Err(error);
+                    }
+                    Err(error) if error.contains("pilot is slower") => {
+                        crate::acceleration::log(&format!("{error}; switching to CPU"))
+                    }
+                    Err(error) => crate::acceleration::log(&format!(
+                        "GPU compact pruning failed; rebuilding safely on CPU: {error}"
+                    )),
+                }
+            }
+        }
+        crate::acceleration::check_host_allocation(self.table_len(kind) as u64)?;
         let mut table = vec![UNVISITED; self.table_len(kind)];
         table[0] = 0;
         let mut queue = std::collections::VecDeque::from([0_u32]);
@@ -548,6 +612,45 @@ impl CompactIndexing {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn gpu_compact_pruning_preserves_padding_and_joint_constraints() {
+        use crate::acceleration::{self, Policy};
+        for joint in [false, true] {
+            let indexing = fixture(joint);
+            for kind in [Kind::Edge, Kind::Corner] {
+                let expected = indexing.build_table(kind, 0, None, None).unwrap();
+                let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                let sink = messages.clone();
+                let log: std::sync::Arc<acceleration::GenerationLog> =
+                    std::sync::Arc::new(move |message| {
+                        println!("{message}");
+                        sink.lock().unwrap().push(message.into());
+                    });
+                let actual = acceleration::with_policy(Policy::Gpu, Some(log), || {
+                    indexing.build_table(kind, 0, None, None)
+                })
+                .unwrap();
+                assert!(
+                    messages
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s.contains("GPU BFS working set"))
+                );
+                assert!(
+                    !messages
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s.contains("failed"))
+                );
+                assert_eq!(expected, actual);
+            }
+        }
+    }
+
     use super::*;
 
     fn orbit(size: usize, values: &[u16]) -> Orbit {

@@ -678,10 +678,11 @@ function App() {
   const [bloomMoves, setBloomMoves] = useState<string[]>([]);
   const [bloomLastLayer, setBloomLastLayer] = useState(true);
   const [bloomDepth, setBloomDepth] = useState("8");
+  const [useGpu, setUseGpu] = useState(true);
   const [bloomMemory, setBloomMemory] = useState("200");
   const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
     Number(bloomDepth) >= 1 && Number(bloomDepth) <= 20 && Number.isInteger(Number(bloomMemory)) &&
-    Number(bloomMemory) >= 1 && Number(bloomMemory) <= 512;
+    Number(bloomMemory) >= 1 && Number(bloomMemory) <= 4294967295;
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -797,6 +798,8 @@ function App() {
       ];
     }
     const lines: TerminalLine[] = [];
+    const acceleration = running ? [...terminal].reverse().find((line) => line.kind === "acceleration") : undefined;
+    if (acceleration) lines.push(acceleration);
     const currentDepth = running
       ? [...terminal]
           .reverse()
@@ -1168,6 +1171,7 @@ function App() {
     try {
       await invoke("solve_fto", {
         request: {
+          useGpu,
           scramble: null,
           state: null,
           facelets,
@@ -1215,6 +1219,7 @@ function App() {
     try {
       await invoke("generate_pruning_table", {
         request: {
+          useGpu,
           facelets,
           centerTargets,
           allowedMoves,
@@ -1245,7 +1250,7 @@ function App() {
     appendLine("info", `generate ${bloomLastLayer ? "last-layer " : ""}Bloom table (depth=${bloomDepth} moves=${bloomMoves.join(" ")} cap=${bloomMemory} MiB)`);
     try {
       await invoke("generate_bloom_table", {
-        request: { moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer },
+        request: { useGpu, moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer },
       });
     } catch (error) {
       appendLine("error", `error: ${String(error)}`);
@@ -1507,6 +1512,11 @@ function App() {
               <button role="tab" aria-selected={pruningKind === "pattern"} className={pruningKind === "pattern" ? "primary" : "secondary"} onClick={() => setPruningKind("pattern")}>Pattern tables</button>
               <button role="tab" aria-selected={pruningKind === "bloom"} className={pruningKind === "bloom" ? "primary" : "secondary"} onClick={() => setPruningKind("bloom")}>Bloom tables</button>
             </div>
+            <label className="check modal-check">
+              <input type="checkbox" checked={useGpu} onChange={(event) => setUseGpu(event.target.checked)} />
+              Use GPU acceleration when available
+            </label>
+            <div className="hint">Adapts batch sizes to your GPU and leaves room for the desktop. Uses the CPU for small jobs, when a timing pilot favors it, or when GPU support or memory is insufficient.</div>
             {pruningKind === "pattern" ? <>
               <div className="option-list modal-option-list">
                 <label className="check modal-check">
@@ -1545,10 +1555,10 @@ function App() {
                   <input type="number" min="1" max="20" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
                 </label>
                 <label className="field">Memory cap (MiB)
-                  <input type="number" min="1" max="512" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
+                  <input type="number" min="1" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
                 </label>
               </div>
-              <div className="hint">Generation stops if the table fills up. The saved table may be smaller than the cap. Deeper tables can take a long time to build; Stop cancels the build.</div>
+              <div className="hint">No fixed memory cap. Large tables use system RAM; allocation is checked against available memory. Generation stops if the table fills up. The saved table may be smaller than the cap. Deeper tables can take a long time to build; Stop cancels the build.</div>
               <h3>Allowed moves ({bloomMoves.length})</h3>
               <div className="bloom-move-actions">
                 <button className="secondary" onClick={() => setBloomMoves([...allowedMoves])}>Use selected moves</button>

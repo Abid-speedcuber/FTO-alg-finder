@@ -982,6 +982,115 @@ fn build_pruning_table_from_index_threaded(
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
+    #[cfg(feature = "gpu")]
+    if spec.size().is_some_and(|size| {
+        size >= (if crate::acceleration::forced() {
+            0
+        } else {
+            1_000_000
+        }) && size <= max_entries
+            && size <= u32::MAX as usize
+    }) {
+        if crate::acceleration::enabled() && !crate::acceleration::forced() {
+            // A large coordinate product can contain a tiny reachable subgroup.
+            // Finish those on CPU rather than paying for GPU startup and scans.
+            let mut found = std::collections::HashMap::from([(root_index, 0_u8)]);
+            let mut queue = std::collections::VecDeque::from([root_index]);
+            let mut values = vec![0; spec.components.len()];
+            let mut next_values = values.clone();
+            while found.len() < 4096 {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Err(CANCELLED.to_owned());
+                }
+                let Some(index) = queue.pop_front() else {
+                    let size = spec.size().unwrap();
+                    crate::acceleration::check_host_allocation(size as u64)?;
+                    let mut table = Vec::new();
+                    table
+                        .try_reserve_exact(size)
+                        .map_err(|_| "not enough RAM for pruning")?;
+                    table.resize(size, UNVISITED);
+                    for (index, depth) in found {
+                        table[index] = depth;
+                    }
+                    if let Some(report) = report {
+                        let reached = table.iter().filter(|&&d| d != UNVISITED).count();
+                        report(PruningProgress {
+                            name: spec.name(),
+                            depth: table
+                                .iter()
+                                .filter(|&&d| d != UNVISITED)
+                                .copied()
+                                .max()
+                                .unwrap_or(0) as usize,
+                            expanded: reached,
+                            reached,
+                            total: size,
+                        });
+                    }
+                    return Ok((stats_from_table(spec, &table), table));
+                };
+                let depth = found[&index];
+                for &mv in moves {
+                    let next = spec.next_index(index, mv, tables, &mut values, &mut next_values);
+                    if let std::collections::hash_map::Entry::Vacant(entry) = found.entry(next) {
+                        if depth >= 254 {
+                            return Err(
+                                "pruning distance exceeds the table's byte representation".into()
+                            );
+                        }
+                        entry.insert(depth + 1);
+                        queue.push_back(next);
+                    }
+                }
+            }
+        }
+        if let Some(gpu) = crate::acceleration::gpu() {
+            let attempt = (|| {
+                let mut transitions = Vec::new();
+                let dimensions: Vec<_> = spec.components.iter().map(|c| c.size() as u32).collect();
+                let count: usize = spec.components.iter().map(|c| c.size() * moves.len()).sum();
+                if count as u64 * 4 > gpu.binding_limit {
+                    return Ok(None);
+                }
+                transitions
+                    .try_reserve_exact(count)
+                    .map_err(|_| "not enough memory for GPU transitions")?;
+                for component in &spec.components {
+                    for index in 0..component.size() {
+                        if index & 1023 == 0 && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                            return Err(CANCELLED.to_owned());
+                        }
+                        for &mv in moves {
+                            transitions.push(component.next(index as u32, mv, tables));
+                        }
+                    }
+                }
+                gpu.pruning(
+                    &spec.name(),
+                    &dimensions,
+                    &transitions,
+                    root_index,
+                    moves.len(),
+                    cancel,
+                    report,
+                )
+            })();
+            match attempt {
+                Ok(Some(table)) => return Ok((stats_from_table(spec, &table), table)),
+                Ok(None) => {}
+                Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                    return Err(error);
+                }
+                Err(error) if error.contains("pilot is slower") => {
+                    crate::acceleration::log(&format!("{error}; switching to CPU"))
+                }
+                Err(error) => crate::acceleration::log(&format!(
+                    "GPU pruning failed; rebuilding safely on CPU: {error}"
+                )),
+            }
+        }
+    }
     if threads <= 1 {
         return build_pruning_table_from_index(
             spec,
@@ -1005,6 +1114,30 @@ fn build_pruning_table_from_index_threaded(
         cancel,
         report,
     )
+}
+
+#[cfg(feature = "gpu")]
+fn stats_from_table(spec: &CandidateSpec, table: &[u8]) -> PruningStats {
+    let mut histogram = vec![0; 255];
+    let mut sum = 0_u64;
+    for &depth in table {
+        if depth != UNVISITED {
+            histogram[depth as usize] += 1;
+            sum += u64::from(depth);
+        }
+    }
+    let max_depth = histogram.iter().rposition(|&n| n > 0).unwrap_or(0);
+    histogram.truncate(max_depth + 1);
+    let reached: usize = histogram.iter().sum();
+    PruningStats {
+        name: spec.name(),
+        table_entries: table.len(),
+        table_bytes: table.len(),
+        reached,
+        max_depth: max_depth as u8,
+        average_depth_milli: ((sum * 1000) / reached.max(1) as u64) as u32,
+        histogram,
+    }
 }
 
 // These face turns generate the full FTO group. Only certify products of
@@ -1209,6 +1342,7 @@ fn build_pruning_table_from_index_parallel(
         ));
     }
 
+    crate::acceleration::check_host_allocation(size as u64)?;
     let table = (0..size)
         .map(|_| AtomicU8::new(UNVISITED))
         .collect::<Vec<_>>();
@@ -1683,6 +1817,89 @@ fn push_combinations(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires cached FTO transitions and GPU hardware"]
+    fn gpu_pruning_matches_cpu_including_unreachable_states() {
+        use crate::acceleration::{self, Policy};
+        let tables = crate::tables::TransitionTables::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../cache/transition-table.tran"
+        ))
+        .unwrap();
+        for moves in [
+            vec![Move::R, Move::Rp, Move::U, Move::Up],
+            Move::ALL.to_vec(),
+        ] {
+            for spec in [
+                CandidateSpec::new(vec![Component::E0, Component::UfCenter2]),
+                CandidateSpec::new(vec![Component::E0, Component::E1]),
+            ] {
+                let started = std::time::Instant::now();
+                let cpu = super::build_pruning_table_from_index_threaded(
+                    &spec,
+                    &tables,
+                    usize::MAX,
+                    0,
+                    spec.solved_index(),
+                    &moves,
+                    2,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let cpu_time = started.elapsed();
+                let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                let sink = messages.clone();
+                let log: std::sync::Arc<acceleration::GenerationLog> =
+                    std::sync::Arc::new(move |s| {
+                        println!("{s}");
+                        sink.lock().unwrap().push(s.into());
+                    });
+                let started = std::time::Instant::now();
+                let gpu = acceleration::with_policy(Policy::Gpu, Some(log), || {
+                    super::build_pruning_table_from_index_threaded(
+                        &spec,
+                        &tables,
+                        usize::MAX,
+                        0,
+                        spec.solved_index(),
+                        &moves,
+                        2,
+                        None,
+                        None,
+                    )
+                })
+                .unwrap();
+                assert!(
+                    messages
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s.contains("GPU BFS working set")),
+                    "GPU did not run"
+                );
+                assert!(
+                    !messages
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s.contains("failed")),
+                    "GPU failed and fell back"
+                );
+                assert_eq!(cpu.1, gpu.1);
+                assert_eq!(cpu.0.histogram, gpu.0.histogram);
+                println!(
+                    "GPU PRUNING PARITY {} moves={} reached={} CPU={cpu_time:?} GPU={:?}",
+                    spec.name(),
+                    moves.len(),
+                    gpu.0.reached,
+                    started.elapsed()
+                );
+            }
+        }
+    }
+
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicBool;
 

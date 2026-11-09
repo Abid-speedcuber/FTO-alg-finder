@@ -8,6 +8,8 @@ pub(super) struct CachedBloom {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerateBloomRequest {
+    #[serde(default = "default_use_gpu")]
+    use_gpu: bool,
     moves: Vec<String>,
     depth: u8,
     #[serde(default)]
@@ -35,7 +37,9 @@ pub(crate) async fn generate_bloom_table(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = generate(&request, &cancel, &app, &cache);
+        let result = with_gpu_generation(request.use_gpu, &app, || {
+            generate(&request, &cancel, &app, &cache)
+        });
         if let Ok(mut current) = cancels.lock() {
             *current = None;
         }
@@ -67,10 +71,8 @@ fn generate(
         return Err("select at least one Bloom move".into());
     }
     // Validate before loading or generating the large shared transition tables.
-    if !(1..=20).contains(&request.depth)
-        || !(1..=bloom::MAX_MEMORY_MIB).contains(&request.max_memory_mib)
-    {
-        return Err("Bloom depth must be 1–20 and memory limit 1–512 MiB".into());
+    if !(1..=20).contains(&request.depth) || request.max_memory_mib == 0 {
+        return Err("Bloom depth must be 1–20 and memory budget must be at least 1 MiB".into());
     }
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let tables = load_transition_tables(

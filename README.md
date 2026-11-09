@@ -53,10 +53,37 @@ Solver app:
 - If only one center is partially defined of a color, the ability to choose exactly where the center should end up after the solve.
 
 Bloom tables are available under **Menu → Pruning → Bloom tables**. Choose the
-moves, depth (1–20), and memory cap (up to 512 MiB), then generate. Size estimation
+moves, depth (1–20), and a memory budget in MiB, then generate. There is no fixed
+512 MiB ceiling: for example, 12 GiB is 12,288 MiB. Allocation is checked against
+currently available system RAM, with headroom for the app and OS. Size estimation
 is not included yet. Generation runs in the background with progress and can be
 cancelled with **Stop**. If the table fills up, generation stops without saving an
 incomplete table or replacing an existing one.
+
+**Use GPU acceleration when available** applies to both generators and to table
+builds needed by subsequent solves. The native compute path uses wgpu (Vulkan,
+Metal, DX12, or compatible OpenGL), prefers a discrete GPU, and falls back to CPU
+when unsupported. Small jobs stay on CPU; larger jobs compare CPU/GPU throughput
+and switch to CPU if the pilot favors it. GPU failure or timeout discards the GPU
+attempt rather than saving incomplete data.
+
+GPU dispatch sizes adapt to measured completion time (an 8 ms target on integrated or
+unclassified graphics, 16 ms on discrete GPUs), with brief scheduling gaps for the desktop.
+Working buffers obey device binding limits and a conservative memory budget.
+Bloom filters that fit that budget are built directly on the GPU and read back
+at completion. Larger filters stay in system RAM and use bounded GPU hash batches,
+so a multi-GiB filter does not require matching VRAM. This is a scheduling target, not a hardware power or utilization
+limit. The option can be disabled to force CPU generation. Cache contents and
+search results are independent of the generation backend.
+
+Hardware parity tests (require the existing transition cache and a GPU):
+
+```sh
+cd main
+cargo test -p fto-core gpu_ -- --ignored --nocapture --test-threads=1
+```
+
+A CPU-only build remains available with `cargo check -p fto-core --no-default-features`.
 
 Select **Last-layer mode** (enabled by default) to build a table for the last-layer
 solver's goal: free leading/trailing U or U′, the distinct UF center groups, and the

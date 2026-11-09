@@ -19,7 +19,6 @@ const MAGIC: &[u8; 16] = b"FTO_BLOOM_V1\0\0\0\0";
 const HEADER_BYTES: u64 = 72;
 const HASHES: u32 = 7;
 const MAX_FPR: f64 = 0.01;
-pub const MAX_MEMORY_MIB: u32 = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct BloomState {
@@ -66,6 +65,14 @@ impl BloomState {
             | (u64::from(self.uf3) << 40);
         let h = mix(a ^ mix(b ^ 0x9e3779b97f4a7c15));
         (h, mix(h ^ 0xd1b54a32d192ed03) | 1)
+    }
+}
+#[inline]
+fn probe_bit(hash: u64, bits: u64) -> usize {
+    if bits.is_power_of_two() {
+        (hash & (bits - 1)) as usize
+    } else {
+        (hash % bits) as usize
     }
 }
 fn mix(mut x: u64) -> u64 {
@@ -162,6 +169,24 @@ enum BuildState {
     LastLayer(crate::search::LastLayerState),
 }
 impl BuildState {
+    #[cfg(feature = "gpu")]
+    fn gpu_words(self) -> [u32; 10] {
+        match self {
+            Self::Full(s) => [
+                s.corner.into(),
+                s.edge0.into(),
+                s.edge1.into(),
+                s.edge3.into(),
+                s.uf_center,
+                s.uf3.into(),
+                s.rl_center,
+                0,
+                0,
+                0,
+            ],
+            Self::LastLayer(s) => s.bloom_gpu_words(),
+        }
+    }
     fn hashes(self) -> (u64, u64) {
         match self {
             Self::Full(s) => s.hashes(),
@@ -244,9 +269,9 @@ impl BloomTable {
         self.contains_hashes(state.hashes())
     }
     pub(crate) fn contains_hashes(&self, (a, b): (u64, u64)) -> bool {
-        let bitmask = self.words.len() as u64 * 64 - 1;
+        let bits = self.words.len() as u64 * 64;
         (0..HASHES).all(|i| {
-            let bit = (a.wrapping_add(u64::from(i).wrapping_mul(b)) & bitmask) as usize;
+            let bit = probe_bit(a.wrapping_add(u64::from(i).wrapping_mul(b)), bits);
             self.words[bit / 64] & (1 << (bit % 64)) != 0
         })
     }
@@ -255,9 +280,9 @@ impl BloomTable {
         self.insert_hashes(state.hashes());
     }
     fn insert_hashes(&mut self, (a, b): (u64, u64)) {
-        let bitmask = self.words.len() as u64 * 64 - 1;
+        let bits = self.words.len() as u64 * 64;
         for i in 0..HASHES {
-            let bit = (a.wrapping_add(u64::from(i).wrapping_mul(b)) & bitmask) as usize;
+            let bit = probe_bit(a.wrapping_add(u64::from(i).wrapping_mul(b)), bits);
             let flag = 1 << (bit % 64);
             let word = &mut self.words[bit / 64];
             if *word & flag == 0 {
@@ -267,18 +292,23 @@ impl BloomTable {
         }
     }
     fn shrink(&mut self, cancel: Option<&AtomicBool>) -> Result<(), String> {
-        while self.words.len() > 1 {
+        while self.words.len() > 1 && self.words.len() % 2 == 0 {
             active(cancel)?;
             let half = self.words.len() / 2;
-            let occupied: u64 = self.words[..half]
-                .iter()
-                .zip(&self.words[half..])
-                .map(|(a, b)| u64::from((a | b).count_ones()))
-                .sum();
+            let mut occupied = 0_u64;
+            for i in 0..half {
+                if i & 8191 == 0 {
+                    active(cancel)?;
+                }
+                occupied += u64::from((self.words[i] | self.words[i + half]).count_ones());
+            }
             if (occupied as f64 / (half as f64 * 64.)).powi(HASHES as i32) > MAX_FPR {
                 break;
             }
             for i in 0..half {
+                if i & 8191 == 0 {
+                    active(cancel)?;
+                }
                 self.words[i] |= self.words[i + half];
             }
             self.words.truncate(half);
@@ -294,33 +324,39 @@ impl BloomTable {
         cancel: Option<&AtomicBool>,
         report: Option<&BloomReporter<'_>>,
     ) -> Result<Self, String> {
+        #[cfg(feature = "gpu")]
+        if crate::acceleration::enabled() {
+            match Self::generate_inner(tables, moves, config, cancel, report, true) {
+                Ok(table) => return Ok(table),
+                Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                    return Err(error);
+                }
+                Err(error) if error.starts_with("GPU Bloom:") => {
+                    crate::acceleration::log(&format!(
+                        "{error}; discarding partial GPU work and rebuilding on CPU"
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Self::generate_inner(tables, moves, config, cancel, report, false)
+    }
+    fn generate_inner(
+        tables: &TransitionTables,
+        moves: &[Move],
+        config: GenerateConfig,
+        cancel: Option<&AtomicBool>,
+        report: Option<&BloomReporter<'_>>,
+        _use_gpu: bool,
+    ) -> Result<Self, String> {
         if !(1..=20).contains(&config.depth) {
             return Err("Bloom depth must be between 1 and 20".into());
-        }
-        if !(1..=MAX_MEMORY_MIB).contains(&config.max_memory_mib) {
-            return Err(format!(
-                "Bloom memory limit must be between 1 and {MAX_MEMORY_MIB} MiB"
-            ));
         }
         if moves.is_empty() {
             return Err("select at least one Bloom move".into());
         }
         active(cancel)?;
-        let budget = (config.max_memory_mib as usize) * 1024 * 1024;
-        let bytes = 1_usize << (usize::BITS - 1 - budget.leading_zeros());
-        let mut words = Vec::new();
-        words
-            .try_reserve_exact(bytes / 8)
-            .map_err(|_| "not enough memory for the Bloom table".to_owned())?;
-        words.resize(bytes / 8, 0);
-        let mut table = Self {
-            mode: config.mode,
-            depth: config.depth,
-            moves: mask(moves),
-            words,
-            occupied: 0,
-            paths: 0,
-        };
+        let bytes = allocation_bytes(config.max_memory_mib)?;
         let mut reverse: Vec<_> = moves.iter().map(|m| m.inverse()).collect();
         reverse.sort_unstable_by_key(|m| m.idx());
         reverse.dedup();
@@ -379,9 +415,58 @@ impl BloomTable {
                 },
         )
         .map_err(|_| "Bloom traversal is too large; reduce the depth or move set")?;
+        // A traversal can insert at most `total` distinct states. Avoid reserving
+        // a multi-GiB budget for a tiny job; this upper bound is deliberately
+        // conservative and is not a cardinality estimate exposed to the user.
+        let needed = (u128::from(total) * 2).next_power_of_two().max(8);
+        let bytes = bytes.min(usize::try_from(needed).unwrap_or(usize::MAX));
+        crate::acceleration::check_host_allocation(bytes as u64)?;
+        let mut words = Vec::new();
+        words
+            .try_reserve_exact(bytes / 8)
+            .map_err(|_| "not enough memory for the Bloom table".to_owned())?;
+        words.resize(bytes / 8, 0);
+        let mut table = Self {
+            mode: config.mode,
+            depth: config.depth,
+            moves: mask(moves),
+            words,
+            occupied: 0,
+            paths: 0,
+        };
+        #[cfg(feature = "gpu")]
+        let gpu = if _use_gpu
+            && total
+                >= (if crate::acceleration::forced() {
+                    16_384
+                } else {
+                    1_000_000
+                })
+            && reverse.len() >= 2
+        {
+            prepare_gpu(
+                tables,
+                &reverse,
+                &successors,
+                config,
+                cancel,
+                table.words.len() as u64 * 8,
+            )
+            .map_err(|e| format!("GPU Bloom: {e}"))?
+        } else {
+            None
+        };
         let mut build = Builder {
             table: &mut table,
             tables,
+            #[cfg(feature = "gpu")]
+            gpu,
+            #[cfg(feature = "gpu")]
+            gpu_roots: Vec::new(),
+            #[cfg(feature = "gpu")]
+            gpu_calibrated: false,
+            #[cfg(feature = "gpu")]
+            reverse: reverse.clone(),
             successors,
             positions: crate::search::last_layer_position_moves(),
             cancel,
@@ -417,6 +502,10 @@ impl BloomTable {
                 }
             }
         }
+        #[cfg(feature = "gpu")]
+        build.flush_gpu()?;
+        #[cfg(feature = "gpu")]
+        build.finish_gpu()?;
         active(cancel)?;
         if table.paths != total {
             return Err("Bloom traversal did not complete".into());
@@ -438,6 +527,14 @@ impl BloomTable {
     }
 }
 struct Builder<'a> {
+    #[cfg(feature = "gpu")]
+    gpu: Option<crate::acceleration::BloomCompute>,
+    #[cfg(feature = "gpu")]
+    gpu_roots: Vec<(BuildState, usize)>,
+    #[cfg(feature = "gpu")]
+    gpu_calibrated: bool,
+    #[cfg(feature = "gpu")]
+    reverse: Vec<Move>,
     table: &'a mut BloomTable,
     tables: &'a TransitionTables,
     successors: Vec<Vec<Move>>,
@@ -448,7 +545,135 @@ struct Builder<'a> {
     last_report: Instant,
 }
 impl Builder<'_> {
+    #[cfg(feature = "gpu")]
+    fn flush_gpu(&mut self) -> Result<(), String> {
+        let Some(gpu) = &mut self.gpu else {
+            return Ok(());
+        };
+        let tail_depth = gpu.tail_depth;
+        let hashes = gpu
+            .flush(self.cancel)
+            .map_err(|e| format!("GPU Bloom: {e}"))?;
+        let gpu_time = gpu.last_elapsed;
+        let gpu_paths = gpu.last_paths;
+        let resident = gpu.resident();
+        let gpu_full = gpu.false_positive_rate() > MAX_FPR;
+        let roots = std::mem::take(&mut self.gpu_roots);
+        if !crate::acceleration::forced()
+            && !self.gpu_calibrated
+            && (hashes.len() >= 16_384 || (hashes.len() >= 1024 && gpu_time.as_millis() >= 16))
+        {
+            let started = Instant::now();
+            let mut sample = Vec::new();
+            for &(state, last) in roots.iter().take(64) {
+                self.cpu_pilot(state, tail_depth, last, &mut sample)?;
+            }
+            if resident {
+                for &hash in &sample {
+                    self.table.insert_hashes(hash);
+                }
+            }
+            let cpu_time = started.elapsed();
+            let gpu_rate = gpu_time.as_secs_f64() / hashes.len().max(1) as f64;
+            let cpu_rate = cpu_time.as_secs_f64() / sample.len().max(1) as f64;
+            let actual: std::collections::HashSet<_> = hashes.iter().copied().collect();
+            if sample.iter().any(|h| !actual.contains(h)) {
+                return Err("GPU Bloom: pilot hash mismatch".into());
+            }
+            self.gpu_calibrated = true;
+            if gpu_rate > cpu_rate * 0.8 {
+                crate::acceleration::log(&format!(
+                    "GPU Bloom pilot is slower than CPU ({:.0} vs {:.0} ns/state); continuing on CPU",
+                    gpu_rate * 1e9,
+                    cpu_rate * 1e9
+                ));
+                self.gpu = None;
+            } else if let Some(gpu) = &mut self.gpu {
+                gpu.retain_gpu();
+            }
+        }
+        self.table.paths += gpu_paths;
+        for (i, hash) in hashes.into_iter().enumerate() {
+            if i & 1023 == 0 {
+                active(self.cancel)?;
+            }
+            self.table.insert_hashes(hash);
+        }
+        if gpu_full || self.table.false_positive_rate() > MAX_FPR {
+            return Err(
+                "Bloom table is full; choose a smaller depth or a larger memory limit".into(),
+            );
+        }
+        if self.last_report.elapsed().as_millis() >= 200 {
+            if let Some(report) = self.report {
+                report(&BloomProgress {
+                    visited: self.table.paths,
+                    total: self.total,
+                    false_positive_rate: self.table.false_positive_rate(),
+                });
+            }
+            self.last_report = Instant::now();
+        }
+        Ok(())
+    }
+    #[cfg(feature = "gpu")]
+    fn finish_gpu(&mut self) -> Result<(), String> {
+        if let Some(gpu) = self.gpu.take() {
+            if gpu.resident() {
+                gpu.merge_filter(&mut self.table.words, self.cancel)
+                    .map_err(|e| format!("GPU Bloom: {e}"))?;
+                self.table.occupied = 0;
+                for chunk in self.table.words.chunks(8192) {
+                    active(self.cancel)?;
+                    self.table.occupied +=
+                        chunk.iter().map(|w| u64::from(w.count_ones())).sum::<u64>();
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "gpu")]
+    fn cpu_pilot(
+        &self,
+        state: BuildState,
+        left: u8,
+        last: usize,
+        hashes: &mut Vec<(u64, u64)>,
+    ) -> Result<(), String> {
+        if hashes.len() & 1023 == 0 {
+            active(self.cancel)?;
+        }
+        hashes.push(state.hashes());
+        if left > 0 {
+            for &mv in &self.successors[last] {
+                self.cpu_pilot(
+                    state.step(self.tables, mv, &self.positions),
+                    left - 1,
+                    mv.idx(),
+                    hashes,
+                )?;
+            }
+        }
+        Ok(())
+    }
     fn visit(&mut self, state: BuildState, left: u8, last: usize) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        if self.gpu.as_ref().is_some_and(|gpu| left == gpu.tail_depth) {
+            let mut job = [0_u32; 11];
+            job[..10].copy_from_slice(&state.gpu_words());
+            job[10] = self
+                .reverse
+                .iter()
+                .position(|m| m.idx() == last)
+                .unwrap_or(self.reverse.len()) as u32;
+            self.gpu_roots.push((state, last));
+            let gpu = self.gpu.as_mut().unwrap();
+            gpu.pending.push(job);
+            if gpu.ready() {
+                self.flush_gpu()?;
+            }
+            return Ok(());
+        }
         self.table.insert_hashes(state.hashes());
         self.table.paths += 1;
         if self.table.paths & 1023 == 0 {
@@ -484,6 +709,108 @@ impl Builder<'_> {
     }
 }
 
+#[cfg(feature = "gpu")]
+fn prepare_gpu(
+    tables: &TransitionTables,
+    reverse: &[Move],
+    successors: &[Vec<Move>],
+    config: GenerateConfig,
+    cancel: Option<&AtomicBool>,
+    filter_bytes: u64,
+) -> Result<Option<crate::acceleration::BloomCompute>, String> {
+    use crate::pruning::Component;
+    let Some(gpu) = crate::acceleration::gpu() else {
+        return Ok(None);
+    };
+    let components = if config.mode == BloomMode::LastLayer {
+        [
+            Component::Corner,
+            Component::E0,
+            Component::E0,
+            Component::Edge3,
+            Component::UfCenter3,
+            Component::UfCenter3,
+            Component::RlCenter,
+        ]
+    } else {
+        [
+            Component::Corner,
+            Component::E0,
+            Component::E0,
+            Component::Edge3,
+            Component::UfCenter,
+            Component::UfCenter3,
+            Component::RlCenter,
+        ]
+    };
+    let mut parameters = vec![0; 32 + (reverse.len() + 1) * 2];
+    parameters[0] = u32::from(config.mode == BloomMode::LastLayer);
+    parameters[1] = reverse.len() as u32;
+    let mut transitions = Vec::new();
+    let mut known = Vec::new();
+    for (slot, component) in components.into_iter().enumerate() {
+        let offset = if let Some(&(_, offset)) = known.iter().find(|&&(c, _)| c == component) {
+            offset
+        } else {
+            let offset =
+                u32::try_from(transitions.len()).map_err(|_| "GPU transition address overflow")?;
+            let count = component.size() * reverse.len();
+            if (transitions.len() + count) as u64 * 4 > gpu.binding_limit {
+                return Ok(None);
+            }
+            transitions
+                .try_reserve_exact(count)
+                .map_err(|_| "not enough RAM for GPU transitions")?;
+            for value in 0..component.size() {
+                if value & 1023 == 0 {
+                    active(cancel)?;
+                }
+                for &mv in reverse {
+                    transitions.push(component.next(value as u32, mv, tables));
+                }
+            }
+            known.push((component, offset));
+            offset
+        };
+        parameters[8 + slot] = offset;
+    }
+    parameters[15] = transitions.len() as u32;
+    let positions = crate::search::last_layer_position_moves();
+    for &mv in reverse {
+        transitions.extend(positions[mv.idx()].map(u32::from));
+    }
+    for last in 0..=reverse.len() {
+        let global_last = reverse.get(last).map_or(MOVE_COUNT, |m| m.idx());
+        for (next, mv) in reverse.iter().enumerate() {
+            if successors[global_last].contains(mv) {
+                parameters[32 + last * 2 + next / 32] |= 1 << (next % 32);
+            }
+        }
+    }
+    crate::acceleration::BloomCompute::new(
+        gpu,
+        &transitions,
+        parameters,
+        config.depth,
+        filter_bytes,
+    )
+}
+
+fn allocation_bytes(memory_mib: u32) -> Result<usize, String> {
+    if memory_mib == 0 {
+        return Err("Bloom memory budget must be at least 1 MiB".into());
+    }
+    let bytes = u64::from(memory_mib)
+        .checked_mul(1024 * 1024)
+        .ok_or("Bloom memory budget overflow")?;
+    let bytes = usize::try_from(bytes)
+        .map_err(|_| "Bloom memory budget exceeds this platform's address space")?;
+    if bytes > isize::MAX as usize {
+        return Err("Bloom memory budget exceeds this platform's address space".into());
+    }
+    Ok(bytes)
+}
+
 pub fn cache_file_name(moves: &[Move], depth: u8, mode: BloomMode) -> String {
     let prefix = if mode == BloomMode::LastLayer {
         "ll-"
@@ -503,12 +830,6 @@ impl BloomTable {
             self.occupied,
             self.paths,
         ]
-    }
-    fn checksum(&self) -> u64 {
-        self.header()
-            .into_iter()
-            .chain(self.words.iter().copied())
-            .fold(0xcbf29ce484222325, digest_step)
     }
     pub fn save(&self, path: &Path, cancel: Option<&AtomicBool>) -> Result<(), String> {
         active(cancel)?;
@@ -533,7 +854,17 @@ impl BloomTable {
             .map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
         writer.write_all(MAGIC).map_err(|e| e.to_string())?;
-        for n in self.header().into_iter().chain([self.checksum()]) {
+        let mut checksum = self
+            .header()
+            .into_iter()
+            .fold(0xcbf29ce484222325, digest_step);
+        for chunk in self.words.chunks(8192) {
+            active(cancel)?;
+            for &word in chunk {
+                checksum = digest_step(checksum, word);
+            }
+        }
+        for n in self.header().into_iter().chain([checksum]) {
             writer
                 .write_all(&n.to_le_bytes())
                 .map_err(|e| e.to_string())?;
@@ -579,6 +910,7 @@ impl BloomTable {
         active(cancel)?;
         let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
         let (header, expected) = read_header(&mut reader, path)?;
+        crate::acceleration::check_host_allocation(header[3] * 8)?;
         let count = header[3] as usize;
         let mut words = Vec::new();
         words
@@ -586,6 +918,8 @@ impl BloomTable {
             .map_err(|_| "not enough memory to load the Bloom table".to_owned())?;
         let mut buffer = vec![0_u8; 64 * 1024];
         let mut remaining = count;
+        let mut checksum = header.into_iter().fold(0xcbf29ce484222325, digest_step);
+        let mut occupied = 0_u64;
         while remaining > 0 {
             active(cancel)?;
             let n = remaining.min(buffer.len() / 8);
@@ -593,7 +927,10 @@ impl BloomTable {
                 .read_exact(&mut buffer[..n * 8])
                 .map_err(|e| e.to_string())?;
             for bytes in buffer[..n * 8].chunks_exact(8) {
-                words.push(u64::from_le_bytes(bytes.try_into().unwrap()));
+                let word = u64::from_le_bytes(bytes.try_into().unwrap());
+                checksum = digest_step(checksum, word);
+                occupied += u64::from(word.count_ones());
+                words.push(word);
             }
             remaining -= n;
         }
@@ -605,14 +942,7 @@ impl BloomTable {
             occupied: header[4],
             paths: header[5],
         };
-        if table.checksum() != expected
-            || table
-                .words
-                .iter()
-                .map(|w| u64::from(w.count_ones()))
-                .sum::<u64>()
-                != table.occupied
-        {
+        if checksum != expected || occupied != table.occupied {
             return Err("Bloom table integrity check failed; regenerate this table".into());
         }
         active(cancel)?;
@@ -638,8 +968,8 @@ fn read_header(reader: &mut impl Read, path: &Path) -> Result<([u64; 6], u64), S
     if header[1] == 0
         || header[1] >> MOVE_COUNT != 0
         || !(1..=20).contains(&(header[2] & 255))
-        || !header[3].is_power_of_two()
-        || header[3] > (u64::from(MAX_MEMORY_MIB) * 1024 * 1024 / 8)
+        || header[3] == 0
+        || header[3] > isize::MAX as u64 / 8
         || header[4] > header[3] * 64
         || header[5] == 0
     {
@@ -697,50 +1027,297 @@ mod tests {
     }
 
     #[test]
-    fn folding_and_persistent_cache_preserve_membership() {
+    fn multi_gib_budgets_and_non_power_of_two_membership() {
+        if usize::BITS >= 64 {
+            assert_eq!(
+                allocation_bytes(12 * 1024).unwrap() as u64,
+                12 * 1024 * 1024 * 1024
+            );
+        }
+        assert!(allocation_bytes(0).is_err());
         let (mut table, states) = sample();
+        table.words = vec![0; 3072];
+        table.occupied = 0;
+        for &state in &states {
+            table.insert(state);
+        }
         table.shrink(None).unwrap();
-        assert!(table.words.len() < 4096);
-        assert!(table.false_positive_rate() <= MAX_FPR);
         assert!(states.iter().all(|&s| table.contains(s)));
-        assert!(table.covers(&[Move::R]));
-        assert!(!table.covers(&[Move::U]));
+        assert!(table.false_positive_rate() <= MAX_FPR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_accepts_twelve_gib_without_allocating_the_filter() {
+        let (table, _) = sample();
         let root = std::env::temp_dir().join(format!(
-            "fto-bloom-test-{}-{}",
+            "fto-large-bloom-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        let path = root.join(cache_file_name(
-            &table.info().moves,
-            table.depth,
-            table.mode,
-        ));
-        table.save(&path, None).unwrap();
-        let original = fs::read(&path).unwrap();
-        let loaded = BloomTable::load(&path, None).unwrap();
-        assert!(states.iter().all(|&s| loaded.contains(s)));
-        assert_eq!(
-            BloomTable::read_info(&path).unwrap().bytes,
-            original.len() as u64
-        );
-        let cancel = AtomicBool::new(true);
-        assert!(table.save(&path, Some(&cancel)).is_err());
-        assert_eq!(original, fs::read(&path).unwrap());
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
-        assert!(BloomTable::load(&path, Some(&cancel)).is_err());
-        for offset in [24, 32, 72] {
-            // moves, depth and payload corruption
-            let mut corrupt = original.clone();
-            corrupt[offset] ^= 1;
-            fs::write(&path, corrupt).unwrap();
-            assert!(BloomTable::load(&path, None).is_err());
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("large.bloom");
+        let mut header = table.header();
+        let bytes = 12_u64 * 1024 * 1024 * 1024;
+        header[3] = bytes / 8;
+        header[4] = 0;
+        let mut file = File::create(&path).unwrap();
+        file.write_all(MAGIC).unwrap();
+        for word in header.into_iter().chain([0]) {
+            file.write_all(&word.to_le_bytes()).unwrap();
         }
-        fs::write(&path, &original[..original.len() - 1]).unwrap();
-        assert!(BloomTable::load(&path, None).is_err());
+        file.set_len(HEADER_BYTES + bytes).unwrap();
+        drop(file);
+        let info = BloomTable::read_info(&path).unwrap();
+        assert_eq!(info.bytes, bytes + HEADER_BYTES);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folding_and_persistent_cache_preserve_membership() {
+        for word_count in [4096, 3072] {
+            let (mut table, states) = sample();
+            table.words = vec![0; word_count];
+            table.occupied = 0;
+            for &state in &states {
+                table.insert(state);
+            }
+            table.shrink(None).unwrap();
+            assert!(table.words.len() < 4096);
+            assert!(table.false_positive_rate() <= MAX_FPR);
+            assert!(states.iter().all(|&s| table.contains(s)));
+            assert!(table.covers(&[Move::R]));
+            assert!(!table.covers(&[Move::U]));
+            let root = std::env::temp_dir().join(format!(
+                "fto-bloom-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let path = root.join(cache_file_name(
+                &table.info().moves,
+                table.depth,
+                table.mode,
+            ));
+            table.save(&path, None).unwrap();
+            let original = fs::read(&path).unwrap();
+            let loaded = BloomTable::load(&path, None).unwrap();
+            assert!(states.iter().all(|&s| loaded.contains(s)));
+            assert_eq!(
+                BloomTable::read_info(&path).unwrap().bytes,
+                original.len() as u64
+            );
+            let cancel = AtomicBool::new(true);
+            assert!(table.save(&path, Some(&cancel)).is_err());
+            assert_eq!(original, fs::read(&path).unwrap());
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            assert!(BloomTable::load(&path, Some(&cancel)).is_err());
+            for offset in [24, 32, 72] {
+                // moves, depth and payload corruption
+                let mut corrupt = original.clone();
+                corrupt[offset] ^= 1;
+                fs::write(&path, corrupt).unwrap();
+                assert!(BloomTable::load(&path, None).is_err());
+            }
+            fs::write(&path, &original[..original.len() - 1]).unwrap();
+            assert!(BloomTable::load(&path, None).is_err());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn gpu_resident_bloom_non_power_of_two_bits_match_cpu() {
+        use crate::acceleration::{self, Policy};
+        acceleration::with_policy(Policy::Gpu, None, || {
+            let gpu = acceleration::gpu().expect("GPU hardware required");
+            let mut transitions = Vec::new();
+            for value in 0..512_u32 {
+                transitions.extend([value, value]);
+            }
+            let mut parameters = vec![0; 38];
+            parameters[1] = 2;
+            for last in 0..3 {
+                parameters[32 + last * 2] = 3;
+            }
+            for word_count in [1024, 1536] {
+                let mut engine = acceleration::BloomCompute::new(
+                    gpu.clone(),
+                    &transitions,
+                    parameters.clone(),
+                    2,
+                    word_count as u64 * 8,
+                )
+                .unwrap()
+                .unwrap();
+                assert!(engine.resident());
+                let mut table = BloomTable {
+                    mode: BloomMode::FullPosition,
+                    depth: 2,
+                    moves: mask(&[Move::R, Move::Rp]),
+                    words: vec![0; word_count],
+                    occupied: 0,
+                    paths: 1,
+                };
+                for n in 0..300_u16 {
+                    let state = BloomState {
+                        corner: n,
+                        edge0: n * 7 % 512,
+                        edge1: n * 13 % 512,
+                        edge3: n * 17 % 512,
+                        uf_center: u32::from(n) * 23 % 512,
+                        uf3: n * 31 % 512,
+                        rl_center: u32::from(n) * 37 % 512,
+                    };
+                    let mut job = [0_u32; 11];
+                    job[..10].copy_from_slice(&BuildState::Full(state).gpu_words());
+                    job[10] = 2;
+                    engine.pending.push(job);
+                    table.insert(state);
+                    if engine.ready() {
+                        assert!(engine.flush(None).unwrap().is_empty());
+                    }
+                }
+                engine.flush(None).unwrap();
+                let mut actual = vec![0_u64; word_count];
+                engine.merge_filter(&mut actual, None).unwrap();
+                assert_eq!(
+                    table.words, actual,
+                    "resident GPU modulo mismatch for {word_count} words"
+                );
+                assert_eq!(table.occupied, engine.occupied);
+                assert!(engine.flush(None).unwrap().is_empty());
+                assert_eq!(engine.last_paths, 0);
+            }
+        });
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires real transition cache and GPU hardware"]
+    fn gpu_bloom_matches_cpu_for_full_last_layer_and_all_moves() {
+        use crate::acceleration::{self, Policy};
+        let tables = TransitionTables::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../cache/transition-table.tran"
+        ))
+        .unwrap();
+        let cases = [
+            (
+                BloomMode::FullPosition,
+                vec![Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp],
+                7,
+            ),
+            (
+                BloomMode::LastLayer,
+                vec![Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp],
+                6,
+            ),
+            (BloomMode::FullPosition, Move::ALL.to_vec(), 3),
+        ];
+        for (mode, moves, depth) in cases {
+            let config = GenerateConfig {
+                mode,
+                depth,
+                max_memory_mib: 3,
+            };
+            let started = Instant::now();
+            let cpu = BloomTable::generate(&tables, &moves, config, None, None).unwrap();
+            let cpu_time = started.elapsed();
+            let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let sink = messages.clone();
+            let log: Arc<crate::acceleration::GenerationLog> = Arc::new(move |s| {
+                println!("{s}");
+                sink.lock().unwrap().push(s.into());
+            });
+            let started = Instant::now();
+            let gpu = acceleration::with_policy(Policy::Gpu, Some(log), || {
+                BloomTable::generate(&tables, &moves, config, None, None)
+            })
+            .unwrap();
+            assert!(
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.contains("Bloom GPU enumeration")),
+                "no GPU enumeration executed"
+            );
+            assert!(
+                !messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.contains("rebuilding")),
+                "GPU failed and silently fell back"
+            );
+            assert_eq!(cpu.words, gpu.words, "GPU Bloom bit mismatch for {mode:?}");
+            assert_eq!(cpu.paths, gpu.paths);
+            println!(
+                "GPU BLOOM PARITY {mode:?} moves={} depth={depth} paths={} CPU={cpu_time:?} GPU={:?}",
+                moves.len(),
+                gpu.paths,
+                started.elapsed()
+            );
+        }
+        // Accept a 12-GiB budget without allocating it for a tiny traversal.
+        let huge_budget = BloomTable::generate(
+            &tables,
+            &[Move::R],
+            GenerateConfig {
+                mode: BloomMode::LastLayer,
+                depth: 4,
+                max_memory_mib: 12 * 1024,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(huge_budget.info().bytes < 1024 * 1024);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires real transition cache and GPU hardware"]
+    fn gpu_auto_bloom_pilot_preserves_results_when_switching_to_cpu() {
+        use crate::acceleration::{self, Policy};
+        let tables = TransitionTables::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../cache/transition-table.tran"
+        ))
+        .unwrap();
+        let moves = [Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp];
+        let config = GenerateConfig {
+            mode: BloomMode::LastLayer,
+            depth: 9,
+            max_memory_mib: 16,
+        };
+        let expected = BloomTable::generate(&tables, &moves, config, None, None).unwrap();
+        let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = messages.clone();
+        let log: Arc<acceleration::GenerationLog> = Arc::new(move |message| {
+            println!("{message}");
+            sink.lock().unwrap().push(message.into());
+        });
+        let actual = acceleration::with_policy(Policy::Auto, Some(log), || {
+            BloomTable::generate(&tables, &moves, config, None, None)
+        })
+        .unwrap();
+        assert!(
+            messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("Bloom GPU enumeration"))
+        );
+        assert_eq!(expected.words, actual.words);
+        assert_eq!(expected.paths, actual.paths);
     }
 
     #[test]

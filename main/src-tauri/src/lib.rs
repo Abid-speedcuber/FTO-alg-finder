@@ -89,6 +89,8 @@ const RL_LAST_LAYER_FIXED_CENTER_SLOT: [Option<u8>; 4] = [None, Some(3), Some(8)
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SolveRequest {
+    #[serde(default = "default_use_gpu")]
+    use_gpu: bool,
     scramble: Option<String>,
     state: Option<CubieState>,
     facelets: Option<Vec<u8>>,
@@ -106,6 +108,8 @@ struct SolveRequest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeneratePruningRequest {
+    #[serde(default = "default_use_gpu")]
+    use_gpu: bool,
     facelets: Option<Vec<u8>>,
     center_targets: Option<CenterTargets>,
     allowed_moves: Vec<String>,
@@ -218,7 +222,9 @@ async fn solve_fto(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = run_solve_blocking(&request, &cancel, &app, &cancels, &cache);
+        let response = with_gpu_generation(request.use_gpu, &app, || {
+            run_solve_blocking(&request, &cancel, &app, &cancels, &cache)
+        });
         let _ = response;
     });
 
@@ -246,7 +252,9 @@ async fn generate_pruning_table(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = generate_pruning_blocking(&request, &cancel, &app, &cache);
+        let result = with_gpu_generation(request.use_gpu, &app, || {
+            generate_pruning_blocking(&request, &cancel, &app, &cache)
+        });
         if let Ok(mut current) = cancels.lock() {
             *current = None;
         }
@@ -391,6 +399,24 @@ fn run_solve_blocking(
             let _ = app.emit("solve-error", error);
         }
     }
+}
+
+fn default_use_gpu() -> bool {
+    true
+}
+fn with_gpu_generation<T>(enabled: bool, app: &AppHandle, action: impl FnOnce() -> T) -> T {
+    let progress_app = app.clone();
+    let log: Arc<fto_core::acceleration::GenerationLog> =
+        Arc::new(move |message| emit_line(&progress_app, "acceleration", message));
+    fto_core::acceleration::with_policy(
+        if enabled {
+            fto_core::acceleration::Policy::Auto
+        } else {
+            fto_core::acceleration::Policy::Cpu
+        },
+        Some(log),
+        action,
+    )
 }
 
 fn emit_line(app: &AppHandle, kind: &str, text: &str) {

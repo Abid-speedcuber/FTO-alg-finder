@@ -2691,6 +2691,21 @@ const LL_RL_FIXED_PIECES: [u8; 3] = [3, 8, 10];
 impl LastLayerState {
     // Exactly the terminal goal fields: do not hash heuristic-only uf3 or
     // duplicate center labels that this goal deliberately treats as equivalent.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn bloom_gpu_words(self) -> [u32; 10] {
+        [
+            self.corner.into(),
+            self.edge0.into(),
+            self.edge1.into(),
+            self.edge3.into(),
+            self.ll_uf_center_a.into(),
+            self.ll_uf_center_b.into(),
+            self.rl_center,
+            self.rl_fixed_pos[0].into(),
+            self.rl_fixed_pos[1].into(),
+            self.rl_fixed_pos[2].into(),
+        ]
+    }
     pub(crate) fn bloom_hashes(self) -> (u64, u64) {
         let a = u64::from(self.corner)
             | (u64::from(self.edge0) << 16)
