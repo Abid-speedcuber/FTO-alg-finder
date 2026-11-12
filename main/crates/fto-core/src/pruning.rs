@@ -151,42 +151,6 @@ impl PatternDatabases {
             .unwrap_or(0)
     }
 
-    /// A truncated maximum is sufficient once this branch is rejected.
-    pub(crate) fn heuristic_bounded(&self, coord: FtoCoord, bound: u8) -> u8 {
-        let mut value = 0;
-        for table in &self.tables {
-            value = value.max(table.value(coord));
-            if value > bound {
-                break;
-            }
-        }
-        value
-    }
-
-    pub(crate) fn can_batch(&self) -> bool {
-        self.tables.len() == 2 && self.total_bytes() >= 1024 * 1024
-    }
-    pub(crate) fn pair_indices(&self, coord: FtoCoord) -> [usize; 2] {
-        debug_assert_eq!(self.tables.len(), 2);
-        [
-            self.tables[0].spec.index_of_coord(coord),
-            self.tables[1].spec.index_of_coord(coord),
-        ]
-    }
-    pub(crate) fn prefetch_pair(&self, indices: [usize; 2]) {
-        for (table, index) in self.tables.iter().zip(indices) {
-            fto_prefetch::prefetch(&table.table, index);
-        }
-    }
-    pub(crate) fn pair_value_bounded(&self, indices: [usize; 2], bound: u8) -> u8 {
-        let first = self.tables[0].table[indices[0]];
-        if first > bound {
-            first
-        } else {
-            first.max(self.tables[1].table[indices[1]])
-        }
-    }
-
     #[must_use]
     pub fn len(&self) -> usize {
         self.tables.len()
@@ -389,26 +353,7 @@ impl SolverPruning {
     /// Reads indices already carried in the search state's coordinate system.
     #[inline]
     pub(crate) fn heuristic_cached(&self, edge: usize, corner: usize) -> u8 {
-        self.heuristic_cached_bounded(edge, corner, u8::MAX)
-    }
-
-    #[inline]
-    pub(crate) fn heuristic_cached_bounded(&self, edge: usize, corner: usize, bound: u8) -> u8 {
-        let first = self.edge3_uf3[edge];
-        if first > bound {
-            first
-        } else {
-            first.max(self.corner_uf3[corner])
-        }
-    }
-
-    /// Compact tables use different indices and already fit well in cache.
-    pub(crate) fn can_batch(&self) -> bool {
-        self.compact.is_none() && self.edge3_uf3.len() + self.corner_uf3.len() >= 1024 * 1024
-    }
-    pub(crate) fn prefetch_pair(&self, indices: [usize; 2]) {
-        fto_prefetch::prefetch(&self.edge3_uf3, indices[0]);
-        fto_prefetch::prefetch(&self.corner_uf3, indices[1]);
+        self.edge3_uf3[edge].max(self.corner_uf3[corner])
     }
 
     /// Select extra coordinate work once; ordinary dense searches keep their original path.
@@ -431,13 +376,12 @@ impl SolverPruning {
     }
 
     #[inline]
-    pub(crate) fn swapped_step_bounded(
+    pub(crate) fn swapped_step(
         &self,
         tables: &TransitionTables,
         parent: crate::symmetry::SwappedPruning,
         corner: u16,
         mv: Move,
-        bound: u8,
     ) -> crate::symmetry::SwappedPruning {
         let Some(swap) = &self.orbit_swap else {
             return crate::symmetry::SwappedPruning::default();
@@ -449,22 +393,12 @@ impl SolverPruning {
             uf3: tables.uf_center3_move(parent.uf3, mapped),
             bound: 0,
         };
-        child.bound = self.swapped_bound_bounded(swap.corner(corner), child, bound);
+        child.bound = self.swapped_bound(swap.corner(corner), child);
         child
     }
 
     #[inline]
     fn swapped_bound(&self, corner: u16, projected: crate::symmetry::SwappedPruning) -> u8 {
-        self.swapped_bound_bounded(corner, projected, u8::MAX)
-    }
-
-    #[inline]
-    fn swapped_bound_bounded(
-        &self,
-        corner: u16,
-        projected: crate::symmetry::SwappedPruning,
-        bound: u8,
-    ) -> u8 {
         let (edge_index, corner_index) = self
             .cache_indices(corner, projected.edge3, projected.uf3, false)
             .unwrap_or_else(|| {
@@ -473,7 +407,7 @@ impl SolverPruning {
                     Self::corner_uf3_index(corner, projected.uf3),
                 )
             });
-        self.heuristic_cached_bounded(edge_index, corner_index, bound)
+        self.heuristic_cached(edge_index, corner_index)
     }
 
     #[inline(always)]
@@ -1883,165 +1817,6 @@ fn push_combinations(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn bounded_reads_preserve_acceptance_and_exact_surviving_values() {
-        for first in [0, 1, 7, 254, 255] {
-            for second in [0, 2, 8, 254, 255] {
-                let solver = super::SolverPruning {
-                    edge3_uf3: vec![first],
-                    corner_uf3: vec![second],
-                    compact: None,
-                    orbit_swap: None,
-                };
-                let patterns = super::PatternDatabases::new(vec![
-                    super::PatternDatabase {
-                        spec: CandidateSpec::new(vec![Component::Corner]),
-                        table: vec![first; crate::coord::CORNER_COUNT],
-                    },
-                    super::PatternDatabase {
-                        spec: CandidateSpec::new(vec![Component::Corner]),
-                        table: vec![second; crate::coord::CORNER_COUNT],
-                    },
-                ]);
-                for bound in 0..=255 {
-                    let exact = first.max(second);
-                    for actual in [
-                        solver.heuristic_cached_bounded(0, 0, bound),
-                        patterns.heuristic_bounded(crate::FtoCoord::solved(), bound),
-                        patterns.pair_value_bounded([0, 0], bound),
-                    ] {
-                        assert_eq!(actual > bound, exact > bound);
-                        if exact <= bound {
-                            assert_eq!(actual, exact);
-                        }
-                    }
-                }
-                assert!(!solver.can_batch());
-                assert!(!patterns.can_batch());
-            }
-        }
-        // Invalid second indices would panic if a rejected branch read them.
-        let solver = super::SolverPruning {
-            edge3_uf3: vec![7],
-            corner_uf3: vec![],
-            compact: None,
-            orbit_swap: None,
-        };
-        assert_eq!(solver.heuristic_cached_bounded(0, usize::MAX, 6), 7);
-        let patterns = super::PatternDatabases::new(vec![
-            super::PatternDatabase {
-                spec: CandidateSpec::new(vec![Component::Corner]),
-                table: vec![7; crate::coord::CORNER_COUNT],
-            },
-            super::PatternDatabase {
-                spec: CandidateSpec::new(vec![Component::Corner]),
-                table: vec![],
-            },
-        ]);
-        assert_eq!(patterns.heuristic_bounded(crate::FtoCoord::solved(), 6), 7);
-        assert_eq!(patterns.pair_value_bounded([0, usize::MAX], 6), 7);
-    }
-
-    #[test]
-    #[ignore = "integration check uses the locally generated transition table"]
-    fn batched_ll_search_and_resume_preserve_order_nodes_and_checkpoint() {
-        use crate::{
-            FtoCubie,
-            search::{SearchConfig, resume_exact},
-        };
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        let tables = TransitionTables::load(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../cache/transition-table.tran"
-        ))
-        .unwrap();
-        // Zero is an admissible bound. Padding selects the dense batching path
-        // without requiring a generated gigabyte PDB in this regression test.
-        let patterns = super::PatternDatabases::new(vec![
-            super::PatternDatabase {
-                spec: CandidateSpec::new(vec![Component::Corner]),
-                table: vec![0; 1024 * 1024],
-            },
-            super::PatternDatabase {
-                spec: CandidateSpec::new(vec![Component::Corner]),
-                table: vec![0; crate::coord::CORNER_COUNT],
-            },
-        ]);
-        assert!(patterns.can_batch());
-        let moves = vec![
-            Move::U,
-            Move::Up,
-            Move::F,
-            Move::Fp,
-            Move::R,
-            Move::Rp,
-            Move::Rw,
-            Move::Rwp,
-        ];
-        let config = SearchConfig {
-            min_depth: 3,
-            max_depth: 3,
-            free_u_ends: true,
-            allowed_moves: moves,
-            ..SearchConfig::default()
-        };
-        let start = FtoCubie::solved()
-            .apply(Move::F)
-            .apply(Move::U)
-            .apply(Move::F);
-        let scalar = resume_exact(start, &tables, None, None, &config, 1, None).unwrap();
-        let batched =
-            resume_exact(start, &tables, None, Some(&patterns), &config, 1, None).unwrap();
-        assert_eq!(scalar.result, batched.result);
-        assert!(!batched.result.solutions.is_empty());
-        let legacy = crate::search::solve_last_layer_with_pattern_pruning_threads(
-            start,
-            &tables,
-            Some(&patterns),
-            &config,
-            1,
-        );
-        assert_eq!(
-            legacy
-                .solutions
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>(),
-            batched.result.solutions.iter().cloned().collect()
-        );
-        let cancel = Arc::new(AtomicBool::new(false));
-        let trigger = cancel.clone();
-        let paused = SearchConfig {
-            cancel: Some(cancel),
-            solution_reporter: Some(Arc::new(move |_| trigger.store(true, Ordering::Relaxed))),
-            ..config.clone()
-        };
-        let first = resume_exact(start, &tables, None, Some(&patterns), &paused, 1, None).unwrap();
-        let checkpoint =
-            serde_json::from_slice(&serde_json::to_vec(&first.checkpoint.unwrap()).unwrap())
-                .unwrap();
-        let rest = resume_exact(
-            start,
-            &tables,
-            None,
-            Some(&patterns),
-            &config,
-            4,
-            Some(&checkpoint),
-        )
-        .unwrap();
-        assert!(rest.checkpoint.is_none());
-        assert_eq!(first.result.nodes + rest.result.nodes, batched.result.nodes);
-        let mut actual = first.result.solutions;
-        actual.extend(rest.result.solutions);
-        actual.sort_by_key(|alg| alg.iter().map(|m| m.idx()).collect::<Vec<_>>());
-        let mut expected = batched.result.solutions;
-        expected.sort_by_key(|alg| alg.iter().map(|m| m.idx()).collect::<Vec<_>>());
-        assert_eq!(actual, expected);
-    }
-
     #[cfg(feature = "gpu")]
     #[test]
     #[ignore = "requires cached FTO transitions and GPU hardware"]

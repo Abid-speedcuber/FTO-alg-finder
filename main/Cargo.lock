@@ -943,17 +943,12 @@ dependencies = [
 name = "fto-core"
 version = "0.1.0"
 dependencies = [
- "fto-prefetch",
  "pollster",
  "serde",
  "serde_json",
  "sysinfo",
  "wgpu",
 ]
-
-[[package]]
-name = "fto-prefetch"
-version = "0.1.0"
 
 [[package]]
 name = "futures-channel"

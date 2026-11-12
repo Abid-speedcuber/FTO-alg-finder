@@ -12,7 +12,6 @@ default = ["gpu"]
 gpu = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
-fto-prefetch = { path = "../fto-prefetch" }
 serde = { version = "1", features = ["derive"] }
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 wgpu = { version = "24.0.5", optional = true }

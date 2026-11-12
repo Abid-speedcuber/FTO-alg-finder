@@ -57,18 +57,6 @@ pub(crate) trait Kernel: Sync {
         last: Option<Move>,
         at_root: bool,
     ) -> Option<Self::State>;
-    // Transient sibling work is rebuilt after restoring a cursor; it is never
-    // persisted or counted as visited search nodes.
-    fn prepare_children(
-        &self,
-        _state: &Self::State,
-        _remaining: u8,
-        _last: Option<Move>,
-        _at_root: bool,
-        _start: usize,
-    ) -> Option<Vec<Option<Self::State>>> {
-        None
-    }
     fn replay(&self, state: &Self::State, mv: Move) -> Self::State;
     fn root_last(&self, root: usize) -> Option<Move> {
         [None, Some(Move::U), Some(Move::Up)][root]
@@ -78,8 +66,6 @@ struct Frame<S> {
     state: S,
     next: usize,
     entered: bool,
-    prepared: Option<Vec<Option<S>>>,
-    prepared_ready: bool,
 }
 struct Walk<S> {
     root: usize,
@@ -99,8 +85,6 @@ impl<S: Clone> Walk<S> {
                     state: state.clone(),
                     next: cursor.next[i] as usize,
                     entered: cursor.entered[i],
-                    prepared: None,
-                    prepared_ready: false,
                 });
             }
             if let Some(&mv) = path.get(level) {
@@ -360,37 +344,21 @@ pub(crate) fn run<K: Kernel>(
                     walk.pop();
                     continue;
                 }
+                let mv = config.allowed_moves[frame.next];
+                frame.next += 1;
                 let last = walk
                     .path
                     .last()
                     .copied()
                     .or_else(|| kernel.root_last(walk.root));
-                if !frame.prepared_ready {
-                    frame.prepared = kernel.prepare_children(
-                        &frame.state,
-                        remaining - 1,
-                        last,
-                        walk.path.is_empty(),
-                        frame.next,
-                    );
-                    frame.prepared_ready = true;
-                }
-                let index = frame.next;
-                let mv = config.allowed_moves[index];
-                frame.next += 1;
-                let child = if let Some(prepared) = &mut frame.prepared {
-                    prepared[index].take()
-                } else {
+                if let Some(state) =
                     kernel.child(&frame.state, mv, remaining - 1, last, walk.path.is_empty())
-                };
-                if let Some(state) = child {
+                {
                     walk.path.push(mv);
                     walk.frames.push(Frame {
                         state,
                         next: 0,
                         entered: false,
-                        prepared: None,
-                        prepared_ready: false,
                     });
                 }
             }
@@ -493,10 +461,7 @@ impl Kernel for ExactKernel<'_> {
             ctx.move_pruning,
             remaining.saturating_add(u8::from(ctx.config.free_u_ends)),
         );
-        let raw = ctx.raw_pruning_value_for_child_bounded(
-            child,
-            remaining.saturating_add(u8::from(ctx.config.free_u_ends)),
-        );
+        let raw = ctx.raw_pruning_value_for_child(child);
         if raw
             .map(|v| adjusted_pruning_value(v, ctx.config.free_u_ends))
             .unwrap_or(0)
@@ -505,42 +470,6 @@ impl Kernel for ExactKernel<'_> {
             return None;
         }
         Some((state.apply_with_pruning_child(ctx.tables, mv, child), raw))
-    }
-    fn prepare_children(
-        &self,
-        &(state, _): &Self::State,
-        remaining: u8,
-        last: Option<Move>,
-        _at_root: bool,
-        start: usize,
-    ) -> Option<Vec<Option<Self::State>>> {
-        let ctx = &self.ctx;
-        let moves = &ctx.config.allowed_moves;
-        let staged = stage_full_children(
-            state,
-            ctx.tables,
-            ctx.pruning,
-            &moves[start..],
-            last,
-            &ctx.commute,
-        )?;
-        let mut children = vec![None; moves.len()];
-        let bound = remaining.saturating_add(u8::from(ctx.config.free_u_ends));
-        for (i, &mv) in moves.iter().enumerate().skip(start) {
-            let Some(child) = staged[mv.idx()] else {
-                continue;
-            };
-            let (child, raw) =
-                finish_full_child(child, state, ctx.tables, ctx.pruning.unwrap(), mv, bound);
-            if raw
-                .map(|v| adjusted_pruning_value(v, ctx.config.free_u_ends))
-                .unwrap_or(0)
-                <= remaining
-            {
-                children[i] = Some((state.apply_with_pruning_child(ctx.tables, mv, child), raw));
-            }
-        }
-        Some(children)
     }
     fn replay(&self, &(state, _): &Self::State, mv: Move) -> Self::State {
         let child = state.apply_pruning_with(self.ctx.tables, mv, self.ctx.move_pruning);
@@ -600,55 +529,13 @@ impl Kernel for LlKernel<'_> {
             return None;
         }
         let child = state.apply_pruning_with(ctx.tables, mv, ctx.move_pruning);
-        if ctx.pruning_value_for_child_bounded(child, remaining) > remaining {
+        if ctx.pruning_value_for_child(child) > remaining {
             return None;
         }
         Some((
             state.apply_with_pruning_child(ctx.tables, mv, child, &ctx.rl_center_pos_moves),
             true,
         ))
-    }
-    fn prepare_children(
-        &self,
-        &(state, _): &Self::State,
-        remaining: u8,
-        last: Option<Move>,
-        at_root: bool,
-        start: usize,
-    ) -> Option<Vec<Option<Self::State>>> {
-        let ctx = &self.ctx;
-        let moves = &ctx.config.allowed_moves;
-        let staged = stage_ll_children(
-            state,
-            ctx.tables,
-            ctx.pruning,
-            &moves[start..],
-            last,
-            &ctx.commute,
-            at_root,
-        )?;
-        let mut children = vec![None; moves.len()];
-        for (i, &mv) in moves.iter().enumerate().skip(start) {
-            let Some(child) = staged[mv.idx()] else {
-                continue;
-            };
-            let raw = ctx
-                .pruning
-                .unwrap()
-                .pair_value_bounded(child.indices, remaining.saturating_add(1));
-            if adjusted_pruning_value(raw, true) <= remaining {
-                children[i] = Some((
-                    state.apply_with_pruning_child(
-                        ctx.tables,
-                        mv,
-                        child.child,
-                        &ctx.rl_center_pos_moves,
-                    ),
-                    true,
-                ));
-            }
-        }
-        Some(children)
     }
     fn replay(&self, &(state, _): &Self::State, mv: Move) -> Self::State {
         let ctx = &self.ctx;
