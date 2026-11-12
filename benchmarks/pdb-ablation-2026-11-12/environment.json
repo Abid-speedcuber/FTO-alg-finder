@@ -1,0 +1,25 @@
+{
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2\n",
+  "machine": "x86_64",
+  "search_threads": 1,
+  "features": [],
+  "profile": "release",
+  "harness_opt_level": 3,
+  "core_baseline": "78d6ae2",
+  "core_ablation": "ff61193",
+  "original_variants": {
+    "baseline": {
+      "rlib_sha256": "7b0c714f56d95f634c026922debb4a487d20d17c9d6b63f3448fb103089e32bb"
+    },
+    "early": {
+      "rlib_sha256": "5a36c5d8eba0644ea1817302f03cb672a7e63e91be60d303711add9d06a734dc"
+    },
+    "batch": {
+      "rlib_sha256": "51955ccd6e76db38544d1b181ba3e0770dec779b3f10dea6b1e4725877d3a622"
+    },
+    "both": {
+      "rlib_sha256": "53a634b049bc08e4dc3d8626f11136b539cf33332a1849f0316e459b605d1698"
+    }
+  },
+  "selected_rlib_sha256": "b543eedde7572bde0229adc536ab96ba4d4205b22f5e48a89521a75a699bc363"
+}

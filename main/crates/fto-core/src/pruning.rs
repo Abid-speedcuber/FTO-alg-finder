@@ -356,6 +356,23 @@ impl SolverPruning {
         self.edge3_uf3[edge].max(self.corner_uf3[corner])
     }
 
+    /// Stop dense-table reads once the branch is rejected. Compact tables
+    /// retain their unconditional maximum because both reads are inexpensive.
+    #[inline]
+    pub(crate) fn heuristic_cached_bounded(&self, edge: usize, corner: usize, bound: u8) -> u8 {
+        let first = self.edge3_uf3[edge];
+        if first > bound {
+            first
+        } else {
+            first.max(self.corner_uf3[corner])
+        }
+    }
+
+    /// Select the dense-table loop once, outside the recursive search.
+    pub(crate) fn uses_bounded_reads(&self) -> bool {
+        self.compact.is_none()
+    }
+
     /// Select extra coordinate work once; ordinary dense searches keep their original path.
     pub(crate) fn for_moves(&self) -> Option<&Self> {
         (self.compact.is_some() || self.orbit_swap.is_some()).then_some(self)
@@ -376,12 +393,13 @@ impl SolverPruning {
     }
 
     #[inline]
-    pub(crate) fn swapped_step(
+    pub(crate) fn swapped_step_bounded(
         &self,
         tables: &TransitionTables,
         parent: crate::symmetry::SwappedPruning,
         corner: u16,
         mv: Move,
+        bound: u8,
     ) -> crate::symmetry::SwappedPruning {
         let Some(swap) = &self.orbit_swap else {
             return crate::symmetry::SwappedPruning::default();
@@ -393,12 +411,22 @@ impl SolverPruning {
             uf3: tables.uf_center3_move(parent.uf3, mapped),
             bound: 0,
         };
-        child.bound = self.swapped_bound(swap.corner(corner), child);
+        child.bound = self.swapped_bound_bounded(swap.corner(corner), child, bound);
         child
     }
 
     #[inline]
     fn swapped_bound(&self, corner: u16, projected: crate::symmetry::SwappedPruning) -> u8 {
+        self.swapped_bound_bounded(corner, projected, u8::MAX)
+    }
+
+    #[inline]
+    fn swapped_bound_bounded(
+        &self,
+        corner: u16,
+        projected: crate::symmetry::SwappedPruning,
+        bound: u8,
+    ) -> u8 {
         let (edge_index, corner_index) = self
             .cache_indices(corner, projected.edge3, projected.uf3, false)
             .unwrap_or_else(|| {
@@ -407,7 +435,7 @@ impl SolverPruning {
                     Self::corner_uf3_index(corner, projected.uf3),
                 )
             });
-        self.heuristic_cached(edge_index, corner_index)
+        self.heuristic_cached_bounded(edge_index, corner_index, bound)
     }
 
     #[inline(always)]
@@ -1817,6 +1845,35 @@ fn push_combinations(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_dense_reads_preserve_surviving_values_and_skip_rejected_reads() {
+        for first in [0, 1, 7, 254, 255] {
+            for second in [0, 2, 8, 254, 255] {
+                let p = super::SolverPruning {
+                    edge3_uf3: vec![first],
+                    corner_uf3: vec![second],
+                    compact: None,
+                    orbit_swap: None,
+                };
+                for bound in 0..=255 {
+                    let actual = p.heuristic_cached_bounded(0, 0, bound);
+                    let exact = first.max(second);
+                    assert_eq!(actual > bound, exact > bound);
+                    if exact <= bound {
+                        assert_eq!(actual, exact);
+                    }
+                }
+            }
+        }
+        let p = super::SolverPruning {
+            edge3_uf3: vec![7],
+            corner_uf3: vec![],
+            compact: None,
+            orbit_swap: None,
+        };
+        assert_eq!(p.heuristic_cached_bounded(0, usize::MAX, 6), 7);
+    }
+
     #[cfg(feature = "gpu")]
     #[test]
     #[ignore = "requires cached FTO transitions and GPU hardware"]

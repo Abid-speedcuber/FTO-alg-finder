@@ -400,11 +400,11 @@ pub(crate) fn run<K: Kernel>(
     })
 }
 
-struct ExactKernel<'a> {
+struct ExactKernel<'a, const EARLY: bool> {
     ctx: SearchContext<'a>,
     roots: Vec<SearchState>,
 }
-impl Kernel for ExactKernel<'_> {
+impl<const EARLY: bool> Kernel for ExactKernel<'_, EARLY> {
     type State = (SearchState, Option<u8>);
     fn roots(&self) -> Vec<Self::State> {
         self.roots.iter().map(|&state| (state, None)).collect()
@@ -455,13 +455,20 @@ impl Kernel for ExactKernel<'_> {
         if last.is_some_and(|last| ctx.should_skip_after(last, mv)) {
             return None;
         }
-        let child = state.apply_pruning_bounded(
+        let child = state.apply_pruning_for_search::<EARLY>(
             ctx.tables,
             mv,
             ctx.move_pruning,
             remaining.saturating_add(u8::from(ctx.config.free_u_ends)),
         );
-        let raw = ctx.raw_pruning_value_for_child(child);
+        let raw = if EARLY {
+            ctx.raw_pruning_value_for_child_bounded(
+                child,
+                remaining.saturating_add(u8::from(ctx.config.free_u_ends)),
+            )
+        } else {
+            ctx.raw_pruning_value_for_child(child)
+        };
         if raw
             .map(|v| adjusted_pruning_value(v, ctx.config.free_u_ends))
             .unwrap_or(0)
@@ -593,16 +600,29 @@ pub fn resume_exact(
             path: vec![],
             nodes: 0,
         };
-        run(
-            &ExactKernel {
-                ctx,
-                roots: vec![state],
-            },
-            config,
-            threads,
-            input,
-            checkpoint,
-        )
+        if pruning.is_some_and(SolverPruning::uses_bounded_reads) {
+            run(
+                &ExactKernel::<true> {
+                    ctx,
+                    roots: vec![state],
+                },
+                config,
+                threads,
+                input,
+                checkpoint,
+            )
+        } else {
+            run(
+                &ExactKernel::<false> {
+                    ctx,
+                    roots: vec![state],
+                },
+                config,
+                threads,
+                input,
+                checkpoint,
+            )
+        }
     }
 }
 
