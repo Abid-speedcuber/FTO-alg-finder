@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
+import BatchCaseInput, { type BatchCaseInputApi } from "./BatchCaseInput";
 import { parseDepthSelection } from "./depthSelection";
 import { clearCase, createProject, downloadFile, hasCase, newCase, parseProject, projectCsv, savedProjects, saveProject, type BatchCase, type BatchProject } from "./batchProject";
 
@@ -67,7 +68,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
   const [listenersReady, setListenersReady] = useState(false);
   const runId = useRef<string | null>(null);
   const latest = useRef(project); latest.current = project;
-  const inputRefs = useRef(new Map<string, HTMLInputElement>());
+  const caseInput = useRef<BatchCaseInputApi>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const running = project.status === "running" || project.status === "pausing";
   const selection = parseDepthSelection(project.settings.depth);
@@ -171,11 +172,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
         status: "paused", updatedAt: Date.now() };
     });
   }
-  function focus(id: string) { requestAnimationFrame(() => inputRefs.current.get(id)?.focus()); }
-  function insertAfter(id: string, entries = [newCase()]) {
-    updateCases(cases => { const index = cases.findIndex(c => c.id === id); return [...cases.slice(0,index+1), ...entries, ...cases.slice(index+1)]; });
-    focus(entries[0].id);
-  }
+  function focus(id: string) { requestAnimationFrame(() => caseInput.current?.focusCase(id)); }
   async function exportFile(kind: "csv" | "project") {
     const snapshot = latest.current;
     const content = kind === "csv" ? projectCsv(snapshot) : JSON.stringify(snapshot, null, 2);
@@ -236,35 +233,8 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
       <div className="batch-main">
         <section className="batch-cases-panel">
           <div className="batch-section-header"><h2>Cases <span>{count}</span></h2><button disabled={running || !ready} onClick={() => { const c = newCase(); updateCases(entries => [...entries,c]); focus(c.id); }}>+ Add case</button></div>
-          <div className="batch-case-list" aria-label="Case setups">
-            {project.cases.map((entry, index) => <div className={`batch-case-row${entry.error ? " has-error" : ""}`} key={entry.id}>
-              <span className="batch-line-number">{index+1}</span>
-              {entry.facelets ? <button className="batch-visual-link" disabled={running} onClick={() => setEditing(entry.id)}>Case {index+1}</button> :
-                <input aria-label={`Case ${index+1} setup`} placeholder={index === 0 ? "Setup moves" : ""} value={entry.setup} disabled={running || !ready}
-                  ref={el => { if (el) inputRefs.current.set(entry.id,el); else inputRefs.current.delete(entry.id); }}
-                  onChange={e => updateCases(entries => entries.map(c => c.id === entry.id ? clearCase({ ...c, setup: e.target.value }) : c))}
-                  onPaste={e => {
-                    const text = e.clipboardData.getData("text"); if (!/[\r\n]/.test(text)) return;
-                    e.preventDefault(); const input = e.currentTarget;
-                    const combined = entry.setup.slice(0,input.selectionStart ?? 0) + text.replace(/\r\n?/g,"\n") + entry.setup.slice(input.selectionEnd ?? entry.setup.length);
-                    const lines = combined.split("\n"); if (lines[lines.length - 1] === "") lines.pop();
-                    const added = lines.map((line,i) => i === 0 ? clearCase({ ...entry, setup: line }) : newCase(line));
-                    updateCases(entries => entries.flatMap(c => c.id === entry.id ? added : [c])); focus(added[added.length-1].id);
-                  }}
-                  onKeyDown={e => {
-                    if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); setEditing(entry.id); }
-                    if (e.key === "Enter") { e.preventDefault(); insertAfter(entry.id); }
-                    if (e.key === "Backspace" && !entry.setup && project.cases.length > 1) {
-                      e.preventDefault(); const previous = project.cases[Math.max(0,index-1)];
-                      updateCases(entries => entries.filter(c => c.id !== entry.id)); focus(previous.id);
-                    }
-                  }} />}
-              <span className="batch-case-badge" title={entry.error ?? `${entry.completedDepths.length} depths completed`}>
-                {entry.error ? "Invalid" : activeCases[entry.id] !== undefined ? `Searching d${activeCases[entry.id]}` : entry.deferredDepth != null ? `Deferred d${entry.deferredDepth}` : entry.solutions.length ? `${entry.solutions.length} found` : entry.completedDepths.length ? `d${Math.max(...entry.completedDepths)}` : ""}
-              </span>
-              <button className="batch-remove" aria-label={`Remove case ${index+1}`} disabled={running} onClick={() => updateCases(entries => entries.length === 1 ? [newCase()] : entries.filter(c => c.id !== entry.id))}>×</button>
-            </div>)}
-          </div>
+          <BatchCaseInput key={project.id} ref={caseInput} entries={project.cases} disabled={running || !ready}
+            activeCases={activeCases} onChange={entries => updateCases(() => entries)} onEdit={setEditing} />
         </section>
         <section className="batch-output-panel">
           <div className="batch-section-header"><h2>Output <span>{solutionCount} solutions</span></h2><button disabled={!count} onClick={() => void exportFile("csv")}>Export CSV</button></div>

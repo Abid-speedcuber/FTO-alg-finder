@@ -131,12 +131,40 @@ impl LastLayerPruning<'_> {
         }
     }
 
-    fn heuristic_for_child(self, child: PruningChild) -> u8 {
+    fn heuristic_for_child_bounded(self, child: PruningChild, bound: u8) -> u8 {
         match self {
-            Self::Solver(pruning) => {
-                pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+            Self::Solver(p) => {
+                p.heuristic_cached_bounded(child.edge3_uf3_idx, child.corner_uf3_idx, bound)
             }
-            Self::Patterns(pruning) => pruning.heuristic(child.pruning_coord()),
+            Self::Patterns(p) => p.heuristic_bounded(child.pruning_coord(), bound),
+        }
+    }
+
+    fn can_batch(self) -> bool {
+        match self {
+            Self::Solver(p) => p.can_batch(),
+            Self::Patterns(p) => p.can_batch(),
+        }
+    }
+
+    fn pair_indices(self, child: PruningChild) -> [usize; 2] {
+        match self {
+            Self::Solver(_) => [child.edge3_uf3_idx, child.corner_uf3_idx],
+            Self::Patterns(p) => p.pair_indices(child.pruning_coord()),
+        }
+    }
+
+    fn prefetch_pair(self, indices: [usize; 2]) {
+        match self {
+            Self::Solver(p) => p.prefetch_pair(indices),
+            Self::Patterns(p) => p.prefetch_pair(indices),
+        }
+    }
+
+    fn pair_value_bounded(self, indices: [usize; 2], bound: u8) -> u8 {
+        match self {
+            Self::Solver(p) => p.heuristic_cached_bounded(indices[0], indices[1], bound),
+            Self::Patterns(p) => p.pair_value_bounded(indices, bound),
         }
     }
 }
@@ -1485,6 +1513,15 @@ impl<'a> LastLayerSearchContext<'a> {
         let child_depth = depth_left - 1;
         let mut children = [(0_u8, Move::U, state); MOVE_COUNT];
         let mut child_count = 0;
+        let staged = stage_ll_children(
+            state,
+            self.tables,
+            self.pruning,
+            &self.config.allowed_moves,
+            last_move,
+            &self.commute,
+            self.config.free_u_ends && self.path.is_empty(),
+        );
         for &mv in &self.config.allowed_moves {
             if self.config.free_u_ends && self.path.is_empty() && is_u_turn(mv) {
                 continue;
@@ -1492,12 +1529,30 @@ impl<'a> LastLayerSearchContext<'a> {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
-                self.tables,
-                mv,
-                if COMPACT { self.move_pruning } else { None },
-            );
-            let pruning_value = self.pruning_value_for_child(pruning_child);
+            let (pruning_child, pruning_value) = if let Some(staged) = &staged {
+                let Some(child) = staged[mv.idx()] else {
+                    continue;
+                };
+                (
+                    child.child,
+                    adjusted_pruning_value(
+                        self.pruning
+                            .unwrap()
+                            .pair_value_bounded(child.indices, child_depth.saturating_add(1)),
+                        true,
+                    ),
+                )
+            } else {
+                let child = state.apply_pruning_with(
+                    self.tables,
+                    mv,
+                    if COMPACT { self.move_pruning } else { None },
+                );
+                (
+                    child,
+                    self.pruning_value_for_child_bounded(child, child_depth),
+                )
+            };
             if pruning_value > child_depth {
                 continue;
             }
@@ -1536,10 +1591,10 @@ impl<'a> LastLayerSearchContext<'a> {
         )
     }
 
-    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+    fn pruning_value_for_child_bounded(&self, child: PruningChild, remaining: u8) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic_for_child(child))
+                .map(|p| p.heuristic_for_child_bounded(child, remaining.saturating_add(1)))
                 .unwrap_or(0),
             true,
         )
@@ -1626,17 +1681,36 @@ impl SearchContext<'_> {
         let child_depth = depth_left - 1;
         let mut children = [(0_u8, Move::U, state, None); MOVE_COUNT];
         let mut child_count = 0;
+        let staged = stage_full_children(
+            state,
+            self.tables,
+            self.pruning,
+            &self.config.allowed_moves,
+            last_move,
+            &self.commute,
+        );
         for &mv in &self.config.allowed_moves {
             if last_move.is_some_and(|last| self.should_skip_after(last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_bounded(
-                self.tables,
-                mv,
-                if COMPACT { self.move_pruning } else { None },
-                child_depth.saturating_add(u8::from(self.config.free_u_ends)),
-            );
-            let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
+            let bound = child_depth.saturating_add(u8::from(self.config.free_u_ends));
+            let (pruning_child, raw_child_pruning) = if let Some(staged) = &staged {
+                let Some(child) = staged[mv.idx()] else {
+                    continue;
+                };
+                finish_full_child(child, state, self.tables, self.pruning.unwrap(), mv, bound)
+            } else {
+                let child = state.apply_pruning_bounded(
+                    self.tables,
+                    mv,
+                    if COMPACT { self.move_pruning } else { None },
+                    bound,
+                );
+                (
+                    child,
+                    self.raw_pruning_value_for_child_bounded(child, bound),
+                )
+            };
             let pruning_value = raw_child_pruning
                 .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
                 .unwrap_or(0);
@@ -1683,6 +1757,13 @@ impl SearchContext<'_> {
             pruning
                 .heuristic_cached(state.edge3_uf3_idx, state.corner_uf3_idx)
                 .max(state.swapped.bound)
+        })
+    }
+
+    fn raw_pruning_value_for_child_bounded(&self, child: PruningChild, bound: u8) -> Option<u8> {
+        self.pruning.map(|p| {
+            p.heuristic_cached_bounded(child.edge3_uf3_idx, child.corner_uf3_idx, bound)
+                .max(child.swapped.bound)
         })
     }
 
@@ -1854,17 +1935,36 @@ impl SearchRootCollector<'_> {
 
         self.nodes += 1;
         let child_depth = depth_left - 1;
+        let staged = stage_full_children(
+            state,
+            self.tables,
+            self.pruning,
+            &self.config.allowed_moves,
+            last_move,
+            &self.commute,
+        );
         for &mv in &self.config.allowed_moves {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_bounded(
-                self.tables,
-                mv,
-                if COMPACT { self.move_pruning } else { None },
-                child_depth.saturating_add(u8::from(self.config.free_u_ends)),
-            );
-            let raw_child_pruning = self.raw_pruning_value_for_child(pruning_child);
+            let bound = child_depth.saturating_add(u8::from(self.config.free_u_ends));
+            let (pruning_child, raw_child_pruning) = if let Some(staged) = &staged {
+                let Some(child) = staged[mv.idx()] else {
+                    continue;
+                };
+                finish_full_child(child, state, self.tables, self.pruning.unwrap(), mv, bound)
+            } else {
+                let child = state.apply_pruning_bounded(
+                    self.tables,
+                    mv,
+                    if COMPACT { self.move_pruning } else { None },
+                    bound,
+                );
+                (
+                    child,
+                    self.raw_pruning_value_for_child_bounded(child, bound),
+                )
+            };
             let pruning_value = raw_child_pruning
                 .map(|value| adjusted_pruning_value(value, self.config.free_u_ends))
                 .unwrap_or(0);
@@ -1906,10 +2006,9 @@ impl SearchRootCollector<'_> {
         })
     }
 
-    fn raw_pruning_value_for_child(&self, child: PruningChild) -> Option<u8> {
-        self.pruning.map(|pruning| {
-            pruning
-                .heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx)
+    fn raw_pruning_value_for_child_bounded(&self, child: PruningChild, bound: u8) -> Option<u8> {
+        self.pruning.map(|p| {
+            p.heuristic_cached_bounded(child.edge3_uf3_idx, child.corner_uf3_idx, bound)
                 .max(child.swapped.bound)
         })
     }
@@ -1996,6 +2095,15 @@ impl LastLayerRootCollector<'_> {
 
         self.nodes += 1;
         let child_depth = depth_left - 1;
+        let staged = stage_ll_children(
+            state,
+            self.tables,
+            self.pruning,
+            &self.config.allowed_moves,
+            last_move,
+            &self.commute,
+            ply == 0,
+        );
         for &mv in &self.config.allowed_moves {
             if ply == 0 && is_u_turn(mv) {
                 continue;
@@ -2003,12 +2111,30 @@ impl LastLayerRootCollector<'_> {
             if last_move.is_some_and(|last| should_skip_after(&self.commute, last, mv)) {
                 continue;
             }
-            let pruning_child = state.apply_pruning_with(
-                self.tables,
-                mv,
-                if COMPACT { self.move_pruning } else { None },
-            );
-            let pruning_value = self.pruning_value_for_child(pruning_child);
+            let (pruning_child, pruning_value) = if let Some(staged) = &staged {
+                let Some(child) = staged[mv.idx()] else {
+                    continue;
+                };
+                (
+                    child.child,
+                    adjusted_pruning_value(
+                        self.pruning
+                            .unwrap()
+                            .pair_value_bounded(child.indices, child_depth.saturating_add(1)),
+                        true,
+                    ),
+                )
+            } else {
+                let child = state.apply_pruning_with(
+                    self.tables,
+                    mv,
+                    if COMPACT { self.move_pruning } else { None },
+                );
+                (
+                    child,
+                    self.pruning_value_for_child_bounded(child, child_depth),
+                )
+            };
             if pruning_value > child_depth {
                 continue;
             }
@@ -2040,10 +2166,10 @@ impl LastLayerRootCollector<'_> {
         )
     }
 
-    fn pruning_value_for_child(&self, child: PruningChild) -> u8 {
+    fn pruning_value_for_child_bounded(&self, child: PruningChild, remaining: u8) -> u8 {
         adjusted_pruning_value(
             self.pruning
-                .map(|pruning| pruning.heuristic_for_child(child))
+                .map(|p| p.heuristic_for_child_bounded(child, remaining.saturating_add(1)))
                 .unwrap_or(0),
             true,
         )
@@ -2984,9 +3110,14 @@ impl SearchState {
         };
         if let Some(pruning) = pruning {
             if pruning.has_orbit_swap()
-                && pruning.heuristic_cached(child.edge3_uf3_idx, child.corner_uf3_idx) <= bound
+                && pruning.heuristic_cached_bounded(
+                    child.edge3_uf3_idx,
+                    child.corner_uf3_idx,
+                    bound,
+                ) <= bound
             {
-                child.swapped = pruning.swapped_step(tables, self.swapped, child.corner, mv);
+                child.swapped =
+                    pruning.swapped_step_bounded(tables, self.swapped, child.corner, mv, bound);
             }
         }
         child
@@ -3026,6 +3157,77 @@ impl SearchState {
         }
         next
     }
+}
+
+// Compute sibling coordinates before reading the large random-access PDBs.
+// Compact move groups keep their direct path and their own index mapping.
+#[derive(Clone, Copy)]
+struct StagedChild {
+    child: PruningChild,
+    indices: [usize; 2],
+}
+
+fn stage_full_children(
+    state: SearchState,
+    tables: &TransitionTables,
+    pruning: Option<&SolverPruning>,
+    moves: &[Move],
+    last: Option<Move>,
+    commute: &[[bool; MOVE_COUNT]; MOVE_COUNT],
+) -> Option<[Option<StagedChild>; MOVE_COUNT]> {
+    let pruning = pruning.filter(|p| p.can_batch())?;
+    let mut children = [None; MOVE_COUNT];
+    for &mv in moves {
+        if last.is_some_and(|last| should_skip_after(commute, last, mv)) {
+            continue;
+        }
+        let child = state.apply_pruning_with(tables, mv, None);
+        let indices = [child.edge3_uf3_idx, child.corner_uf3_idx];
+        pruning.prefetch_pair(indices);
+        children[mv.idx()] = Some(StagedChild { child, indices });
+    }
+    Some(children)
+}
+
+fn finish_full_child(
+    mut staged: StagedChild,
+    parent: SearchState,
+    tables: &TransitionTables,
+    pruning: &SolverPruning,
+    mv: Move,
+    bound: u8,
+) -> (PruningChild, Option<u8>) {
+    let value = pruning.heuristic_cached_bounded(staged.indices[0], staged.indices[1], bound);
+    if value <= bound && pruning.has_orbit_swap() {
+        staged.child.swapped =
+            pruning.swapped_step_bounded(tables, parent.swapped, staged.child.corner, mv, bound);
+    }
+    (staged.child, Some(value.max(staged.child.swapped.bound)))
+}
+
+fn stage_ll_children(
+    state: LastLayerState,
+    tables: &TransitionTables,
+    pruning: Option<LastLayerPruning<'_>>,
+    moves: &[Move],
+    last: Option<Move>,
+    commute: &[[bool; MOVE_COUNT]; MOVE_COUNT],
+    skip_u: bool,
+) -> Option<[Option<StagedChild>; MOVE_COUNT]> {
+    let pruning = pruning.filter(|p| p.can_batch())?;
+    let mut children = [None; MOVE_COUNT];
+    for &mv in moves {
+        if (skip_u && is_u_turn(mv))
+            || last.is_some_and(|last| should_skip_after(commute, last, mv))
+        {
+            continue;
+        }
+        let child = state.apply_pruning_with(tables, mv, pruning.for_moves());
+        let indices = pruning.pair_indices(child);
+        pruning.prefetch_pair(indices);
+        children[mv.idx()] = Some(StagedChild { child, indices });
+    }
+    Some(children)
 }
 
 #[derive(Clone, Copy)]

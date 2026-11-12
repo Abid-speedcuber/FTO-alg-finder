@@ -43,6 +43,7 @@ Solver app:
 - Text input for setup moves or algorithms.
 - Print-style depth selection: `12-15, 17, 20` searches those exact depths, sorted and deduplicated (0–255). With All solutions enabled, results include every selected depth; otherwise search stops at the first successful depth. Empty input or `auto` finds the first successful depth and returns one or all solutions at that depth.
 - Option to return one solution or all found solutions.
+- App zoom: **Ctrl+=** / **Ctrl+-**, with **Ctrl+0** to reset. The selected zoom level is remembered.
 - Configurable thread count. (Not implemented perfectly, max thread count is the max number of allowed moves)
 - Multiple solver instances saved in local storage to make sure of better and more strict pruning (faster solution) and to eliminate unwanted moves.
 - Ability to choose the moveset you want the solution to be confined in.
@@ -104,7 +105,10 @@ check.
 ### Batch solving
 
 Choose **Menu → Switch to batch solving**. Enter one setup per numbered line;
-multiline paste adds cases. Press **Tab** on a setup to open the visual editor,
+multiline paste adds cases or replaces the current selection. Select across lines
+and press **Backspace** or **Delete** to remove them; undo/redo restores edits,
+including visual cases. Untouched cases retain their saved results and search
+checkpoints. Press **Tab** on a setup to open the visual editor,
 including paint, swap, ignored pieces, center targets, and LL setup controls.
 Saved visual entries appear as blue **Case N** links that reopen the editor.
 The right sidebar holds the shared moves, print-style depth selection, threads,

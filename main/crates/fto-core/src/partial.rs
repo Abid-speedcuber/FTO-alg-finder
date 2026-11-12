@@ -798,7 +798,7 @@ impl DynamicPruning {
             .map(|table| table.value(state))
             .max()
             .unwrap_or(0);
-        dynamic.max(self.coordinate.heuristic(FtoCoord::from_cubie(state)))
+        dynamic.max(self.coordinate_heuristic(state))
     }
 
     fn heuristic_for_indices(&self, state: &FtoCubie, indices: &[usize]) -> u8 {
@@ -809,7 +809,16 @@ impl DynamicPruning {
             .map(|(idx, table)| table.value_for_index_or_state(indices[idx], state))
             .max()
             .unwrap_or(0);
-        dynamic.max(self.coordinate.heuristic(FtoCoord::from_cubie(state)))
+        dynamic.max(self.coordinate_heuristic(state))
+    }
+
+    /// Dynamic piece tables do not need the unrelated full coordinates.
+    fn coordinate_heuristic(&self, state: &FtoCubie) -> u8 {
+        if self.coordinate.len() == 0 {
+            0
+        } else {
+            self.coordinate.heuristic(FtoCoord::from_cubie(state))
+        }
     }
 
     fn indices_of_state(&self, state: &FtoCubie) -> Vec<usize> {
@@ -1333,6 +1342,45 @@ pub fn format_partial_solutions(result: SearchResult) -> (u64, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_coordinate_pruning_skips_full_coordinate_ranking() {
+        let pruning =
+            DynamicPruning::from_coordinate_pruning(crate::pruning::PatternDatabases::default());
+        let mut state = FtoCubie::solved();
+        // These unrelated coordinates cannot be ranked; no coordinate PDB asks for them.
+        state.uf.fill(255);
+        state.rl.fill(255);
+        assert_eq!(pruning.heuristic(&state), 0);
+        assert_eq!(pruning.heuristic_for_indices(&state, &[]), 0);
+    }
+
+    #[test]
+    fn populated_coordinate_pruning_remains_active() {
+        use crate::{
+            pruning::{CandidateSpec, Component, PatternDatabase, PatternDatabases},
+            tables::TransitionTables,
+        };
+        let path =
+            std::env::temp_dir().join(format!("fto-coordinate-guard-{}.prun", std::process::id()));
+        let tables = TransitionTables::corner_only_for_tests();
+        let table = PatternDatabase::load_or_build_with_moves_reporting(
+            CandidateSpec::new(vec![Component::Corner]),
+            &tables,
+            0,
+            &path,
+            &[Move::U, Move::Up],
+            1,
+            None,
+            None,
+        )
+        .unwrap();
+        let pruning = DynamicPruning::from_coordinate_pruning(PatternDatabases::new(vec![table]));
+        let state = FtoCubie::solved().apply(Move::U);
+        assert_eq!(pruning.heuristic(&state), 1);
+        assert_eq!(pruning.heuristic_for_indices(&state, &[]), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
     use std::time::Instant;
 
     use super::{

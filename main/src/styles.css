@@ -1642,16 +1642,10 @@ button.depth-info-button:hover {
 .batch-section-header h2 { margin: 0; font-size: 14px; }
 .batch-section-header h2 span { font-size: 12px; font-weight: 400; color: #6b7785; margin-left: 7px; }
 .batch-section-header button { min-height: 30px; padding: 5px 10px; }
-.batch-case-list { max-height: 360px; min-height: 160px; overflow: auto; background: white; padding: 6px 0; }
-.batch-case-row { display: flex; align-items: center; min-height: 38px; }
-.batch-case-row:focus-within { background: #eff6ff; }
 .batch-line-number { flex: 0 0 48px; text-align: right; padding-right: 14px; color: #8a96a3; font: 12px ui-monospace, monospace; user-select: none; }
-.batch-case-row input { border: 0; border-radius: 0; background: transparent; min-width: 60px; padding: 7px 0; font: 13px ui-monospace, monospace; }
-.batch-case-row input:focus { outline: none; box-shadow: none; }
 .batch-visual-link { border: 0; background: transparent; color: #1670c5; padding: 7px 0; justify-content: flex-start; flex: 1; min-width: 60px; }
 .batch-visual-link:hover { text-decoration: underline; }
 .batch-case-badge { color: #63758a; font-size: 11px; white-space: nowrap; padding: 0 8px; }
-.batch-case-row.has-error .batch-case-badge { color: #bc3333; }
 .batch-remove { border: 0; background: transparent; color: #8994a0; min-height: 30px; padding: 5px 12px; }
 .batch-sidebar .tool-section { padding: 16px; }
 .batch-sidebar .tool-section + .tool-section { border-top: 1px solid #d4d9df; }
@@ -1701,3 +1695,20 @@ button.depth-info-button:hover {
 .batch-export-path { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #456d52; overflow-wrap: anywhere; }
 .batch-export-path button { min-height: 24px; padding: 3px 6px; border: 0; background: transparent; }
 .batch-defer-label { display: grid; gap: 6px; margin-top: 12px; font-size: 13px; }
+
+.batch-case-editor { position: relative; overflow: hidden; background: white; }
+.batch-case-text { display: block; width: calc(100% - 160px); height: 100%; margin-left: 48px; border: 0; border-radius: 0; padding: 6px 0; resize: none; background: white; color: #1f2328; font: 13px/38px ui-monospace, monospace; tab-size: 2; }
+.batch-case-text:focus { outline: none; box-shadow: none; }
+.batch-case-text::selection { background: #b8d8ff; }
+.batch-case-editor:focus-within { box-shadow: inset 3px 0 #c5ddf4; }
+.batch-editor-numbers { position: absolute; inset: 0 auto 0 0; width: 48px; overflow: hidden; pointer-events: none; }
+.batch-editor-numbers .batch-line-number { position: absolute; display: block; width: 48px; height: 38px; line-height: 38px; }
+.batch-editor-visuals { position: absolute; top: 0; bottom: 0; left: 48px; right: 112px; overflow: hidden; pointer-events: none; }
+.batch-editor-visuals .batch-visual-link { position: absolute; height: 38px; min-height: 38px; border-radius: 0; padding: 0; background: white; font: 600 13px/38px ui-monospace, monospace; pointer-events: auto; }
+.batch-editor-status { position: absolute; inset: 0 0 0 auto; width: 112px; overflow: hidden; }
+.batch-editor-row-status { position: absolute; right: 0; display: flex; align-items: center; justify-content: flex-end; width: 112px; height: 38px; }
+.batch-editor-row-status .batch-case-badge { overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.batch-editor-row-status.has-error .batch-case-badge { color: #bc3333; }
+.batch-editor-row-status .batch-remove { flex-shrink: 0; }
+
+.batch-editor-visuals .batch-visual-link.text-selected { background: #b8d8ff; }

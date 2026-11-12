@@ -10,6 +10,7 @@ import BatchSolver from "./BatchSolver";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
+import useAppZoom from "./useAppZoom";
 import { parseDepthSelection } from "./depthSelection";
 import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm } from "./rotation";
 
@@ -666,6 +667,7 @@ function InstanceSetupModal({
 }
 
 function App() {
+  useAppZoom();
   const [batchRunning, setBatchRunning] = useState(false);
   const [mode, setMode] = useState<"solver" | "combiner" | "batch">("solver");
   const [boot] = useState(bootstrapInstances);
