@@ -41,6 +41,8 @@ export type CenterTargets = {
   ufSources: Array<number | null>;
   rlSources: Array<number | null>;
   rlTopSources: number[][];
+  ufSlots?: number[][];
+  rlSlots?: number[][];
 };
 
 type Props = {
@@ -227,6 +229,7 @@ function FtoViewer({
           <button onClick={resetPuzzle}>Reset</button>
         </div>
       </div>
+      <p className="hint">Shift-click a center slot to toggle its golden target outline.</p>
       {inputError && <p role="alert">{inputError}</p>}
       {footer}
     </div>

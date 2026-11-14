@@ -74,6 +74,13 @@ export function parseProject(text: string): BatchProject {
     }
     if (c.centerTargets != null) {
       const t = c.centerTargets;
+      for (const groups of [t.ufSlots, t.rlSlots]) {
+        if (groups !== undefined && (!Array.isArray(groups) || groups.length !== 4 ||
+            groups.some((slots, color) => !Array.isArray(slots) || new Set(slots).size !== slots.length ||
+              slots.some(slot => !Number.isInteger(slot) || slot < color * 3 || slot >= color * 3 + 3)))) {
+          throw Error("Invalid entitled center slots.");
+        }
+      }
       if (![t.uf,t.rl,t.ufSources,t.rlSources].every(a => Array.isArray(a) && a.length === 4 && a.every(v => v === null || (Number.isInteger(v) && Number(v) >= 0 && Number(v) < 12))) ||
           !Array.isArray(t.rlTopSources) || t.rlTopSources.length !== 4 || !t.rlTopSources.every(a => Array.isArray(a) && a.every(v => Number.isInteger(v) && v >= 0 && v < 12))) throw Error("Invalid center targets.");
     }

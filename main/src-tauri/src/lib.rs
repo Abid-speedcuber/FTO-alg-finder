@@ -142,6 +142,10 @@ struct CenterTargets {
     rl_sources: [Option<u8>; 4],
     #[serde(default = "empty_center_source_groups")]
     rl_top_sources: [Vec<u8>; 4],
+    #[serde(default = "empty_center_source_groups")]
+    uf_slots: [Vec<u8>; 4],
+    #[serde(default = "empty_center_source_groups")]
+    rl_slots: [Vec<u8>; 4],
 }
 
 fn empty_center_source_groups() -> [Vec<u8>; 4] {
@@ -1583,6 +1587,8 @@ fn partial_slot_mask_from_facelets(facelets: &[u8]) -> Result<PartialMask, Strin
         rl_centers: center_care_mask(&RL_CENTER_FACELETS, facelets),
         uf_center_targets: [None; 4],
         rl_center_targets: [None; 4],
+        uf_entitled_slots: [0; 4],
+        rl_entitled_slots: [0; 4],
         last_layer_centers: false,
     })
 }
@@ -1601,6 +1607,8 @@ fn identity_mask_from_slot_mask(
         rl_centers: [false; 12],
         uf_center_targets: [None; 4],
         rl_center_targets: [None; 4],
+        uf_entitled_slots: [0; 4],
+        rl_entitled_slots: [0; 4],
         last_layer_centers: false,
     };
     for pos in 0..6 {
@@ -1629,6 +1637,8 @@ fn apply_center_targets(
     let Some(center_targets) = center_targets else {
         return Ok(());
     };
+    mask.uf_entitled_slots = entitled_slot_masks("UF", &center_targets.uf_slots)?;
+    mask.rl_entitled_slots = entitled_slot_masks("RL", &center_targets.rl_slots)?;
     apply_center_target_orbit(
         "UF",
         &mask.uf_centers,
@@ -1641,6 +1651,21 @@ fn apply_center_targets(
         &center_targets.rl,
         &mut mask.rl_center_targets,
     )
+}
+
+fn entitled_slot_masks(orbit: &str, groups: &[Vec<u8>; 4]) -> Result<[u16; 4], String> {
+    let mut masks = [0; 4];
+    for (color, slots) in groups.iter().enumerate() {
+        for &slot in slots {
+            if slot >= 12 || usize::from(slot / 3) != color {
+                return Err(format!(
+                    "{orbit} entitled slot {slot} does not belong to color group {color}"
+                ));
+            }
+            masks[color] |= 1 << slot;
+        }
+    }
+    Ok(masks)
 }
 
 fn apply_center_target_orbit(
@@ -2252,6 +2277,34 @@ mod tests {
     }
 
     #[test]
+    fn entitled_center_slots_reach_partial_masks_without_pinning_pieces() {
+        let mut facelets = vec![8; 72];
+        facelets[super::UF_CENTER_FACELETS[0]] = 2;
+        facelets[super::UF_CENTER_FACELETS[1]] = 2;
+        facelets[super::RL_CENTER_FACELETS[0]] = 7;
+        let mut targets = CenterTargets {
+            uf: [None; 4],
+            rl: [None; 4],
+            uf_sources: [None; 4],
+            rl_sources: [None; 4],
+            rl_top_sources: empty_center_source_groups(),
+            uf_slots: empty_center_source_groups(),
+            rl_slots: empty_center_source_groups(),
+        };
+        targets.uf_slots[2] = vec![6, 7];
+        targets.rl_slots[2] = vec![7, 8];
+        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).unwrap();
+        let mask = mask.unwrap();
+        assert_eq!(mask.uf_entitled_slots[2], (1 << 6) | (1 << 7));
+        assert_eq!(mask.rl_entitled_slots[2], (1 << 7) | (1 << 8));
+        assert_eq!(mask.uf_centers.iter().filter(|&&care| care).count(), 2);
+        assert_eq!(mask.rl_centers.iter().filter(|&&care| care).count(), 1);
+        assert_eq!(mask.uf_center_targets, [None; 4]);
+        targets.uf_slots[2] = vec![0];
+        assert!(cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).is_err());
+    }
+
+    #[test]
     fn partial_mask_can_pin_single_visible_uf_center_color() {
         let mut facelets = solved_facelets();
         facelets[U + 5] = 8;
@@ -2262,6 +2315,8 @@ mod tests {
             uf_sources: [None; 4],
             rl_sources: [None; 4],
             rl_top_sources: empty_center_source_groups(),
+            uf_slots: empty_center_source_groups(),
+            rl_slots: empty_center_source_groups(),
         };
         let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false)
             .expect("partial facelets with center target should parse");
@@ -2280,6 +2335,8 @@ mod tests {
             uf_sources: [None; 4],
             rl_sources: [None, None, Some(7), None],
             rl_top_sources: empty_center_source_groups(),
+            uf_slots: empty_center_source_groups(),
+            rl_slots: empty_center_source_groups(),
         };
         let cubie = cubie_from_facelets_with_center_targets(&facelets, Some(&targets))
             .expect("targeted exact facelets should parse");
@@ -2297,6 +2354,8 @@ mod tests {
             uf_sources: [None; 4],
             rl_sources: [None; 4],
             rl_top_sources: top_sources,
+            uf_slots: empty_center_source_groups(),
+            rl_slots: empty_center_source_groups(),
         };
         let cubie = cubie_from_facelets_with_center_targets(&facelets, Some(&targets))
             .expect("targeted exact facelets should parse");

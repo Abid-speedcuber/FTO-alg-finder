@@ -31,6 +31,8 @@ pub struct PartialMask {
     pub rl_centers: [bool; 12],
     pub uf_center_targets: [Option<u8>; 4],
     pub rl_center_targets: [Option<u8>; 4],
+    pub uf_entitled_slots: [u16; 4],
+    pub rl_entitled_slots: [u16; 4],
     pub last_layer_centers: bool,
 }
 
@@ -44,6 +46,8 @@ impl PartialMask {
             rl_centers: [true; 12],
             uf_center_targets: [None; 4],
             rl_center_targets: [None; 4],
+            uf_entitled_slots: [0; 4],
+            rl_entitled_slots: [0; 4],
             last_layer_centers: false,
         }
     }
@@ -56,6 +60,8 @@ impl PartialMask {
             && self.rl_centers.iter().all(|&v| v)
             && self.uf_center_targets.iter().all(Option::is_none)
             && self.rl_center_targets.iter().all(Option::is_none)
+            && self.uf_entitled_slots == [0; 4]
+            && self.rl_entitled_slots == [0; 4]
             && !self.last_layer_centers
     }
 }
@@ -197,6 +203,12 @@ impl PreparedPartialSearch<'_> {
                 .map(|v| v.unwrap_or(255)),
         );
         input.push(u8::from(mask.last_layer_centers));
+        if mask.uf_entitled_slots != [0; 4] || mask.rl_entitled_slots != [0; 4] {
+            input.extend(b"slots");
+            for slots in mask.uf_entitled_slots.iter().chain(&mask.rl_entitled_slots) {
+                input.extend(slots.to_le_bytes());
+            }
+        }
         resume::run(&PartialKernel { ctx }, config, threads, input, checkpoint)
     }
 }
@@ -528,6 +540,9 @@ impl IndexedPartialSearchContext<'_> {
 }
 
 fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
+    if !entitled_centers_solved(state, mask) {
+        return false;
+    }
     for piece in 0..6 {
         if mask.corners[piece] && (state.cp[piece] != piece as u8 || state.co[piece] != 0) {
             return false;
@@ -559,6 +574,37 @@ fn is_partial_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
         }
     }
     true
+}
+
+// Same-color centers are interchangeable. Require the maximum possible
+// overlap between defined pieces and entitled home slots.
+fn entitled_orbit_solved(orbit: &[u8; 12], cared: &[bool; 12], entitled: &[u16; 4]) -> bool {
+    for (color, &slots) in entitled.iter().enumerate() {
+        let defined = cared[color * 3..color * 3 + 3]
+            .iter()
+            .filter(|&&v| v)
+            .count();
+        let selected = slots.count_ones() as usize;
+        if defined == 0 || defined == 3 || selected == 0 || selected == 3 {
+            continue;
+        }
+        let matched = orbit
+            .iter()
+            .enumerate()
+            .filter(|&(pos, &piece)| {
+                slots & (1 << pos) != 0 && piece as usize / 3 == color && cared[piece as usize]
+            })
+            .count();
+        if matched != defined.min(selected) {
+            return false;
+        }
+    }
+    true
+}
+
+fn entitled_centers_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
+    entitled_orbit_solved(&state.uf, &mask.uf_centers, &mask.uf_entitled_slots)
+        && entitled_orbit_solved(&state.rl, &mask.rl_centers, &mask.rl_entitled_slots)
 }
 
 fn center_piece_satisfies_constraint(
@@ -678,6 +724,9 @@ fn partial_free_u_suffix_with_raw_pruning(
 }
 
 fn partial_centers_solved(state: &FtoCubie, mask: &PartialMask) -> bool {
+    if !entitled_centers_solved(state, mask) {
+        return false;
+    }
     for piece in 0..12 {
         if mask.uf_centers[piece]
             && !center_piece_satisfies_constraint(
@@ -1384,8 +1433,8 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        DynamicKind, DynamicPruning, DynamicTable, PartialMask, is_partial_solved,
-        partial_free_u_suffix,
+        DynamicKind, DynamicPruning, DynamicTable, PartialMask, PartialProblem, is_partial_solved,
+        partial_centers_solved, partial_free_u_suffix, solve_partial, SearchConfig,
     };
     use crate::{FtoCubie, moves::Move};
 
@@ -1416,6 +1465,98 @@ mod tests {
     }
 
     #[test]
+    fn entitled_centers_cover_every_defined_and_slot_subset() {
+        // Permute duplicate pieces independently of their visible color. This
+        // checks both "either piece" and "either slot" without pinning identities.
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        for rl in [false, true] {
+            for color in 0..4 {
+                for defined in 0_u16..8 {
+                    for selected in 0_u16..8 {
+                        for permutation in permutations {
+                            let mut mask = PartialMask::all();
+                            mask.corners = [false; 6];
+                            mask.edges = [false; 12];
+                            mask.uf_centers = [false; 12];
+                            mask.rl_centers = [false; 12];
+                            let mut state = FtoCubie::solved();
+                            let (orbit, cared, slots) = if rl {
+                                (
+                                    &mut state.rl,
+                                    &mut mask.rl_centers,
+                                    &mut mask.rl_entitled_slots,
+                                )
+                            } else {
+                                (
+                                    &mut state.uf,
+                                    &mut mask.uf_centers,
+                                    &mut mask.uf_entitled_slots,
+                                )
+                            };
+                            for offset in 0..3 {
+                                cared[color * 3 + offset] = defined & (1 << offset) != 0;
+                                orbit[color * 3 + offset] = (color * 3 + permutation[offset]) as u8;
+                            }
+                            slots[color] = selected << (color * 3);
+                            let k = defined.count_ones();
+                            let m = selected.count_ones();
+                            let matched = (0..3)
+                                .filter(|&slot| {
+                                    selected & (1 << slot) != 0
+                                        && defined & (1 << permutation[slot]) != 0
+                                })
+                                .count() as u32;
+                            let expected =
+                                k == 0 || k == 3 || m == 0 || m == 3 || matched == k.min(m);
+                            assert_eq!(
+                                is_partial_solved(&state, &mask),
+                                expected,
+                                "RL={rl}, color={color}, defined={defined:b}, slots={selected:b}, pieces={permutation:?}"
+                            );
+                            assert_eq!(partial_centers_solved(&state, &mask), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn entitled_centers_are_checked_even_with_zero_piece_pruning() {
+        let mut mask = PartialMask::all();
+        mask.corners = [false; 6];
+        mask.edges = [false; 12];
+        mask.uf_centers = [false; 12];
+        mask.rl_centers = [false; 12];
+        mask.uf_centers[0] = true;
+        mask.uf_centers[1] = true;
+        mask.uf_entitled_slots[0] = 1 << 2;
+        let config = SearchConfig {
+            min_depth: 0,
+            max_depth: 0,
+            allowed_moves: vec![Move::U, Move::Up],
+            ..SearchConfig::default()
+        };
+        let mut problem = PartialProblem {
+            cubie: FtoCubie::solved(),
+            mask,
+        };
+        assert!(solve_partial(&problem, &config).solutions.is_empty());
+        problem.cubie.uf.swap(0, 2);
+        assert_eq!(
+            solve_partial(&problem, &config).solutions,
+            vec![Vec::<Move>::new()]
+        );
+    }
+
+    #[test]
     fn pinned_center_requires_that_visible_center_identity() {
         let mut mask = PartialMask {
             corners: [false; 6],
@@ -1424,6 +1565,8 @@ mod tests {
             rl_centers: [false; 12],
             uf_center_targets: [Some(1), None, None, None],
             rl_center_targets: [None; 4],
+            uf_entitled_slots: [0; 4],
+            rl_entitled_slots: [0; 4],
             last_layer_centers: false,
         };
         mask.uf_centers[0] = true;
@@ -1446,6 +1589,8 @@ mod tests {
             rl_centers: [false; 12],
             uf_center_targets: [None; 4],
             rl_center_targets: [None; 4],
+            uf_entitled_slots: [0; 4],
+            rl_entitled_slots: [0; 4],
             last_layer_centers: true,
         };
         mask.rl_centers[3] = true;
@@ -1473,6 +1618,8 @@ mod tests {
             rl_centers: [false; 12],
             uf_center_targets: [None; 4],
             rl_center_targets: [None; 4],
+            uf_entitled_slots: [0; 4],
+            rl_entitled_slots: [0; 4],
             last_layer_centers: false,
         };
         let moves = crate::moves::move_cubies();

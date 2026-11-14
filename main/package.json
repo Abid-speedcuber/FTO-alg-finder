@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "tauri": "tauri",
     "check": "tsc -b",
+    "test:centers": "node --test tests/centerSlots.test.mjs",
     "test:rotation": "node tests/rotation.test.mjs",
     "test:depths": "node tests/depthSelection.test.mjs",
     "test:batch": "node --test tests/batchProject.test.mjs tests/batchCaseText.test.mjs"

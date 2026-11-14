@@ -67,8 +67,8 @@ const moves = [
 ];
 
 const defaultInstanceMoves = [
-  "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
-  "R", "R'", "L", "L'", "f", "f'", "r", "r'",
+  "U", "U'", "F", "F'", "BR", "BR'", "B", "B'",
+  "R", "R'", "L", "L'", "r", "r'", "br", "br'",
 ];
 const defaultMoveSet = new Set(defaultInstanceMoves);
 const moreInstanceMoves = moves.filter((move) => !defaultMoveSet.has(move));
@@ -246,6 +246,8 @@ function emptyCenterTargets(): CenterTargets {
     ufSources: [null, null, null, null],
     rlSources: [null, null, null, null],
     rlTopSources: [[], [], [], []],
+    ufSlots: [[], [], [], []],
+    rlSlots: [[], [], [], []],
   };
 }
 

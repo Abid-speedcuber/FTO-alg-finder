@@ -39,7 +39,7 @@
   var rlCenterFacelets = [38, 41, 43, 47, 50, 52, 65, 68, 70, 56, 59, 61];
   var rlFaceColorToCenterGroup = [0, 1, 3, 2];
   var lastLayerUniqueCenterSlot = [null, 3, 8, 10];
-  var targetHighlightHex = 0xf4ff62;
+  var targetOutlineHex = 0xffd700;
   var swapHighlightHex = 0xff80d4;
   var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
@@ -80,10 +80,10 @@
       ufSources: [null, null, null, null],
       rlSources: [null, null, null, null],
       rlTopSources: [[], [], [], []],
+      ufSlots: [[], [], [], []],
+      rlSlots: [[], [], [], []],
     };
     var lastLayerCenterMarks = new Array(12).fill(null);
-    var targetPick = null;
-    var highlightedFacelets = [];
     var swapSelection = null;
     var pieceSlots = [];
     var pieceKinds = [];
@@ -248,6 +248,7 @@
       var stickerIndex = faceletToSticker[faceletIndex];
       if (stickerIndex != null) {
         setStickerDisplayColor(stickerIndex, stickerColorHex(faceletColors[faceletIndex], faceletIndex));
+        refreshStickerBorder(stickerIndex);
       }
     }
 
@@ -258,24 +259,6 @@
         }
       }
       render();
-    }
-
-    function clearTargetHighlights() {
-      for (var i = 0; i < highlightedFacelets.length; i++) {
-        refreshStickerDisplayByFacelet(highlightedFacelets[i]);
-      }
-      highlightedFacelets = [];
-    }
-
-    function showTargetHighlights(facelets) {
-      clearTargetHighlights();
-      highlightedFacelets = facelets.slice();
-      for (var i = 0; i < highlightedFacelets.length; i++) {
-        var stickerIndex = faceletToSticker[highlightedFacelets[i]];
-        if (stickerIndex != null) {
-          setStickerDisplayColor(stickerIndex, targetHighlightHex);
-        }
-      }
     }
 
     function setStickerColor(stickerIndex, color) {
@@ -325,6 +308,8 @@
         ufSources: centerTargets.ufSources.slice(),
         rlSources: centerTargets.rlSources.slice(),
         rlTopSources: centerTargets.rlTopSources.map(function(sources) { return sources.slice(); }),
+        ufSlots: centerTargets.ufSlots.map(function(slots) { return slots.slice(); }),
+        rlSlots: centerTargets.rlSlots.map(function(slots) { return slots.slice(); }),
       };
     }
 
@@ -464,7 +449,6 @@
     }
 
     function applyAlgorithmInstant(algorithm) {
-      clearCenterTargetPick();
       clearLastLayerCenterMarks();
       clearSwapSelection();
       var parsed = parseAlgorithm(algorithm);
@@ -559,6 +543,34 @@
       sticker[5].color.setHex(hex);
     }
 
+    function refreshStickerBorder(stickerIndex) {
+      var facelet = cubePieces[stickerIndex][3];
+      var info = centerInfo(facelet);
+      var selected = info && centerTargets[info.orbit + "Slots"][info.color].indexOf(info.slot) !== -1;
+      var swapping = swapSelection != null && pieceSlots[swapSelection].indexOf(facelet) !== -1;
+      setStickerBorderColor(stickerIndex, swapping ? swapHighlightHex : selected ? targetOutlineHex : 0x000000);
+    }
+
+    function toggleCenterSlotAt(x, y) {
+      var stickerIndex = pickSticker(x, y);
+      if (stickerIndex == null) return false;
+      var info = centerInfo(cubePieces[stickerIndex][3]);
+      if (!info) return false;
+      var slots = centerTargets[info.orbit + "Slots"][info.color];
+      var index = slots.indexOf(info.slot);
+      if (index === -1) slots.push(info.slot);
+      else slots.splice(index, 1);
+      // The new slot set replaces the old partial-center pin for this color.
+      if (info.orbit === "uf" || !lastLayerMode) {
+        centerTargets[info.orbit][info.color] = null;
+        centerTargets[info.orbit + "Sources"][info.color] = null;
+      }
+      refreshStickerBorder(stickerIndex);
+      notifyCenterTargets();
+      render();
+      return true;
+    }
+
     function applyPieceOutline(pieceIdx) {
       var slots = pieceSlots[pieceIdx];
       for (var i = 0; i < slots.length; i++) {
@@ -574,7 +586,7 @@
       for (var i = 0; i < slots.length; i++) {
         var stickerIndex = faceletToSticker[slots[i]];
         if (stickerIndex != null) {
-          setStickerBorderColor(stickerIndex, 0x000000);
+          refreshStickerBorder(stickerIndex);
         }
       }
     }
@@ -710,53 +722,6 @@
       };
     }
 
-    function targetCandidatesForSelection() {
-      var group = selectedCenterGroup();
-      var facelets = group.orbit === "uf" ? ufCenterFacelets : rlCenterFacelets;
-      var candidates = [];
-      for (var slot = 0; slot < facelets.length; slot++) {
-        if (Math.floor(slot / 3) === group.color) {
-          candidates.push(facelets[slot]);
-        }
-      }
-      return {
-        orbit: group.orbit,
-        color: group.color,
-        sourceSlot: null,
-        candidates: candidates,
-      };
-    }
-
-    function beginCenterTargetPick(faceletIndex) {
-      var info = centerInfo(faceletIndex);
-      var group = selectedCenterGroup();
-      if (!info || info.orbit !== group.orbit) {
-        return false;
-      }
-      targetPick = targetCandidatesForSelection();
-      targetPick.sourceSlot = info.slot;
-      showTargetHighlights(targetPick.candidates);
-      render();
-      return true;
-    }
-
-    function chooseCenterTarget(faceletIndex) {
-      if (!targetPick) {
-        return false;
-      }
-      var info = centerInfo(faceletIndex);
-      if (!info || info.orbit !== targetPick.orbit || info.color !== targetPick.color) {
-        clearCenterTargetPick();
-        return true;
-      }
-      centerTargets[targetPick.orbit][targetPick.color] = info.slot;
-      centerTargets[targetPick.orbit + "Sources"][targetPick.color] = targetPick.sourceSlot;
-      clearCenterTargetPick();
-      notifyCenterTargets();
-      render();
-      return true;
-    }
-
     function markLastLayerUniqueCenter(faceletIndex) {
       if (!lastLayerMode || selectedColor < 5 || selectedColor > 7) {
         return false;
@@ -771,7 +736,6 @@
       centerTargets.rl[group.color] = lastLayerUniqueCenterSlot[group.color];
       centerTargets.rlSources[group.color] = info.slot;
       removeTopSource(info.slot);
-      clearCenterTargetPick();
       notifyState();
       notifyCenterTargets();
       render();
@@ -897,7 +861,6 @@
       if (!colors || colors.length !== 72) {
         return;
       }
-      clearCenterTargetPick();
       clearSwapSelection();
       for (var f = 0; f < 72; f++) {
         var stickerIndex = faceletToSticker[f];
@@ -921,11 +884,6 @@
         && selectedColor <= 7
         && info
         && info.orbit === "rl";
-    }
-
-    function clearCenterTargetPick() {
-      targetPick = null;
-      clearTargetHighlights();
     }
 
     function parseAlgorithm(algorithm) {
@@ -1027,7 +985,9 @@
           return;
         }
         if (!didDrag && x != null && y != null) {
-          if (activeDragMode === "paint") {
+          if (shiftKey) {
+            toggleCenterSlotAt(x, y);
+          } else if (activeDragMode === "paint") {
             paintAt(x, y, shiftKey, ctrlKey);
           } else if (mode === "swap") {
             swapAt(x, y);
@@ -1116,18 +1076,10 @@
     }
 
     function paintAt(x, y, shiftKey, ctrlKey) {
+      if (shiftKey) { toggleCenterSlotAt(x, y); return; }
       var stickerIndex = pickSticker(x, y);
-      if (stickerIndex == null) {
-        if (targetPick) {
-          clearCenterTargetPick();
-          render();
-        }
-        return;
-      }
+      if (stickerIndex == null) return;
       var faceletIndex = cubePieces[stickerIndex][3];
-      if (chooseCenterTarget(faceletIndex)) {
-        return;
-      }
       if (ctrlKey && markLastLayerUniqueCenter(faceletIndex)) {
         return;
       }
@@ -1143,9 +1095,6 @@
       } else {
         setStickerColor(stickerIndex, selectedColor);
       }
-      if (shiftKey) {
-        beginCenterTargetPick(faceletIndex);
-      }
       render();
       notifyState();
     }
@@ -1155,7 +1104,6 @@
       if (stickerIndex == null || !cubePieces[stickerIndex]) {
         return;
       }
-      clearCenterTargetPick();
       var faceletIndex = cubePieces[stickerIndex][3];
       var group = pieceFacelets.find(function(facelets) {
         return facelets.indexOf(faceletIndex) !== -1;
@@ -1289,11 +1237,12 @@
       getCenterTargets: getCenterTargets,
       setCenterTargets: function(targets) {
         if (!targets) return;
-        clearCenterTargetPick();
         centerTargets = {
           uf: targets.uf.slice(), rl: targets.rl.slice(),
           ufSources: targets.ufSources.slice(), rlSources: targets.rlSources.slice(),
           rlTopSources: targets.rlTopSources.map(function(sources) { return sources.slice(); }),
+          ufSlots: (targets.ufSlots || [[], [], [], []]).map(function(slots) { return slots.slice(); }),
+          rlSlots: (targets.rlSlots || [[], [], [], []]).map(function(slots) { return slots.slice(); }),
         };
         lastLayerCenterMarks = new Array(12).fill(null);
         if (lastLayerMode) {
@@ -1312,11 +1261,7 @@
       },
       setMode: function(nextMode) {
         mode = nextMode;
-        if (mode === "swap") {
-          clearCenterTargetPick();
-        } else {
-          clearSwapSelection();
-        }
+        if (mode !== "swap") clearSwapSelection();
         if (canvas) {
           canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
           container.style.cursor = mode === "pan" ? "grab" : "crosshair";
@@ -1332,7 +1277,6 @@
       setLastLayerMode: function(enabled) {
         var wasEnabled = lastLayerMode;
         lastLayerMode = !!enabled;
-        clearCenterTargetPick();
         if (!lastLayerMode) {
           clearLastLayerCenterMarks();
         } else if (!wasEnabled) {
@@ -1346,7 +1290,6 @@
         render();
       },
       resetPuzzle: function() {
-        clearCenterTargetPick();
         clearSwapSelection();
         moveQueue = [];
         animating = false;
@@ -1357,11 +1300,14 @@
           ufSources: [null, null, null, null],
           rlSources: [null, null, null, null],
           rlTopSources: [[], [], [], []],
+          ufSlots: [[], [], [], []],
+          rlSlots: [[], [], [], []],
         };
         lastLayerCenterMarks = new Array(12).fill(null);
         for (var i = 0; i < cubePieces.length; i++) {
           if (cubePieces[i]) {
             setStickerColor(i, Math.floor(cubePieces[i][3] / 9));
+            refreshStickerBorder(i);
             cubePieces[i][1].matrix.copy(cubePieces[i][0]);
             cubePieces[i][1].update();
           }

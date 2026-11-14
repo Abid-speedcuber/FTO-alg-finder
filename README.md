@@ -52,6 +52,7 @@ Solver app:
 - Restricted pruning mode, where pruning is built around the selected instance move set.
 - Last-layer mode: Separates the center piece that goes to the top layer and the center that goes to bottom so that the solution that the app generates is AUF independent.
 - Right click on a piece on the graphical FTO to do Partial-position input.
+- Shift-click center slots to toggle golden target outlines, without painting. Defined centers of that color must fill as many selected home slots as possible, in any order. Selecting all three slots adds no restriction; neither does defining zero or all three centers.
 - If only one center is partially defined of a color, the ability to choose exactly where the center should end up after the solve.
 
 Bloom tables are available under **Menu → Pruning → Bloom tables**. Choose the

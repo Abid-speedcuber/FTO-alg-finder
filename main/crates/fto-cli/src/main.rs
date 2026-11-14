@@ -2019,8 +2019,43 @@ fn parse_partial_mask(input: &str) -> Result<PartialMask, String> {
         rl_centers: parse_bool_array::<12>(mask, "rlCenters")?,
         uf_center_targets: parse_optional_u8_array::<4>(mask, "ufCenterTargets", 0, 11)?,
         rl_center_targets: parse_optional_u8_array::<4>(mask, "rlCenterTargets", 0, 11)?,
+        uf_entitled_slots: parse_entitled_masks(mask, "ufEntitledSlots")?,
+        rl_entitled_slots: parse_entitled_masks(mask, "rlEntitledSlots")?,
         last_layer_centers: parse_optional_bool(mask, "lastLayerCenters")?,
     })
+}
+
+fn parse_entitled_masks(input: &str, key: &str) -> Result<[u16; 4], String> {
+    let needle = format!("\"{key}\"");
+    let Some(start) = input.find(&needle) else {
+        return Ok([0; 4]);
+    };
+    let text = &input[start + needle.len()..];
+    let open = text
+        .find('[')
+        .ok_or_else(|| format!("{key} must be an array"))?;
+    let text = &text[open + 1..];
+    let close = text
+        .find(']')
+        .ok_or_else(|| format!("unclosed {key} array"))?;
+    let values = text[..close]
+        .split(',')
+        .map(str::trim)
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| format!("invalid {key} mask"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let masks: [u16; 4] = values
+        .try_into()
+        .map_err(|_| format!("{key} must contain four masks"))?;
+    for (color, mask) in masks.iter().enumerate() {
+        if mask & !(7 << (color * 3)) != 0 {
+            return Err(format!("{key} mask has slots of another color"));
+        }
+    }
+    Ok(masks)
 }
 
 fn object_body<'a>(input: &'a str, key: &str) -> Result<&'a str, String> {

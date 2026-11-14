@@ -57,3 +57,17 @@ test('DFS stacks survive portable project export and case edits clear them', () 
     const copy=structuredClone(p);update(copy.cases[0].checkpoint);assert.throws(()=>parseProject(JSON.stringify(copy)));
   }
 });
+
+
+test('entitled center slot sets survive batch round trips and reject invalid home slots', () => {
+  const p = createProject(['R'], ['R']);
+  p.cases[0].facelets = Array(72).fill(8);
+  p.cases[0].centerTargets = { uf:[null,null,null,null], rl:[null,null,null,null], ufSources:[null,null,null,null], rlSources:[null,null,null,null], rlTopSources:[[],[],[],[]], ufSlots:[[],[],[6,7],[]], rlSlots:[[],[3],[],[9,11]] };
+  assert.deepEqual(parseProject(JSON.stringify(p)).cases[0].centerTargets, p.cases[0].centerTargets);
+  for (const invalid of [[[3],[],[],[9]], [[],[],[5],[]], [[],[],[6,6],[]], [[],[],[12],[]], [[],[]]]) {
+    const copy = structuredClone(p); copy.cases[0].centerTargets.ufSlots = invalid;
+    assert.throws(() => parseProject(JSON.stringify(copy)));
+  }
+  delete p.cases[0].centerTargets.ufSlots; delete p.cases[0].centerTargets.rlSlots;
+  assert.doesNotThrow(() => parseProject(JSON.stringify(p)));
+});
