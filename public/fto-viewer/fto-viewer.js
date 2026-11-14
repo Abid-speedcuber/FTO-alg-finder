@@ -192,9 +192,7 @@
         var info = centerInfo(faceletIndex);
         if (info && info.orbit === "rl") {
           return lastLayerCenterMarks[info.slot] === "fixed"
-            ? lastLayerVariantColor(color, "fixed")
-            : lastLayerCenterMarks[info.slot] === "top"
-            ? lastLayerVariantColor(color, "top")
+            ? lastLayerVariantColor(color)
             : faceColors[color];
         }
       }
@@ -223,8 +221,13 @@
       return color >= 5 && color <= 7;
     }
 
-    function lastLayerVariantColor(color, role) {
-      return mixHex(faceColors[color], role === "fixed" ? 0x000000 : 0xffffff, role === "fixed" ? 0.22 : 0.32);
+    function lastLayerVariantColor(color) {
+      var base = faceColors[color];
+      var brightness = 0.2126 * ((base >> 16) & 255)
+        + 0.7152 * ((base >> 8) & 255) + 0.0722 * (base & 255);
+      return brightness >= 128
+        ? mixHex(base, 0x000000, 0.22)
+        : mixHex(base, 0xffffff, 0.32);
     }
 
     function mixHex(base, target, amount) {
@@ -884,7 +887,7 @@
             slots.push(slot);
           }
         }
-        // Keep the home center dark when possible; otherwise choose a center
+        // Mark the home center as the unique piece when possible; otherwise choose a center
         // of the same color without changing the puzzle's stickers.
         var fixedSlot = slots.indexOf(lastLayerUniqueCenterSlot[color]) !== -1
           ? lastLayerUniqueCenterSlot[color] : slots[0];

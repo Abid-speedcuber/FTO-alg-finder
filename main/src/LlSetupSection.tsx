@@ -22,10 +22,9 @@ import {
 type Props = {
   facelets: number[];
   viewerApiRef: MutableRefObject<FtoViewerApi | null>;
-  lastLayerMode?: boolean;
 };
 
-function LlSetupSection({ facelets, viewerApiRef, lastLayerMode = false }: Props) {
+function LlSetupSection({ facelets, viewerApiRef }: Props) {
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState<LlSelection>(EMPTY_LL_SELECTION);
   const [pending, setPending] = useState<LlPlan | null>(null);
@@ -106,7 +105,7 @@ function LlSetupSection({ facelets, viewerApiRef, lastLayerMode = false }: Props
         onClick={() => choose(group, option)}
         title={option.label}
       >
-        <LlThumbnail facelets={preview ?? facelets} lastLayerMode={lastLayerMode} />
+        <LlThumbnail facelets={preview ?? facelets} />
         <span>{option.label}</span>
       </button>
     );

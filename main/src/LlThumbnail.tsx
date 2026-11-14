@@ -1,8 +1,6 @@
 // Flattened top layer: the yellow face with its three side strips folded out.
 // Cell positions are fixed slots; colors come from the facelet array.
 
-import { EP_FACELET_SET } from "./llSetup";
-
 type Point = [number, number];
 type Cell = { facelet: number; points: string };
 
@@ -104,37 +102,21 @@ const COLOR_HEX = [
   "#050505",
 ];
 
-// Matches the viewer's lighter shading for last-layer center triangles.
-const LAST_LAYER_HEX: Record<number, string> = {
-  5: "#51e86f",
-  6: "#b8b8b8",
-  7: "#ffb34a",
-};
-
-function fillFor(color: number | undefined, facelet: number, lastLayerMode: boolean): string {
+function fillFor(color: number | undefined): string {
   if (color == null) {
     return "#2b3036";
-  }
-  if (lastLayerMode && EP_FACELET_SET.has(facelet) && LAST_LAYER_HEX[color]) {
-    return LAST_LAYER_HEX[color];
   }
   return COLOR_HEX[color] ?? "#2b3036";
 }
 
-function LlThumbnail({
-  facelets,
-  lastLayerMode,
-}: {
-  facelets: number[];
-  lastLayerMode: boolean;
-}) {
+function LlThumbnail({ facelets }: { facelets: number[] }) {
   return (
     <svg className="ll-thumb" viewBox={LL_VIEW_BOX} role="img" aria-hidden="true">
       {LL_CELLS.map((cell) => (
         <polygon
           key={cell.facelet}
           points={cell.points}
-          fill={fillFor(facelets[cell.facelet], cell.facelet, lastLayerMode)}
+          fill={fillFor(facelets[cell.facelet])}
           stroke="#15181c"
           strokeWidth={0.07}
           strokeLinejoin="round"

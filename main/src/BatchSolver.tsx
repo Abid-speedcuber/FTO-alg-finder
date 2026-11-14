@@ -58,7 +58,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
       <div className="batch-visual-tools">
         <label>Setup moves<input value={setup} onChange={e => setSetup(e.target.value)} /></label>
         <button type="button" onClick={() => { viewer.current?.resetPuzzle(); setApply(v => v + 1); }}>Apply setup</button>
-        <LlSetupSection facelets={facelets} viewerApiRef={viewer} lastLayerMode={lastLayer} />
+        <LlSetupSection facelets={facelets} viewerApiRef={viewer} />
       </div>
     </div>
     {error && <p className="batch-error" role="alert">{error}</p>}

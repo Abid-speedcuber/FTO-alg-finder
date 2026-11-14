@@ -1949,7 +1949,6 @@ function App() {
           <LlSetupSection
             facelets={facelets}
             viewerApiRef={viewerApiRef}
-            lastLayerMode={lastLayerMode}
           />
 
           <section className="tool-section solve-options">
