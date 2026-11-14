@@ -1,3 +1,4 @@
+import { invertInputAlgorithm, resolveInputAlgorithm } from "./rotation";
 import type { MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
@@ -25,6 +26,7 @@ declare global {
       container: HTMLElement,
       options?: {
         keyboard?: boolean;
+        resolveAlgorithm?: (algorithm: string) => string;
         faceColors?: string[];
         onFacelets?: (facelets: number[]) => void;
         onCenterTargets?: (targets: CenterTargets) => void;
@@ -76,6 +78,7 @@ function FtoViewer({
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
+  const [inputError, setInputError] = useState("");
   const [mode, setModeState] = useState<"pan" | "paint" | "swap">("pan");
   const [selectedColor, setSelectedColorState] = useState(0);
   const activeRef = useRef(active);
@@ -88,6 +91,7 @@ function FtoViewer({
 
     const viewer = window.createFtoViewer(hostRef.current, {
       faceColors,
+      resolveAlgorithm: resolveInputAlgorithm,
       onFacelets,
       onCenterTargets,
     });
@@ -136,9 +140,13 @@ function FtoViewer({
   useEffect(() => {
     if (applySignal > 0) {
       const { setup: currentSetup, inputMode: currentMode } = applyStateRef.current;
-      viewerRef.current?.applyAlgorithmInstant(
-        currentMode === "alg" ? invertAlgorithm(currentSetup) : currentSetup,
-      );
+      try {
+        const algorithm = currentMode === "alg" ? invertInputAlgorithm(currentSetup) : resolveInputAlgorithm(currentSetup);
+        viewerRef.current?.applyAlgorithmInstant(algorithm);
+        setInputError("");
+      } catch (error) {
+        setInputError(String(error instanceof Error ? error.message : error));
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applySignal]);
@@ -219,29 +227,10 @@ function FtoViewer({
           <button onClick={resetPuzzle}>Reset</button>
         </div>
       </div>
+      {inputError && <p role="alert">{inputError}</p>}
       {footer}
     </div>
   );
-}
-
-function invertAlgorithm(algorithm: string) {
-  return algorithm
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .reverse()
-    .map(invertMove)
-    .join(" ");
-}
-
-function invertMove(move: string) {
-  if (move.endsWith("'")) {
-    return move.slice(0, -1);
-  }
-  if (move.endsWith("i")) {
-    return move.slice(0, -1);
-  }
-  return `${move}'`;
 }
 
 export default FtoViewer;

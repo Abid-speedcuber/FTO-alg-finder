@@ -1,3 +1,4 @@
+import { rotateAlgorithm, normalizeMoveSelection, type ExecutionHold } from "./rotation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -8,7 +9,20 @@ import BatchCaseInput, { type BatchCaseInputApi } from "./BatchCaseInput";
 import { parseDepthSelection } from "./depthSelection";
 import { clearCase, createProject, downloadFile, hasCase, newCase, parseProject, projectCsv, savedProjects, saveProject, type BatchCase, type BatchProject } from "./batchProject";
 
-type Props = { active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
+type Props = { executionHold: ExecutionHold; active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
+function normalizeProject(project: BatchProject): BatchProject {
+  const moves = normalizeMoveSelection(project.settings.moves);
+  const removedTriggers = moves.length !== project.settings.moves.length;
+  return { ...project,
+    // Old trigger searches counted each three-turn sequence as one move.
+    // Their progress cannot be resumed with a different set of atomic moves.
+    cases: removedTriggers ? project.cases.map(clearCase) : project.cases,
+    status: removedTriggers ? "paused" : project.status,
+    settings: { ...project.settings, moves,
+      instanceMoves: normalizeMoveSelection(project.settings.instanceMoves),
+    },
+  };
+}
 type BatchEvent = { runId: string; kind: string; caseId?: string; depth?: number; algorithm?: string; case?: BatchCase; message?: string };
 
 function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
@@ -52,7 +66,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   </dialog>;
 }
 
-export default function BatchSolver({ active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
+export default function BatchSolver({ executionHold, active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
   const [project, setProject] = useState<BatchProject>(() => createProject(moves, instanceMoves));
   const [projects, setProjects] = useState<BatchProject[]>([]);
   const [ready, setReady] = useState(false);
@@ -87,7 +101,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
           await invoke("pause_batch");
           while (await invoke<boolean>("batch_status")) await new Promise(resolve => setTimeout(resolve, 100));
         }
-        const entries = await savedProjects();
+        const entries = (await savedProjects()).map(normalizeProject);
         if (disposed) return;
         setProjects(entries);
         if (entries[0]) setProject({ ...entries[0], status: entries[0].status === "done" ? "done" : "paused" });
@@ -206,6 +220,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
     try { await invoke("pause_batch"); } catch (e) { setError(String(e)); setProject(p => ({ ...p, status: "running" })); }
   }
   async function switchProject(next: BatchProject) {
+    next = normalizeProject(next);
     try { await saveProject(latest.current); setProject({ ...next, status: next.status === "done" ? "done" : "paused" }); setError(""); setMessage(""); }
     catch (e) { setError(String(e)); }
   }
@@ -244,7 +259,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
             {project.cases.map((entry,index) => hasCase(entry) && (!filter || String(index+1) === filter.trim() || entry.setup.toLowerCase().includes(filter.toLowerCase())) &&
               <article className="batch-result" key={entry.id}>
                 <div className="batch-result-heading"><strong>Case {index+1}</strong><code>{entry.facelets ? "Visual state" : entry.setup}</code><span>{entry.firstDepth !== null ? `First depth ${entry.firstDepth}` : ""}</span></div>
-                {entry.error ? <p className="batch-error">{entry.error}</p> : entry.solutions.length ? entry.solutions.map((s,i) => <div className="batch-solution" key={`${s.depth}:${s.algorithm}`}><span>{s.depth}</span><code>{s.algorithm || "(solved)"}</code><button title="Copy solution" aria-label={`Copy case ${index+1} solution ${i+1}`} onClick={() => void navigator.clipboard.writeText(s.algorithm).catch(e => setError(String(e)))}>Copy</button></div>) : <p>{entry.deferredDepth != null ? `Deferred at depth ${entry.deferredDepth}` : project.status === "done" ? "No solution in selected depths" : "Pending"}</p>}
+                {entry.error ? <p className="batch-error">{entry.error}</p> : entry.solutions.length ? entry.solutions.map((s,i) => <div className="batch-solution" key={`${s.depth}:${s.algorithm}`}><span>{s.depth}</span><code>{rotateAlgorithm(s.algorithm, executionHold) || "(solved)"}</code><button title="Copy solution" aria-label={`Copy case ${index+1} solution ${i+1}`} onClick={() => void navigator.clipboard.writeText(rotateAlgorithm(s.algorithm, executionHold)).catch(e => setError(String(e)))}>Copy</button></div>) : <p>{entry.deferredDepth != null ? `Deferred at depth ${entry.deferredDepth}` : project.status === "done" ? "No solution in selected depths" : "Pending"}</p>}
               </article>)}
           </div>
         </section>
@@ -253,7 +268,7 @@ export default function BatchSolver({ active, moves, instanceMoves, faceColors, 
         <section className="tool-section">
           <div className="section-heading"><h2>Allowed moves</h2></div>
           <fieldset disabled={running || !ready} className="batch-move-fieldset">
-            <div className="batch-moves">{project.settings.instanceMoves.map(move => <button type="button" key={move} className={project.settings.moves.includes(move) ? "selected" : ""} aria-pressed={project.settings.moves.includes(move)} onClick={() => changeSettings({ moves: project.settings.moves.includes(move) ? project.settings.moves.filter(m => m !== move) : [...project.settings.moves,move] })}>{move}</button>)}</div>
+            <div className="batch-moves">{project.settings.instanceMoves.map(move => <button type="button" key={move} className={project.settings.moves.includes(move) ? "selected" : ""} aria-pressed={project.settings.moves.includes(move)} onClick={() => changeSettings({ moves: project.settings.moves.includes(move) ? project.settings.moves.filter(m => m !== move) : [...project.settings.moves,move] })}>{rotateAlgorithm(move, executionHold)}</button>)}</div>
             <div className="batch-move-actions"><button onClick={() => changeSettings({ moves: [...project.settings.instanceMoves] })}>All</button><button onClick={() => changeSettings({ moves: [] })}>None</button><button onClick={() => changeSettings({ moves: [...moves], instanceMoves: [...instanceMoves] })}>Use current instance</button></div>
           </fieldset>
         </section>

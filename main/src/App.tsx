@@ -12,7 +12,7 @@ import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
 import useAppZoom from "./useAppZoom";
 import { parseDepthSelection } from "./depthSelection";
-import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm } from "./rotation";
+import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm, normalizeMoveSelection } from "./rotation";
 
 type CubieState = {
   cp: number[];
@@ -61,20 +61,19 @@ type TerminalLine = {
 
 const moves = [
   "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
-  "R", "R'", "L", "L'", "Uw", "Uw'", "Fw", "Fw'", "Rw", "Rw'", "Lw", "Lw'", "M", "M'",
-  "S", "S'", "E", "E'",
-  "(R U R')", "(R U' R')", "(R' U R)", "(R' U' R)",
-  "(F U F')", "(F U' F')", "(F' U F)", "(F' U' F)",
+  "R", "R'", "L", "L'", "u", "u'", "f", "f'", "r", "r'", "l", "l'", "Rs", "Rs'",
+  "Fs", "Fs'", "Us", "Us'", "Ls", "Ls'",
+  "d", "d'", "b", "b'", "br", "br'", "bl", "bl'",
 ];
 
 const defaultInstanceMoves = [
   "U", "U'", "F", "F'", "BR", "BR'", "BL", "BL'", "D", "D'", "B", "B'",
-  "R", "R'", "L", "L'", "Fw", "Fw'", "Rw", "Rw'",
+  "R", "R'", "L", "L'", "f", "f'", "r", "r'",
 ];
 const defaultMoveSet = new Set(defaultInstanceMoves);
 const moreInstanceMoves = moves.filter((move) => !defaultMoveSet.has(move));
 const moveChooserNote =
-  "All the moves listed here are in CIF. Treat CIF F as EIF R if you wanna generate algs in EIF. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
+  "Move labels follow the execution hold. Selections refer to the same physical moves when the hold changes. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
 
 const INSTANCES_KEY = "fto.instances.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
@@ -518,7 +517,7 @@ function bootstrapInstances(): { instances: Instance[]; activeId: string; firstR
             typeof (item as Instance).name === "string" &&
             Array.isArray((item as Instance).moves) &&
             Array.isArray((item as Instance).banned),
-        );
+        ).map(instance => ({ ...instance, moves: normalizeMoveSelection(instance.moves), banned: normalizeMoveSelection(instance.banned) }));
         if (instances.length > 0) {
           const ids = new Set(instances.map((instance) => instance.id));
           const activeId =
@@ -547,6 +546,7 @@ function InstanceSetupModal({
   initialMoves,
   confirmLabel,
   note,
+  executionHold = DEFAULT_HOLD,
   cancellable = true,
   onSave,
   onCancel,
@@ -557,6 +557,7 @@ function InstanceSetupModal({
   initialMoves: string[];
   confirmLabel: string;
   note?: string;
+  executionHold?: typeof DEFAULT_HOLD;
   cancellable?: boolean;
   onSave: (name: string, selected: string[]) => void;
   onCancel: () => void;
@@ -600,7 +601,7 @@ function InstanceSetupModal({
       className={selected.has(move) ? "move-toggle" : "move-toggle banned"}
       onClick={() => toggleMove(move)}
     >
-      {move}
+      {rotateAlgorithm(move, executionHold)}
     </button>
   );
 
@@ -1579,7 +1580,7 @@ function App() {
                 <button className="secondary" onClick={() => setBloomMoves([...activeInstance.moves])}>Use instance moves</button>
               </div>
               <div className="modal-move-grid">
-                {activeInstance.moves.map((move) => <button key={move} className={`move-toggle${bloomMoves.includes(move) ? "" : " banned"}`} aria-pressed={bloomMoves.includes(move)} onClick={() => setBloomMoves((selected) => selected.includes(move) ? selected.filter((m) => m !== move) : [...selected, move])}>{move}</button>)}
+                {activeInstance.moves.map((move) => <button key={move} className={`move-toggle${bloomMoves.includes(move) ? "" : " banned"}`} aria-pressed={bloomMoves.includes(move)} onClick={() => setBloomMoves((selected) => selected.includes(move) ? selected.filter((m) => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}
               </div>
               <div className="hint">A table can cover searches using any subset of its moves in the same mode. Partial-position searches use their existing pruning.</div>
               <div className="modal-footer">
@@ -1607,7 +1608,7 @@ function App() {
                     <div>
                       <div className="storage-title">{table.codename}</div>
                       <div className="storage-sub">
-                        {table.moves.join(" ")} · {(table.bytes / (1024 * 1024)).toFixed(1)} MiB
+                        {rotateAlgorithm(table.moves.join(" "), executionHold)} · {(table.bytes / (1024 * 1024)).toFixed(1)} MiB
                       </div>
                     </div>
                     <button className="secondary" onClick={() => setDeleteTableConfirm(table)}>
@@ -1634,7 +1635,7 @@ function App() {
               <div>
                 <div className="storage-title">{deleteTableConfirm.codename}</div>
                 <div className="storage-sub">
-                  {deleteTableConfirm.moves.join(" ")} · {(deleteTableConfirm.bytes / (1024 * 1024)).toFixed(1)} MiB
+                  {rotateAlgorithm(deleteTableConfirm.moves.join(" "), executionHold)} · {(deleteTableConfirm.bytes / (1024 * 1024)).toFixed(1)} MiB
                 </div>
               </div>
             </div>
@@ -1741,6 +1742,7 @@ function App() {
       {mode === "solver" && setupModal ? (
         setupModal.kind === "first" ? (
           <InstanceSetupModal
+            executionHold={executionHold}
             title="Set up your default instance"
             subtitle="Pick the moves you'll actually use. This instance's base pruning table is built only from these moves, and only they are exposed in the move panel."
             initialName={setupModal.instance.name}
@@ -1768,6 +1770,7 @@ function App() {
           />
         ) : (
           <InstanceSetupModal
+            executionHold={executionHold}
             title="New instance"
             subtitle="Pick a name and the moves this instance will use. Its base pruning table is built only from these moves."
             initialName=""
@@ -1807,6 +1810,7 @@ function App() {
               </span>
               <input
                 value={setup}
+                title="Accepts r/Rw and slice aliases M, E, S, N. Set an input hold with {U,R}; use {U,F} to reset."
                 onChange={(event) => setSetup(event.target.value)}
                 spellCheck={false}
                 autoComplete="off"
@@ -1941,7 +1945,7 @@ function App() {
                     className={bannedSet.has(move) ? "move-toggle banned" : "move-toggle"}
                     onClick={() => toggleMove(move)}
                   >
-                    {move}
+                    {rotateAlgorithm(move, executionHold)}
                   </button>
                 ))}
               </div>
@@ -2013,7 +2017,7 @@ function App() {
         <AlgCombiner active={mode === "combiner"} />
       </div>
       <div hidden={mode !== "batch"}>
-        <BatchSolver active={mode === "batch"} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
+        <BatchSolver executionHold={executionHold} active={mode === "batch"} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

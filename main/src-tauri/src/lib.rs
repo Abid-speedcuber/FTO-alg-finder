@@ -692,8 +692,8 @@ fn cubie_to_state(cubie: FtoCubie) -> CubieState {
 }
 
 fn apply_sequence(mut cubie: FtoCubie, sequence: &str) -> Result<FtoCubie, String> {
-    for token in sequence.split_whitespace() {
-        cubie = cubie.apply(parse_move(token)?);
+    for mv in fto_core::notation::parse_algorithm(sequence)? {
+        cubie = cubie.apply(mv);
     }
     Ok(cubie)
 }
@@ -1354,7 +1354,7 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
             depth: None,
             id: file_suffix.clone(),
             codename: pruning_codename(&file_suffix),
-            moves: moves.iter().map(|mv| format!("{mv:?}")).collect(),
+            moves: moves.iter().map(|mv| mv.name().to_owned()).collect(),
             files,
             bytes,
         });
@@ -1484,7 +1484,7 @@ fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
 fn format_move_list(moves: &[Move]) -> String {
     moves
         .iter()
-        .map(|mv| format!("{mv:?}"))
+        .map(|mv| mv.name())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -2111,10 +2111,10 @@ fn parse_move(token: &str) -> Result<Move, String> {
         "U'" | "Ui" => Ok(Move::Up),
         "F" => Ok(Move::F),
         "F'" | "Fi" => Ok(Move::Fp),
-        "BR" | "r" => Ok(Move::BR),
-        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::BRp),
-        "BL" | "l" => Ok(Move::BL),
-        "BL'" | "BLi" | "l'" | "li" => Ok(Move::BLp),
+        "BR" => Ok(Move::BR),
+        "BR'" | "BRi" => Ok(Move::BRp),
+        "BL" => Ok(Move::BL),
+        "BL'" | "BLi" => Ok(Move::BLp),
         "D" => Ok(Move::D),
         "D'" | "Di" => Ok(Move::Dp),
         "B" => Ok(Move::B),
@@ -2123,14 +2123,40 @@ fn parse_move(token: &str) -> Result<Move, String> {
         "R'" | "Ri" => Ok(Move::Rp),
         "L" => Ok(Move::L),
         "L'" | "Li" => Ok(Move::Lp),
-        "Uw" => Ok(Move::Uw),
-        "Uw'" | "Uwi" => Ok(Move::Uwp),
-        "Fw" => Ok(Move::Fw),
-        "Fw'" | "Fwi" => Ok(Move::Fwp),
-        "Rw" => Ok(Move::Rw),
-        "Rw'" | "Rwi" => Ok(Move::Rwp),
-        "Lw" => Ok(Move::Lw),
-        "Lw'" | "Lwi" => Ok(Move::Lwp),
+        "u" | "Uw" => Ok(Move::Uw),
+        "u'" | "ui" | "Uw'" | "Uwi" => Ok(Move::Uwp),
+        "f" | "Fw" => Ok(Move::Fw),
+        "f'" | "fi" | "Fw'" | "Fwi" => Ok(Move::Fwp),
+        "r" | "Rw" => Ok(Move::Rw),
+        "r'" | "ri" | "Rw'" | "Rwi" => Ok(Move::Rwp),
+        "l" | "Lw" => Ok(Move::Lw),
+        "l'" | "li" | "Lw'" | "Lwi" => Ok(Move::Lwp),
+        "d" | "Dw" => Ok(Move::Dw),
+        "d'" | "di" | "Dw'" | "Dwi" => Ok(Move::Dwp),
+        "b" | "Bw" => Ok(Move::Bw),
+        "b'" | "bi" | "Bw'" | "Bwi" => Ok(Move::Bwp),
+        "br" | "BRw" => Ok(Move::BRw),
+        "br'" | "bri" | "BRw'" | "BRwi" => Ok(Move::BRwp),
+        "bl" | "BLw" => Ok(Move::BLw),
+        "bl'" | "bli" | "BLw'" | "BLwi" => Ok(Move::BLwp),
+        "Ds" => Ok(Move::E),
+        "Ds'" | "Dsi" => Ok(Move::Ep),
+        "Bs" => Ok(Move::Sp),
+        "Bs'" | "Bsi" => Ok(Move::S),
+        "BLs" => Ok(Move::M),
+        "BLs'" | "BLsi" => Ok(Move::Mp),
+        "BRs" => Ok(Move::Lsp),
+        "BRs'" | "BRsi" => Ok(Move::Ls),
+        "Rs" => Ok(Move::Mp),
+        "Rs'" | "Rsi" => Ok(Move::M),
+        "Us" => Ok(Move::Ep),
+        "Us'" | "Usi" => Ok(Move::E),
+        "Fs" => Ok(Move::S),
+        "Fs'" | "Fsi" => Ok(Move::Sp),
+        "N" => Ok(Move::Ls),
+        "N'" | "Ni" => Ok(Move::Lsp),
+        "Ls" => Ok(Move::Ls),
+        "Ls'" | "Lsi" => Ok(Move::Lsp),
         "M" => Ok(Move::M),
         "M'" | "Mi" => Ok(Move::Mp),
         "S" => Ok(Move::S),

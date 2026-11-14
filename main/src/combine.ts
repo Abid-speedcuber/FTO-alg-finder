@@ -1,3 +1,5 @@
+import { resolveInputAlgorithm } from "./rotation";
+
 export type AlgSet = Record<string, string>;
 
 export type Candidate = {
@@ -47,7 +49,7 @@ export function serializeIntermediateAlgs(algs: AlgSet): string {
 }
 
 export function tokenizeAlg(moves: string): string[] {
-  return moves.replace(/[()]/g, " ").trim().split(/\s+/).filter(Boolean);
+  return resolveInputAlgorithm(moves).split(/\s+/).filter(Boolean);
 }
 
 export function invertMove(move: string): string {
@@ -72,7 +74,7 @@ export function invertTokens(tokens: string[]): string[] {
 
 /**
  * Decompose a move into (face, power) where power is 1 (forward) or 2 (double =
- * inverse on an order-3 FTO turn). Handles X, X', X2, and wide moves like Uw, Uw2.
+ * inverse on an order-3 FTO turn). Handles X, X', X2, and wide moves like u, u2.
  */
 export function parseMoveToken(token: string): { base: string; power: 1 | 2 } | null {
   if (!token) {

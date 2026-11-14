@@ -2186,8 +2186,7 @@ fn parse_array<const N: usize>(
 }
 
 fn apply_sequence(mut cubie: FtoCubie, sequence: &str) -> Result<FtoCubie, String> {
-    for token in sequence.split_whitespace() {
-        let mv = parse_move(token)?;
+    for mv in fto_core::notation::parse_algorithm(sequence)? {
         cubie = cubie.apply(mv);
     }
     Ok(cubie)
@@ -2199,10 +2198,10 @@ fn parse_move(token: &str) -> Result<fto_core::moves::Move, String> {
         "U'" | "Ui" => Ok(Move::Up),
         "F" => Ok(Move::F),
         "F'" | "Fi" => Ok(Move::Fp),
-        "BR" | "r" => Ok(Move::BR),
-        "BR'" | "BRi" | "r'" | "ri" => Ok(Move::BRp),
-        "BL" | "l" => Ok(Move::BL),
-        "BL'" | "BLi" | "l'" | "li" => Ok(Move::BLp),
+        "BR" => Ok(Move::BR),
+        "BR'" | "BRi" => Ok(Move::BRp),
+        "BL" => Ok(Move::BL),
+        "BL'" | "BLi" => Ok(Move::BLp),
         "D" => Ok(Move::D),
         "D'" | "Di" => Ok(Move::Dp),
         "B" => Ok(Move::B),
@@ -2211,14 +2210,40 @@ fn parse_move(token: &str) -> Result<fto_core::moves::Move, String> {
         "R'" | "Ri" => Ok(Move::Rp),
         "L" => Ok(Move::L),
         "L'" | "Li" => Ok(Move::Lp),
-        "Uw" => Ok(Move::Uw),
-        "Uw'" | "Uwi" => Ok(Move::Uwp),
-        "Fw" => Ok(Move::Fw),
-        "Fw'" | "Fwi" => Ok(Move::Fwp),
-        "Rw" => Ok(Move::Rw),
-        "Rw'" | "Rwi" => Ok(Move::Rwp),
-        "Lw" => Ok(Move::Lw),
-        "Lw'" | "Lwi" => Ok(Move::Lwp),
+        "u" | "Uw" => Ok(Move::Uw),
+        "u'" | "ui" | "Uw'" | "Uwi" => Ok(Move::Uwp),
+        "f" | "Fw" => Ok(Move::Fw),
+        "f'" | "fi" | "Fw'" | "Fwi" => Ok(Move::Fwp),
+        "r" | "Rw" => Ok(Move::Rw),
+        "r'" | "ri" | "Rw'" | "Rwi" => Ok(Move::Rwp),
+        "l" | "Lw" => Ok(Move::Lw),
+        "l'" | "li" | "Lw'" | "Lwi" => Ok(Move::Lwp),
+        "d" | "Dw" => Ok(Move::Dw),
+        "d'" | "di" | "Dw'" | "Dwi" => Ok(Move::Dwp),
+        "b" | "Bw" => Ok(Move::Bw),
+        "b'" | "bi" | "Bw'" | "Bwi" => Ok(Move::Bwp),
+        "br" | "BRw" => Ok(Move::BRw),
+        "br'" | "bri" | "BRw'" | "BRwi" => Ok(Move::BRwp),
+        "bl" | "BLw" => Ok(Move::BLw),
+        "bl'" | "bli" | "BLw'" | "BLwi" => Ok(Move::BLwp),
+        "Ds" => Ok(Move::E),
+        "Ds'" | "Dsi" => Ok(Move::Ep),
+        "Bs" => Ok(Move::Sp),
+        "Bs'" | "Bsi" => Ok(Move::S),
+        "BLs" => Ok(Move::M),
+        "BLs'" | "BLsi" => Ok(Move::Mp),
+        "BRs" => Ok(Move::Lsp),
+        "BRs'" | "BRsi" => Ok(Move::Ls),
+        "Rs" => Ok(Move::Mp),
+        "Rs'" | "Rsi" => Ok(Move::M),
+        "Us" => Ok(Move::Ep),
+        "Us'" | "Usi" => Ok(Move::E),
+        "Fs" => Ok(Move::S),
+        "Fs'" | "Fsi" => Ok(Move::Sp),
+        "N" => Ok(Move::Ls),
+        "N'" | "Ni" => Ok(Move::Lsp),
+        "Ls" => Ok(Move::Ls),
+        "Ls'" | "Lsi" => Ok(Move::Lsp),
         "M" => Ok(Move::M),
         "M'" | "Mi" => Ok(Move::Mp),
         "S" => Ok(Move::S),
@@ -2247,6 +2272,7 @@ fn parse_move_ident_list(input: &str) -> Result<Vec<Move>, String> {
             .iter()
             .copied()
             .find(|mv| format!("{mv:?}") == token)
+            .or_else(|| parse_move(token).ok())
             .ok_or_else(|| format!("unknown move: {token}"))?;
         if !moves.contains(&mv) {
             moves.push(mv);
@@ -2256,4 +2282,20 @@ fn parse_move_ident_list(input: &str) -> Result<Vec<Move>, String> {
         return Err("move list cannot be empty".to_owned());
     }
     Ok(moves)
+}
+
+#[cfg(test)]
+mod notation_tests {
+    use super::*;
+
+    #[test]
+    fn standard_move_names_round_trip() {
+        for mv in Move::ALL {
+            assert_eq!(parse_move(mv.name()).unwrap(), mv);
+        }
+        assert_eq!(parse_move_ident_list("r l u f d b br bl Rs Ls Us Fs").unwrap().len(), 12);
+        assert_eq!(parse_move("M").unwrap(), Move::M);
+        assert_eq!(parse_move("E").unwrap(), Move::E);
+        assert_eq!(parse_move("Rw").unwrap(), Move::Rw);
+    }
 }

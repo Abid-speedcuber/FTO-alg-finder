@@ -67,8 +67,8 @@ export function parseProject(text: string): BatchProject {
       if (cp.version !== 1 || !integer(cp.depth) || !Array.isArray(cp.input) || cp.input.length > 512 || !cp.input.every(byte) ||
           !Array.isArray(cp.tasks) || cp.tasks.length > 65536 || cp.tasks.some(t =>
             !t || !Number.isInteger(t.root) || t.root < 0 || t.root > 2 || !byte(t.base) ||
-            !Array.isArray(t.path) || t.path.length > cp.depth || t.base > t.path.length || !t.path.every(m => byte(m) && m < 38) ||
-            !Array.isArray(t.next) || t.next.length !== t.path.length - t.base + 1 || !t.next.every(n => byte(n) && n <= 38) ||
+            !Array.isArray(t.path) || t.path.length > cp.depth || t.base > t.path.length || !t.path.every(m => byte(m) && m < 48) ||
+            !Array.isArray(t.next) || t.next.length !== t.path.length - t.base + 1 || !t.next.every(n => byte(n) && n <= 48) ||
             !Array.isArray(t.entered) || t.entered.length !== t.next.length || !t.entered.every(e => typeof e === "boolean")
           )) throw Error("Invalid saved search checkpoint.");
     }

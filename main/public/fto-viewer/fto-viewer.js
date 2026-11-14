@@ -436,7 +436,7 @@
         return "";
       }
       var suffix = pow === 1 ? "" : (pow === maxPow - 1 ? "'" : pow);
-      return face + suffix;
+      return (m[1] === "2" ? face.toLowerCase() : face.toUpperCase()) + suffix;
     }
 
     function queueMove(axis, pow) {
@@ -927,19 +927,24 @@
 
     function parseAlgorithm(algorithm) {
       algorithm = algorithm || "";
-      var expanded = algorithm
+      if (options.resolveAlgorithm) algorithm = options.resolveAlgorithm(algorithm);
+      var expanded = algorithm.replace(/’/g, "'")
+        .replace(/[()]/g, " ")
+        .replace(/\b([MESN])(['’2i]?)(?![A-Za-z0-9])/g, function(_, slice, suffix) {
+          var face = slice === "M" ? "R" : slice === "E" ? "U" : slice === "N" ? "L" : "F";
+          var inverse = (slice !== "S" && slice !== "N") !== (suffix.length > 0);
+          return face.toLowerCase() + (inverse ? "'" : "") + " " + face + (inverse ? "" : "'");
+        })
+        .replace(/\b(BR|BL|[UDFRLB])s(['’2i]?)(?![A-Za-z0-9])/g, function(_, face, suffix) {
+          return face.toLowerCase() + (suffix ? "'" : "") + " " + face + (suffix ? "" : "'");
+        })
+        .replace(/\b(br|bl|[udfrlb])(['’2i]?)(?![A-Za-z0-9])/g, function(_, face, suffix) {
+          return "2" + face[0].toUpperCase() + face.slice(1) + (suffix === "i" || suffix === "’" ? "'" : suffix);
+        })
+        .replace(/\b(BR|BL|[UDFRLB])w/g, function(_, face) { return "2" + face[0] + face.slice(1).toLowerCase(); })
+        .replace(/\b(BR|BL|[UDFRLB])i(?=\s|$)/g, "$1'")
         .replace(/\bBR\b/g, "Br")
-        .replace(/\bBL\b/g, "Bl")
-        .replace(/(^|\s)M'(?=\s|$)/g, "$1Rw R'")
-        .replace(/(^|\s)Mi(?=\s|$)/g, "$1Rw R'")
-        .replace(/(^|\s)M(?=\s|$)/g, "$1Rw' R")
-        .replace(/(^|\s)S'(?=\s|$)/g, "$1Fw' F")
-        .replace(/(^|\s)Si(?=\s|$)/g, "$1Fw' F")
-        .replace(/(^|\s)S(?=\s|$)/g, "$1Fw F'")
-        .replace(/(^|\s)E'(?=\s|$)/g, "$1Uw U'")
-        .replace(/(^|\s)Ei(?=\s|$)/g, "$1Uw U'")
-        .replace(/(^|\s)E(?=\s|$)/g, "$1Uw' U")
-        .replace(/\b([A-Z])w(?=\d|'|\s|$)/g, "2$1");
+        .replace(/\bBL\b/g, "Bl");
       return puzzle.parser.parseScramble(expanded);
     }
 

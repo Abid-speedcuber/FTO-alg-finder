@@ -41,6 +41,16 @@ pub enum Move {
     FUpFp = 35,
     FpUF = 36,
     FpUpF = 37,
+    Dw = 38,
+    Dwp = 39,
+    Bw = 40,
+    Bwp = 41,
+    BRw = 42,
+    BRwp = 43,
+    BLw = 44,
+    BLwp = 45,
+    Ls = 46,
+    Lsp = 47,
 }
 
 impl Move {
@@ -83,6 +93,16 @@ impl Move {
         Self::FUpFp,
         Self::FpUF,
         Self::FpUpF,
+        Self::Dw,
+        Self::Dwp,
+        Self::Bw,
+        Self::Bwp,
+        Self::BRw,
+        Self::BRwp,
+        Self::BLw,
+        Self::BLwp,
+        Self::Ls,
+        Self::Lsp,
     ];
 
     #[must_use]
@@ -104,20 +124,20 @@ impl Move {
             Self::Rp => "R'",
             Self::L => "L",
             Self::Lp => "L'",
-            Self::Uw => "Uw",
-            Self::Uwp => "Uw'",
-            Self::Fw => "Fw",
-            Self::Fwp => "Fw'",
-            Self::Rw => "Rw",
-            Self::Rwp => "Rw'",
-            Self::Lw => "Lw",
-            Self::Lwp => "Lw'",
-            Self::M => "M",
-            Self::Mp => "M'",
-            Self::S => "S",
-            Self::Sp => "S'",
-            Self::E => "E",
-            Self::Ep => "E'",
+            Self::Uw => "u",
+            Self::Uwp => "u'",
+            Self::Fw => "f",
+            Self::Fwp => "f'",
+            Self::Rw => "r",
+            Self::Rwp => "r'",
+            Self::Lw => "l",
+            Self::Lwp => "l'",
+            Self::M => "Rs'",
+            Self::Mp => "Rs",
+            Self::S => "Fs",
+            Self::Sp => "Fs'",
+            Self::E => "Us'",
+            Self::Ep => "Us",
             Self::RURp => "(R U R')",
             Self::RUpRp => "(R U' R')",
             Self::RpUR => "(R' U R)",
@@ -125,6 +145,16 @@ impl Move {
             Self::FUFp => "(F U F')",
             Self::FUpFp => "(F U' F')",
             Self::FpUF => "(F' U F)",
+            Self::Dw => "d",
+            Self::Dwp => "d'",
+            Self::Bw => "b",
+            Self::Bwp => "b'",
+            Self::BRw => "br",
+            Self::BRwp => "br'",
+            Self::BLw => "bl",
+            Self::BLwp => "bl'",
+            Self::Ls => "Ls",
+            Self::Lsp => "Ls'",
             Self::FpUpF => "(F' U' F)",
         }
     }
@@ -150,7 +180,7 @@ impl Move {
     }
 }
 
-pub const MOVE_COUNT: usize = 38;
+pub const MOVE_COUNT: usize = 48;
 
 #[must_use]
 pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
@@ -163,6 +193,21 @@ pub fn move_cubies() -> [FtoCubie; MOVE_COUNT] {
     moves[Move::Sp.idx()] = all[Move::Fwp.idx()].compose(&all[Move::F.idx()]);
     moves[Move::E.idx()] = all[Move::Uwp.idx()].compose(&all[Move::U.idx()]);
     moves[Move::Ep.idx()] = all[Move::Uw.idx()].compose(&all[Move::Up.idx()]);
+
+    for (wide, opposite_wide, face, opposite_face) in [
+        (Move::Uw, Move::Dw, Move::U, Move::D),
+        (Move::Fw, Move::Bw, Move::F, Move::B),
+        (Move::Rw, Move::BLw, Move::R, Move::BL),
+        (Move::Lw, Move::BRw, Move::L, Move::BR),
+    ] {
+        // wide = rotation * opposite face; reverse that rotation for the other side.
+        let rotation = all[wide.idx()].compose(&all[opposite_face.inverse().idx()]);
+        moves[opposite_wide.idx()] = rotation.compose(&rotation).compose(&all[face.idx()]);
+        moves[opposite_wide.inverse().idx()] =
+            moves[opposite_wide.idx()].compose(&moves[opposite_wide.idx()]);
+    }
+    moves[Move::Ls.idx()] = all[Move::Lw.idx()].compose(&all[Move::Lp.idx()]);
+    moves[Move::Lsp.idx()] = moves[Move::Ls.idx()].compose(&moves[Move::Ls.idx()]);
 
     moves[Move::RURp.idx()] = FtoCubie::new(
         [2, 1, 5, 3, 4, 0],
@@ -300,6 +345,41 @@ fn cstimer_move_cubies() -> [FtoCubie; 24] {
 mod tests {
     use super::Move;
     use crate::FtoCubie;
+
+    #[test]
+    fn all_moves_have_inverses_and_order_three() {
+        for mv in Move::ALL {
+            let moved = FtoCubie::solved().apply(mv);
+            assert_ne!(moved, FtoCubie::solved(), "{} is a no-op", mv.name());
+            assert_eq!(
+                moved.apply(mv.inverse()),
+                FtoCubie::solved(),
+                "{} inverse",
+                mv.name()
+            );
+            assert_eq!(
+                moved.apply(mv).apply(mv),
+                FtoCubie::solved(),
+                "{} order",
+                mv.name()
+            );
+        }
+        assert_eq!(
+            FtoCubie::solved().apply(Move::Ls),
+            FtoCubie::solved().apply(Move::Lw).apply(Move::Lp)
+        );
+        for (a, b, x, y) in [
+            (Move::Uw, Move::Dw, Move::U, Move::D),
+            (Move::Fw, Move::Bw, Move::F, Move::B),
+            (Move::Rw, Move::BLw, Move::R, Move::BL),
+            (Move::Lw, Move::BRw, Move::L, Move::BR),
+        ] {
+            assert_eq!(
+                FtoCubie::solved().apply(a).apply(x.inverse()),
+                FtoCubie::solved().apply(b.inverse()).apply(y)
+            );
+        }
+    }
 
     #[test]
     fn slice_moves_match_expanded_sequences() {

@@ -6,6 +6,7 @@ pub mod bloom;
 pub mod coord;
 pub mod cubie;
 pub mod moves;
+pub mod notation;
 pub mod partial;
 pub mod pruning;
 pub mod search;

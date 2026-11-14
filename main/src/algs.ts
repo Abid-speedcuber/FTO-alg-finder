@@ -20,11 +20,11 @@ export const DEFAULT_INTERMEDIATE_ALGS: AlgSet = {
 
   "2-triplet-twist": "F' U F U' F BR' F' BR",
 
-  "FL-RB-FR": "Fw U F' U' F Fw' U F U F'",
-  "FR-RB-FL": "F U F' U' Fw F' U F U' Fw'",
-  "RF-FL-RB": "F' U' F U Fw' F U' F' U Fw",
-  "alg-15": "Fw U F' U' Fw' F U' F U F'",
-  "alg-16": "Fw' U' F U Fw F' U F' U' F",
-  "alg-17": "F' U F U' Fw' F U' F' U Fw",
-  "alg-18": "F U' F' U Fw F' U F U' Fw'",
+  "FL-RB-FR": "f U F' U' F f' U F U F'",
+  "FR-RB-FL": "F U F' U' f F' U F U' f'",
+  "RF-FL-RB": "F' U' F U f' F U' F' U f",
+  "alg-15": "f U F' U' f' F U' F U F'",
+  "alg-16": "f' U' F U f F' U F' U' F",
+  "alg-17": "F' U F U' f' F U' F' U f",
+  "alg-18": "F U' F' U f F' U F U' f'",
 };

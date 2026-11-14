@@ -630,7 +630,7 @@ fn build_solver_table_from_root(
 
 pub fn move_set_suffix(moves: &[Move]) -> String {
     if moves == Move::ALL.as_slice() {
-        return "all".to_owned();
+        return "all-v2".to_owned();
     }
     let mut sorted = moves.to_vec();
     sorted.sort_unstable_by_key(|mv| mv.idx());
@@ -651,8 +651,12 @@ pub fn move_set_codename(suffix: &str) -> String {
 }
 
 pub fn parse_move_set_suffix(suffix: &str) -> Option<Vec<Move>> {
-    if suffix == "all" {
+    if suffix == "all-v2" {
         return Some(Move::ALL.to_vec());
+    }
+    // The original all-moves cache contains only the first 38 moves.
+    if suffix == "all" {
+        return Some(Move::ALL[..38].to_vec());
     }
     let mut moves = Vec::with_capacity(MOVE_COUNT);
     for token in suffix.split('_') {

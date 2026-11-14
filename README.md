@@ -40,7 +40,8 @@ Important implementation pieces:
 Solver app:
 
 - 3D graphical FTO input. Manually color in the pieces, or swap the pieces and twist the corners to do the input.
-- Text input for setup moves or algorithms.
+- Text input for setup moves or algorithms. Both wide spellings (`r` / `Rw`, `u` / `Uw`, etc.) work. Slice moves follow their named layer: `Rs = r R'`, `Ls = l L'`, `Us = u U'`, `Fs = f F'`. Legacy aliases are `M = Rs'`, `E = Us'`, `S = Fs`, and `N = Ls`.
+- Input orientation markers such as `{U,R}` set the original faces held at U and F for subsequent moves. They can appear at the start or in the middle, persist until another marker, and reset with `{U,F}`. For example, `{U,R} R U R' U'` means `BR U BR' U'`; `R' {U,L} R U R' U'` means `R' F U F' U'`. Each new input starts in the default orientation; markers are resolved before inversion in alg mode.
 - Print-style depth selection: `12-15, 17, 20` searches those exact depths, sorted and deduplicated (0–255). With All solutions enabled, results include every selected depth; otherwise search stops at the first successful depth. Empty input or `auto` finds the first successful depth and returns one or all solutions at that depth.
 - Option to return one solution or all found solutions.
 - App zoom: **Ctrl+=** / **Ctrl+-**, with **Ctrl+0** to reset. The selected zoom level is remembered.
@@ -202,7 +203,7 @@ Alg combiner:
 - Search cost also rises quickly as the requested depth increases.
 - The pruning table is large. Searches can require substantial memory and disk cache.
 - Restricted solver tables use compact coordinate orbits when they substantially reduce RAM. Move tables precompute compact pruning indices, keeping heuristic reads direct; generation uses the reduced spaces too. Existing cache files remain compatible. Large coordinate orbits retain dense storage.
-- Full-state searches also reuse those tables after a half turn that exchanges the UF and RL center orbits. A small corner mapping and two additional coordinates let the unused orbit strengthen pruning without another large table. This is enabled only when the table's move set preserves the rotation (including the standard faces plus Fw/Rw); last-layer goals and arbitrary start-centered tables keep their existing bounds.
+- Full-state searches also reuse those tables after a half turn that exchanges the UF and RL center orbits. A small corner mapping and two additional coordinates let the unused orbit strengthen pruning without another large table. This is enabled only when the table's move set preserves the rotation (including the standard faces plus f/r); last-layer goals and arbitrary start-centered tables keep their existing bounds.
 - Because the app is divided into solver instances, different instance move sets may need different pruning-table data. In practice, that can mean more than one set of pruning tables on disk.
 - The GUI links the Rust solver core directly, so desktop builds produce a single app binary.
 - Very deep exact searches may need bidirectional memory measured in GiB.

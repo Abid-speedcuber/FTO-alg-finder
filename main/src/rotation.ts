@@ -55,18 +55,56 @@ export function parseExecutionHold(input: string): ExecutionHold | null {
 
 export const DEFAULT_HOLD = parseExecutionHold("U,F")!;
 
-export function rotateAlgorithm(algorithm: string, hold: ExecutionHold): string {
-  if (hold.input === "U,F") return algorithm;
-  return algorithm.replace(/\b(BR|BL|[UDFRLBMES])(w)?(['’2]?)(?![A-Za-z0-9])/g,
-    (token, base: Face | "M" | "E" | "S", wide: string | undefined, suffix: string) => {
-      if (base === "M" || base === "E" || base === "S") {
-        if (wide) return token;
-        // Match the core exactly: M = Rw' R, E = Uw' U, S = Fw F'.
-        // Wide+face notation also works when the new slice has no M/E/S name.
-        const face = hold.faces[base === "M" ? "R" : base === "E" ? "U" : "F"];
-        const inverse = (base !== "S") !== (suffix.length > 0);
-        return `${face}w${inverse ? "'" : ""} ${face}${inverse ? "" : "'"}`;
-      }
-      return `${hold.faces[base]}${wide ?? ""}${suffix}`;
+// Keep legacy spellings readable while emitting the standard notation.
+export function normalizeNotation(algorithm: string): string {
+  return algorithm.replace(/\b(BR|BL|[UDFRLB])w(['’2i]?)(?![A-Za-z0-9])|\b([MESN])(['’2i]?)(?![A-Za-z0-9])/g,
+    (_token, face: string | undefined, wideSuffix: string, slice: string, suffix: string) => {
+      if (face) return face.toLowerCase() + (wideSuffix === "i" ? "'" : wideSuffix);
+      const inverse = suffix.length > 0;
+      const base = slice === "M" ? "Rs" : slice === "E" ? "Us" : slice === "N" ? "Ls" : "Fs";
+      return base + ((slice === "S" || slice === "N") === inverse ? "'" : "");
     });
+}
+
+export function normalizeMoveSelection(moves: string[]): string[] {
+  return moves.map(normalizeNotation).filter(move => !/^\([RF]'? U'? [RF]'?\)$/.test(move));
+}
+
+export function rotateAlgorithm(algorithm: string, hold: ExecutionHold): string {
+  return normalizeNotation(algorithm).replace(/\b(BR|BL|[UDFRLB])s(['’2]?)(?![A-Za-z0-9])|\b(br|bl|[udfrlb]|BR|BL|[UDFRLB])(['’2]?)(?![A-Za-z0-9])/g,
+    (_token, slice: Face | undefined, sliceSuffix: string, base: string, suffix: string) => {
+      if (slice) {
+        const mapped = hold.faces[slice];
+        if (["D", "B", "BR", "BL"].includes(mapped)) {
+          return `${OPPOSITE[mapped]}s${sliceSuffix ? "" : "'"}`;
+        }
+        return `${mapped}s${sliceSuffix}`;
+      }
+      const wide = base === base.toLowerCase();
+      const mapped = hold.faces[base.toUpperCase() as Face];
+      return `${wide ? mapped.toLowerCase() : mapped}${suffix}`;
+    });
+}
+
+/** Resolve absolute input holds before inversion or execution. Markers persist
+ * until the next marker, and each algorithm starts in the default hold. */
+export function resolveInputAlgorithm(algorithm: string): string {
+  let hold = DEFAULT_HOLD;
+  return (algorithm.match(/\{[^}]*\}|[^\s(){}]+|[{}]/g) ?? []).flatMap(token => {
+    if (token.startsWith("{")) {
+      const parsed = token.endsWith("}") && token.slice(1, -1).trim() ? parseExecutionHold(token.slice(1, -1)) : null;
+      if (!parsed) throw new Error(`Invalid input orientation: ${token}`);
+      hold = parsed;
+      return [];
+    }
+    if (token === "}") throw new Error("Unexpected } in algorithm");
+    const faces = Object.fromEntries(FACES.map(face => [hold.faces[face], face])) as Record<Face, Face>;
+    return [rotateAlgorithm(token.replace(/[’i]$/, "'"), { ...hold, faces })];
+  }).join(" ");
+}
+
+export function invertInputAlgorithm(algorithm: string): string {
+  return resolveInputAlgorithm(algorithm).split(/\s+/).filter(Boolean).reverse().map(move =>
+    /['’2i]$/.test(move) ? move.slice(0, -1) : `${move}'`,
+  ).join(" ");
 }

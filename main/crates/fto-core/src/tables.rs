@@ -15,7 +15,7 @@ use std::{
     path::Path,
 };
 
-const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V4\0\0\0\0";
+const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V5\0\0\0\0";
 pub type TransitionReporter<'a> = dyn Fn(&str, usize, usize) + Send + Sync + 'a;
 const TRANSITION_PROGRESS_INTERVAL: usize = 4096;
 const CORNER_TRANSITION_PROGRESS_INTERVAL: usize = 80;
