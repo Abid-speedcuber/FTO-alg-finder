@@ -378,13 +378,6 @@ const pruningFtoFacts = [
 ];
 
 const pruningSearchNotes = [
-  "Solver: 5 moves left.\nTable: At least 6 needed.\nResult: skip this branch and everything below it.",
-  "Solver: 5 moves left.\nTable: At least 4 needed.\nResult: keep searching; the bound permits a solution but doesn't guarantee one.",
-  "Solver: Edges need 5, corners need 4.\nBound: 5, not 9. The same moves can solve both.",
-  "A pruning table solves a smaller problem: track some pieces and ignore the rest. The full puzzle needs at least as many moves as that smaller problem.",
-  "Pruning tables store lower bounds on distance, not algorithms. The solver uses those bounds to reject branches that cannot fit the move limit.",
-  "The pruning tables here are generated with a couple of pieces, not all of them.",
-  "One extra move of search means another layer of choices on every surviving branch. Search time grows exponentially with additional allowed moves.",
   "A transition table stores what each move does to a pattern. A pruning table stores how far that pattern is from solved.",
   "Generating a pruning table pays the calculation cost up front. Later solves reuse the stored distances.",
 ];
@@ -392,7 +385,8 @@ const pruningSearchNotes = [
 const pruningJokes = [
   "The table generates faster when you're not looking. Trust.",
   "This would be finished by now if you were not lookig by the way, this one is on you.",
-  "These pruning tables can speed up a search by tens of thousands of times."
+  "These pruning tables can speed up a search by tens of thousands of times.",
+  "Bro got left waiting by a mere pruning table generation. Another of the great powers of the mighty pruning table."
 ];
 
 // Interleave the topics so every wait gets facts, explanations, and a few jokes.
