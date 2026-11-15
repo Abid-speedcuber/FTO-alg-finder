@@ -2,10 +2,10 @@ import { useEffect, useRef } from "react";
 
 const topics = [
   ["search-guide", "How to search"],
+  ["solver-settings", "Modes & settings"],
   ["input", "Input & notation"],
   ["viewer", "Viewer controls"],
   ["partial", "Partial positions"],
-  ["last-layer", "Last-layer mode"],
   ["search", "Moves & search"],
   ["tables", "Tables & storage"],
   ["batch", "Batch solving"],
@@ -77,8 +77,26 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
             <li><code>R Rw U L</code></li>
           </ul>
           <p>It is tempting to enable <code>R Rw L U BR F D</code> and search them all at once. That also allows every mixture of those seven move types, making the search space much larger and potentially taking ages to finish.</p>
-          <p><strong>Run those four searches separately instead.</strong> Keep each search focused on one move set to get the most speed out of the solver and find algorithms you would actually use.</p>
+          <p><strong>Run those searches separately instead.</strong> Keep each search focused on one move set to get the most speed out of the solver and find algorithms you would actually use.</p>
           <p>You can speed up searches further with pruning and Bloom tables. See <a href="#how-to-tables" onClick={(event) => { event.preventDefault(); jump("tables"); }}>Pruning tables &amp; storage</a> for how to build and use them.</p>
+        </section>
+
+        <section id="how-to-solver-settings" tabIndex={-1}>
+          <h3>Solver modes and settings</h3>
+          <h4>Depth</h4>
+          <p>Depth is the number of moves in the algorithm being searched for. A move and its inverse each count as one move. The depth field accepts a single number such as <code>12</code>, an inclusive range such as <code>12-15</code>, or a comma-separated mix such as <code>12-15, 17, 20</code>. Explicit depths are searched in ascending order; valid values are whole numbers from 0 to 255.</p>
+          <p>The default, <strong>auto</strong>, searches progressively deeper until it finds a solution. Leaving the field blank also means auto. Use this when you want the shortest solution with your selected moves; enter specific depths when you want to explore particular algorithm lengths.</p>
+          <h4>All solutions</h4>
+          <p>With <strong>All solutions</strong> off, the search stops after finding one solution. Turn it on to collect alternatives so you can compare algorithms and choose one that feels good to execute.</p>
+          <p>With auto depth, All solutions collects solutions at the first successful depth. With explicit depths, it searches every selected depth and collects solutions at each one. Finding all solutions can take much longer than finding just one.</p>
+          <h4>Last-layer mode</h4>
+          <p>This mode is suitable for algsets that allow <strong>pre-AUF and post-AUF</strong>, such as Nautilus last layer. These are U adjustments before and after the algorithm. They are free in this mode, even when U is not an allowed search move: depth counts only the moves between them.</p>
+          <p>Some center triangles share a color with the last-layer centers but belong outside the last layer. They appear in a slightly different shade to distinguish them from their same-color partners and indicate that they must finish outside the last layer. See <a href="#how-to-last-layer-input" onClick={(event) => { event.preventDefault(); jump("last-layer-input"); }}>last-layer input</a> for how to assign these pieces and set up a case.</p>
+          <p>Last-layer mode has its own dedicated pruning tables. Ordinary pruning tables do not capture this goal well enough, so use tables built for Last-layer mode to get effective pruning. See <a href="#how-to-tables" onClick={(event) => { event.preventDefault(); jump("tables"); }}>Pruning tables &amp; storage</a> for table setup.</p>
+          <h4>Threads</h4>
+          <p>Multithreading splits the search across several workers so your CPU can explore different branches at the same time. Set Threads to <code>1</code> for a single worker, or increase it to use more of your CPU.</p>
+          <p>A CPU with multiple cores can run workers in parallel. CPUs with simultaneous multithreading (SMT, also called Hyper-Threading on Intel CPUs) can run more than one hardware thread per core. You do not need a particular CPU brand; a useful starting point is the number of logical processors your system reports.</p>
+          <p>The single-case solver has no fixed thread-count limit, so you can request as many workers as your hardware can support. Actual worker use depends on the available search branches. More threads than your CPU can run at once usually add overhead rather than speed, and leaving some capacity free can keep the rest of your computer responsive. Batch solving currently accepts 1–1,024 threads shared across its cases.</p>
         </section>
 
         <section id="how-to-input" tabIndex={-1}>
@@ -103,6 +121,9 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           </ul>
           <p>These markers work in batch setups and the combiner too. They are resolved before the sequence is inverted in alg mode.</p>
           <p><strong>Output orientation:</strong> the execution-angle field changes how solutions and move labels are written for your hold. It does not change the input state or the physical moves selected. Input markers translate into the original frame; the output hold translates from that frame into your execution hold.</p>
+          <h4 id="how-to-last-layer-input" tabIndex={-1}>Last-layer input</h4>
+          <p>Last-layer mode distinguishes the odd center of each affected color from its two interchangeable partners. Only the odd triangle is shaded. To assign that odd piece manually, enter Paint, choose its color, then <strong>Ctrl-click the center</strong>. A normal paint click defines one of the interchangeable partners. This piece assignment is separate from the golden target-slot selection; the goal keeps the distinguished centers in their required slots.</p>
+          <p><strong>Set up LL</strong> expands into EP, AUF, and CP choices. The thumbnails preview each change. If a choice requires resetting another part of the case, the app asks before applying it. The U and U' buttons adjust the current setup.</p>
         </section>
 
         <section id="how-to-viewer" tabIndex={-1}>
@@ -138,24 +159,10 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <p><strong>When the outlines add no restriction:</strong> zero or all three centers of that color are defined, or zero or all three home slots are selected. Defined centers still finish on their own color as usual. For example, selecting all three red slots gives a defined red piece the same three destinations it already had.</p>
         </section>
 
-        <section id="how-to-last-layer" tabIndex={-1}>
-          <h3>Last-layer mode</h3>
-          <p>Last-layer mode distinguishes the odd center of each affected color from its two interchangeable partners. Only the odd triangle is shaded: light colors become darker, and dark colors become lighter.</p>
-          <p>To assign that odd piece manually, enter Paint, choose its color, then <strong>Ctrl-click the center</strong>. A normal paint click defines one of the interchangeable partners. This piece assignment is separate from the golden target-slot selection.</p>
-          <p>Leading and trailing U adjustments are free in this mode, including when U is not an allowed search move. Depth counts the moves between those adjustments. The goal keeps the distinguished centers in their required slots.</p>
-          <p><strong>Set up LL</strong> expands into EP, AUF, and CP choices. The thumbnails preview each change. If a choice requires resetting another part of the case, the app asks before applying it. The U and U' buttons adjust the current setup.</p>
-        </section>
-
         <section id="how-to-search" tabIndex={-1}>
           <h3>Moves, instances &amp; search</h3>
           <p>An <strong>instance</strong> stores a move set and uses pruning tables built for it. Open the instance dropdown to switch or create instances; expand More moves when creating one to include less-used moves. Right-click an instance name in the dropdown to delete it.</p>
           <p>The allowed-move buttons enable or disable moves within that instance. All and None toggle the whole set; Invert reverses which moves are enabled. If a move is outside the instance’s set, create an instance that includes it. A smaller move set can make pruning more effective, but it can also require longer solutions or make a case unreachable.</p>
-          <ul>
-            <li><strong>Depth blank or auto:</strong> search until the first successful depth.</li>
-            <li><strong>Explicit depths:</strong> <code>12-15, 17, 20</code> searches those exact depths in ascending order. Ranges are inclusive; valid depths are 0–255.</li>
-            <li><strong>All solutions:</strong> with explicit depths, collect solutions at every selected depth. With auto, collect solutions at the first successful depth. With All disabled, stop after finding one solution.</li>
-            <li><strong>Threads:</strong> sets the requested parallel search workers.</li>
-          </ul>
           <p>The small information button beside Depth explains the depth syntax. Stop ends a solver search; batch mode has a separate Pause and resume workflow.</p>
         </section>
 
