@@ -1767,12 +1767,11 @@ button.depth-info-button:hover {
   .how-to-topics button { flex-shrink: 0; }
 }
 
-.generation-acceleration { position: absolute; right: 18px; bottom: 16px; z-index: 3; max-width: min(420px, calc(100vw - 36px)); padding: 10px 12px; border: 1px solid #d4d9df; border-radius: 8px; background: #fffffff2; box-shadow: 0 3px 18px #17233318; font-size: 12px; color: #465362; }
+.generation-acceleration { position: absolute; left: 11px; right: 18px; bottom: 16px; z-index: 3; text-align: right; padding: 0; border: 0; background: transparent; box-shadow: none; font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 12px; line-height: 1.55; color: #fff; }
 .generation-acceleration p { margin: 0; line-height: 1.5; }
-.gpu-enable-link { padding: 0; border: 0; min-height: 0; background: transparent; color: #355d83; font-size: 12px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
-.gpu-enable-link:hover { color: #153d63; background: transparent; }
-.generation-notice { display: flex; gap: 10px; align-items: start; margin-bottom: 6px; }
-.generation-notice button { border: 0; padding: 0 2px; min-height: 0; background: transparent; color: #59636e; }
+.gpu-enable-link { padding: 0; border: 0; min-height: 0; background: transparent; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.gpu-enable-link:hover { color: #fff; background: transparent; }
+.generation-notice { margin: 0; }
 
 .solver-output.has-acceleration .terminal { padding-bottom: 90px; }
 .batch-output-status { position: relative; padding-bottom: 65px; }

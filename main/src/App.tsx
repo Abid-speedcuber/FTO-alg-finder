@@ -702,7 +702,7 @@ function App() {
       setGenerationStatus(payload);
       if (!payload.gpuEnabled && payload.message.includes("without losing progress")) {
         setUseGpu(false);
-        setGpuNotice(payload.message);
+        setGpuNotice(previous => previous.includes("slower than CPU") ? previous : payload.message);
       }
     }).then(remove => {
       if (disposed) remove(); else unlisten = remove;
@@ -711,11 +711,11 @@ function App() {
   }, []);
   async function changeGpu(enabled: boolean, remember = true) {
     if (remember) setUseGpu(enabled);
-    setGpuNotice("");
+    setGpuNotice(previous => previous.includes("slower than CPU") ? previous : "");
     setGpuSwitchPending(true);
     try { await invoke("set_generation_gpu", { enabled }); }
     catch (error) {
-      setGpuNotice(`${remember ? "Preference saved. " : ""}Could not change the running generation: ${String(error)}`);
+      setGpuNotice(previous => previous.includes("slower than CPU") ? previous : `${remember ? "Preference saved. " : ""}Could not change the running generation: ${String(error)}`);
     } finally { setGpuSwitchPending(false); }
   }
   const [bloomMemory, setBloomMemory] = useState("200");
@@ -1393,11 +1393,12 @@ function App() {
     setStateErrorsOpen(false);
   }
 
+  const gpuIsSlower = gpuNotice.includes("slower than CPU");
   const accelerationControl = (generationStatus.active || gpuNotice) && <aside className="generation-acceleration" aria-label="Table generation acceleration">
-        {gpuNotice && <div className="generation-notice"><p role="status">{gpuNotice}</p><button type="button" aria-label="Dismiss acceleration notice" onClick={()=>setGpuNotice("")}>×</button></div>}
-        {generationStatus.active && generationStatus.backend === "cpu" && !generationStatus.gpuEnabled && <button type="button" className="gpu-enable-link" disabled={gpuSwitchPending} title="Use GPU for this build; change the default in Settings" onClick={()=>void changeGpu(true, false)}>{gpuSwitchPending ? "Requesting GPU…" : "Enable GPU acceleration"}</button>}
-        {generationStatus.active && generationStatus.gpuEnabled && generationStatus.backend === "cpu" && <p role="status">Testing GPU speed against CPU…</p>}
-        {generationStatus.active && generationStatus.backend === "gpu" && <p role="status">Generating on GPU</p>}
+        {gpuNotice && <p className="generation-notice" role="status">{gpuNotice}</p>}
+        {!gpuIsSlower && generationStatus.active && generationStatus.backend === "cpu" && !generationStatus.gpuEnabled && <button type="button" className="gpu-enable-link" disabled={gpuSwitchPending} title="Use GPU for this build; change the default in Settings" onClick={()=>void changeGpu(true, false)}>{gpuSwitchPending ? "Requesting GPU…" : "Enable GPU acceleration"}</button>}
+        {!gpuIsSlower && generationStatus.active && generationStatus.gpuEnabled && generationStatus.backend === "cpu" && <p role="status">Testing GPU speed against CPU…</p>}
+        {!gpuIsSlower && generationStatus.active && generationStatus.backend === "gpu" && <p role="status">Generating on GPU</p>}
       </aside>;
 
   return (
