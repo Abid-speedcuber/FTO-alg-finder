@@ -41,7 +41,7 @@
   var lastLayerUniqueCenterSlot = [null, 3, 8, 10];
   var targetOutlineHex = 0xffd700;
   var swapHighlightHex = 0xff80d4;
-  var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:BR ,:BR' C:BL 3:BL' U:Rw M:Rw' R:Lw' V:Lw Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
+  var ftoKeymap = "I:R K:R' D:L E:L' J:U F:U' H:F G:F' S:D L:D' W:B O:B' 8:Br ,:Br' C:Bl 3:Bl' U:2R M:2R' R:2L' V:2L Y:[R] N:[R'] T:[L'] B:[L] ;:[U] A:[U'] P:T Q:T'";
 
   function createFtoViewer(container, options) {
     options = options || {};

@@ -129,9 +129,9 @@ function LlSetupSection({ facelets, viewerApiRef }: Props) {
         {open ? (
           <>
             <div className="ll-group">
-              <span className="ll-group-title">EP</span>
+              <span className="ll-group-title">L6X</span>
               {EP_OPTIONS.length === 0 ? (
-                <div className="hint">No EP cases defined yet (see llOptions.ts).</div>
+                <div className="hint">No L6X cases defined yet (see llOptions.ts).</div>
               ) : (
                 <div className="ll-option-grid">
                   {EP_OPTIONS.map((option) => renderOption("EP", option))}
@@ -146,7 +146,7 @@ function LlSetupSection({ facelets, viewerApiRef }: Props) {
               </div>
             </div>
             <div className="ll-group">
-              <span className="ll-group-title">CP</span>
+              <span className="ll-group-title">L3C</span>
               {[1, 2].map((row) => {
                 const rowOptions = CP_OPTIONS.filter((option) => option.row === row);
                 if (rowOptions.length === 0) {

@@ -1,11 +1,10 @@
 import { useEffect, useRef } from "react";
+import InputKeyboard from "./InputKeyboard";
 
 const topics = [
   ["search-guide", "How to search"],
   ["solver-settings", "Modes & settings"],
-  ["input", "Input & notation"],
-  ["viewer", "Viewer controls"],
-  ["partial", "Partial positions"],
+  ["input", "Input"],
   ["search", "Moves & search"],
   ["tables", "Tables & storage"],
   ["batch", "Batch solving"],
@@ -100,63 +99,53 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
         </section>
 
         <section id="how-to-input" tabIndex={-1}>
-          <h3>Input &amp; notation</h3>
-          <p><strong>Setup Move</strong> applies the sequence you enter. <strong>alg</strong> applies its inverse to construct a case for that algorithm. Apply acts on the current puzzle. Hold Shift while clicking Apply to reset to solved first, then apply the input. This works in Setup Move and alg mode, and in the combiner; Shift+Enter also works in the combiner input. The batch visual editor’s Apply setup always starts from solved.</p>
-          <p>Separate moves with spaces. A prime means the inverse turn; <code>R2</code> also means <code>R'</code> on an FTO. Parentheses can group moves. Both lowercase wide moves and the older w spelling work: <code>r = Rw</code>, <code>br = BRw</code>, and likewise for the other faces.</p>
-          <div className="how-to-table-scroll"><table>
-            <caption>Slice directions and aliases</caption>
-            <thead><tr><th>Slice</th><th>Follows</th><th>Expansion</th><th>Old spelling</th></tr></thead>
-            <tbody>
-              <tr><td><code>Rs</code></td><td>R layer</td><td><code>r R'</code></td><td><code>M'</code></td></tr>
-              <tr><td><code>Ls</code></td><td>L layer</td><td><code>l L'</code></td><td><code>N</code></td></tr>
-              <tr><td><code>Us</code></td><td>U layer</td><td><code>u U'</code></td><td><code>E'</code></td></tr>
-              <tr><td><code>Fs</code></td><td>F layer</td><td><code>f F'</code></td><td><code>S</code></td></tr>
-            </tbody>
-          </table></div>
-          <p><code>M = Rs'</code> and <code>E = Us'</code>. The aliases also accept inverses, such as <code>N' = Ls'</code>.</p>
-          <p><strong>Input orientation:</strong> insert <code>{"{U,R}"}</code> to say which original faces you are holding at U and F. A marker affects only the following moves, until another marker. Each input starts at <code>{"{U,F}"}</code>; that marker also resets the hold mid-sequence. Use distinct, non-opposite faces.</p>
-          <ul>
-            <li><code>{"{U,R} R U R' U'"}</code> means <code>BR U BR' U'</code>.</li>
-            <li><code>{"R' {U,L} R U R' U'"}</code> means <code>R' F U F' U'</code>.</li>
-          </ul>
-          <p>These markers work in batch setups and the combiner too. They are resolved before the sequence is inverted in alg mode.</p>
-          <p><strong>Output orientation:</strong> the execution-angle field changes how solutions and move labels are written for your hold. It does not change the input state or the physical moves selected. Input markers translate into the original frame; the output hold translates from that frame into your execution hold.</p>
-          <h4 id="how-to-last-layer-input" tabIndex={-1}>Last-layer input</h4>
-          <p>Last-layer mode distinguishes the odd center of each affected color from its two interchangeable partners. Only the odd triangle is shaded. To assign that odd piece manually, enter Paint, choose its color, then <strong>Ctrl-click the center</strong>. A normal paint click defines one of the interchangeable partners. This piece assignment is separate from the golden target-slot selection; the goal keeps the distinguished centers in their required slots.</p>
-          <p><strong>Set up LL</strong> expands into EP, AUF, and CP choices. The thumbnails preview each change. If a choice requires resetting another part of the case, the app asks before applying it. The U and U' buttons adjust the current setup.</p>
-        </section>
+          <h3>Input</h3>
+          <p>There are four ways to enter a state: edit the graphical FTO, apply an algorithm or setup, use the keyboard, or choose cases from the last-layer table. You can combine these methods to build the case you want.</p>
+          <ol className="how-to-input-methods">
+            <li><a href="#how-to-viewer" onClick={(event) => { event.preventDefault(); jump("viewer"); }}>Manipulating the graphical FTO</a></li>
+            <li><a href="#how-to-alg-input" onClick={(event) => { event.preventDefault(); jump("alg-input"); }}>Applying algorithms and setup moves</a></li>
+            <li><a href="#how-to-keyboard-input" onClick={(event) => { event.preventDefault(); jump("keyboard-input"); }}>Keyboard input</a></li>
+            <li><a href="#how-to-last-layer-input" onClick={(event) => { event.preventDefault(); jump("last-layer-input"); }}>Last-layer table input</a></li>
+          </ol>
 
-        <section id="how-to-viewer" tabIndex={-1}>
-          <h3>Viewer controls</h3>
+          <h4 id="how-to-viewer" tabIndex={-1}>1. Manipulating the graphical FTO</h4>
           <ul>
-            <li><strong>Pan:</strong> drag to rotate the view. While dragging in Pan, the mouse wheel rolls the view.</li>
-            <li><strong>Paint:</strong> choose a color swatch, then click a sticker. Choosing a swatch enters paint mode.</li>
-            <li><strong>Swap:</strong> click a piece, then another piece of the same kind. The selected piece has a pink outline. Click the same corner twice to twist it. Click empty space to clear the selection.</li>
-            <li><strong>View:</strong> restores the camera angle.</li>
+            <li><strong>Paint:</strong> choose a color swatch to enter Paint mode, then click a sticker to color it. This colors individual stickers; it does not automatically recolor the rest of a corner or edge. To orbit without painting, start your drag on empty space.</li>
+            <li><strong>Swap:</strong> click a piece, then another piece of the same kind to exchange them. The first piece has a pink outline. Clicking a different kind selects that piece instead. Click the same corner twice to twist it; click the same edge or center twice, or click empty space, to clear the selection.</li>
+            <li><strong>View:</strong> restores the default camera angle.</li>
             <li><strong>Reset:</strong> restores the solved puzzle and clears manually selected center target slots.</li>
           </ul>
-          <p>If the state is marked invalid, click the invalid-state label to see the detected problems. Painting or swapping can create an impossible state; the list identifies the pieces or color counts to check.</p>
-        </section>
+          <p>Painting and swapping can create an impossible state. If the viewer marks the state invalid, click that label to see all detected problems and which pieces or color counts need checking.</p>
 
-        <section id="how-to-partial" tabIndex={-1}>
-          <h3>Partial positions &amp; center slots</h3>
-          <p><strong>Right-click a piece</strong> to ignore it. All stickers of that piece become black. The solver then solves the defined pieces and lets ignored pieces finish elsewhere. Right-click it again to define it and restore its previous colors. This works for corners, edges, and individual center triangles.</p>
-          <p>The remembered colors follow the piece through turns and swaps. A piece loaded already black has no remembered colors, so right-click defines it using its home-slot colors; you can repaint those if needed.</p>
-          <p><strong>A piece moves; a slot is a place it can finish.</strong> Each center color has three home slots in the solved puzzle. A red home slot is still a red destination even if a blue sticker currently occupies it. A defined center is one you have colored in; a black, ignored center is not defined.</p>
-          <p><strong>Entitling a slot means selecting it as a destination for your defined centers of that color.</strong> Shift-click a center slot to give it a golden outline; Shift-click again to remove it. This works in Pan, Paint, and Swap. It changes the solve’s destination constraint without painting the sticker, and the selected paint color has no effect. The outline stays with the slot when pieces move.</p>
-          <p><strong>Example:</strong> you have defined one red center and ignored the other two. Normally, that piece may finish in any of the three red home slots. Give one red slot a golden outline to make it finish there. Give two red slots golden outlines to let the solver choose either one. You are choosing where the red piece may go, not choosing or recoloring the piece currently in that slot.</p>
-          <p>With two defined red centers, selecting one slot means at least one of those two pieces must reach it. Selecting two slots means both defined pieces must fill those two slots, in either order. The solver matches as many defined centers to selected slots as possible; it does not distinguish same-color pieces.</p>
-          <div className="how-to-table-scroll"><table>
-            <caption>Red-center examples</caption>
-            <thead><tr><th>Defined red centers</th><th>Gold-outlined red home slots</th><th>Required result</th></tr></thead>
-            <tbody>
-              <tr><td>1</td><td>1</td><td>That piece must reach that slot.</td></tr>
-              <tr><td>1</td><td>2</td><td>That piece must reach either selected slot.</td></tr>
-              <tr><td>2</td><td>1</td><td>Either defined piece must reach that slot.</td></tr>
-              <tr><td>2</td><td>2</td><td>Both defined pieces must fill the selected slots, in either order.</td></tr>
-            </tbody>
-          </table></div>
-          <p><strong>When the outlines add no restriction:</strong> zero or all three centers of that color are defined, or zero or all three home slots are selected. Defined centers still finish on their own color as usual. For example, selecting all three red slots gives a defined red piece the same three destinations it already had.</p>
+          <div id="how-to-partial" tabIndex={-1}>
+          <h5>Partial positions &amp; center slots</h5>
+          <p><strong>Right-click a piece</strong> to ignore it. The solver then solves only the defined pieces optimally not caring about ignored pieces. Right-click it again to define it and restore its previous colors.</p>
+          <p><strong>Entitling a slot means selecting it as a destination for your defined triangle of that color.</strong> A triangle piece has 3 different slots to be in. when only one or two triangles are defined and you want them to end up in a specific slot (Such as Nautilus Last triple) you can use this feature. Shift-click a center slot to give it a golden outline; Shift-click again to remove it. It indicates if there are sufficient amount of defined triangle of that color the solver will prioritize putting those triangles in the golden marked slots.</p>
+
+          <h5>Manually assigning last-layer centers</h5>
+          <p>With Last-layer mode enabled, the bottom triangles of the last layer colors are shaded differently and it makes sure in the solved state the triangles don't end up in the Last Layer. You can swap the last layer bottom triangle around, or in Paint mode, select the color and <strong>Ctrl+Left-click a triangle</strong> to assign the distinguished piece that must finish outside the last layer.</p>
+          </div>
+
+          <h4 id="how-to-alg-input" tabIndex={-1}>2. Applying algorithms and setup moves</h4>
+          <p>Enter your sequence in the input box, choose <strong>alg</strong> or <strong>Setup Move</strong>, then click <strong>Apply</strong>. Apply acts on the current state of the graphical FTO. Hold <strong>Shift</strong> while clicking Apply to apply the moves on a solved puzzle.</p>
+          <p>For move notation, refer to the <a href="https://docs.google.com/document/d/1W0nqrep_Xm0qe4GHxrq61czHmGPy1DDXEACIliXiHnM/edit?tab=t.0#heading=h.46zs529hnp9y" target="_blank" rel="noreferrer">FTO notation guide</a>.</p>
+          <p>Wide-move input accepts both lowercase letters and a <code>w</code> suffix, such as <code>r</code> or <code>Rw</code>, and <code>br</code> or <code>BRw</code>. Slice input accepts both <code>M N E S</code> and the <code>s</code>-suffixed notation <code>Rs Ls Us Fs</code>. Output uses the standard lowercase wide moves and <code>s</code>-suffixed slice notation.</p>
+          <p><strong>Input orientation:</strong> insert a orientation marker like <code>{"{U,R}"}</code> to indicate which orientation you want the moves to be applied on. A marker affects only the following moves. Each input starts at <code>{"{U,F}"}</code>.</p>
+
+          <p><strong>Output orientation:</strong> the execution-angle field changes how solutions and move labels are written for your hold. For example use BR, br, and U move for a EIF R, r, U gen alg and then change the execution angle to <code>U,R</code> and the output will be translated into EIF R, r, U notation.</p>
+
+          <h4 id="how-to-keyboard-input" tabIndex={-1}>3. Keyboard input</h4>
+          <p>You can use your keyboard to turn the puzzle like a virtual FTO. The keybinds are the same as csTimer. Reference keybind layout:</p>
+          <InputKeyboard />
+
+          <h4 id="how-to-last-layer-input" tabIndex={-1}>4. Last-layer table input</h4>
+          <p>Expand <strong>Set up LL</strong> in the sidebar using its arrow. The table lets you build a last-layer case directly by combining L6X and L3C choices, with U adjustments between them.</p>
+          <ol>
+            <li><strong>Choose an L6X case.</strong></li>
+            <li><strong>Adjust the alignment.</strong></li>
+            <li><strong>Choose a L3C case.</strong> You can choose L3C before L6X too.</li>
+          </ol>
+          <p>Click another option in the same group to replace its pattern. Click the selected option again to clear that group back to solved relative to the current AUF. The other group is kept when compatible. The thumbnails update as you build the case.</p>
         </section>
 
         <section id="how-to-search" tabIndex={-1}>
@@ -201,19 +190,6 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <h3>Settings &amp; shortcuts</h3>
           <p><strong>Settings → Face colors</strong> changes the display palette; puzzle identities and notation stay the same. Show debug info exposes more search output. Reset all app data is separate from the viewer’s Reset button.</p>
           <p><strong>Ctrl+= / Ctrl+-</strong> changes app zoom; <strong>Ctrl+0</strong> restores 100%. The zoom level is remembered. On platforms using Command shortcuts, Command works too.</p>
-          <p>When you are not typing in a text field, the viewer accepts these basic turn keys:</p>
-          <div className="how-to-table-scroll"><table>
-            <caption>Viewer turn keys</caption>
-            <thead><tr><th>Move</th><th>Key</th><th>Inverse key</th></tr></thead>
-            <tbody>
-              <tr><td>R</td><td><kbd>I</kbd></td><td><kbd>K</kbd></td></tr>
-              <tr><td>L</td><td><kbd>D</kbd></td><td><kbd>E</kbd></td></tr>
-              <tr><td>U</td><td><kbd>J</kbd></td><td><kbd>F</kbd></td></tr>
-              <tr><td>F</td><td><kbd>H</kbd></td><td><kbd>G</kbd></td></tr>
-              <tr><td>D</td><td><kbd>S</kbd></td><td><kbd>L</kbd></td></tr>
-              <tr><td>B</td><td><kbd>W</kbd></td><td><kbd>O</kbd></td></tr>
-            </tbody>
-          </table></div>
           <p>Press Escape or Close to dismiss this guide.</p>
         </section>
         </div>
