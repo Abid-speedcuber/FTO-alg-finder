@@ -15,6 +15,12 @@ pub(crate) struct GenerateBloomRequest {
     #[serde(default)]
     last_layer_mode: bool,
     max_memory_mib: u32,
+    #[serde(default)]
+    facelets: Option<Vec<u8>>,
+    #[serde(default)]
+    center_targets: Option<CenterTargets>,
+    #[serde(default = "default_partial_budget")]
+    partial_memory_mib: u32,
 }
 
 #[tauri::command]
@@ -87,6 +93,47 @@ fn generate(
         app,
         cancel,
     )?;
+    if let Some(facelets) = &request.facelets {
+        if !(1..=4096).contains(&request.partial_memory_mib) {
+            return Err("Partial projection budget must be between 1 and 4096 MiB".into());
+        }
+        let (_, mask) = cubie_and_partial_mask_from_facelets(
+            facelets,
+            request.center_targets.as_ref(),
+            request.last_layer_mode,
+        )?;
+        let mask = mask.ok_or("Undefine at least one piece for a partial Bloom table.")?;
+        let plan = fto_core::partial_goal::plan(
+            &mask,
+            &tables,
+            request.partial_memory_mib as usize * 1024 * 1024,
+            Some(cancel),
+        )?;
+        let meta = fto_core::partial_goal::metadata(&plan, &mask, &moves, Some(request.depth));
+        let progress =
+            |p: pruning::PruningProgress| emit_line(app, "progress", &format_pruning_progress(&p));
+        emit_line(
+            app,
+            "info",
+            &format!(
+                "generating partial Bloom projection {} ({} MiB workspace)",
+                plan.spec.name(),
+                plan.entries / 1048576
+            ),
+        );
+        fto_core::partial_goal::generate(
+            &plan,
+            &meta,
+            &tables,
+            &pruning_dir(app, workspace).join("partial-goal-v1"),
+            std::thread::available_parallelism().map_or(1, usize::from),
+            Some(cancel),
+            Some(&progress),
+            request.max_memory_mib,
+        )?;
+        emit_line(app, "done", "generated dedicated partial Bloom table");
+        return Ok(());
+    }
     emit_line(
         app,
         "info",

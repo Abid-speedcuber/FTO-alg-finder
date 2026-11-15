@@ -7,6 +7,7 @@ import wcaLogo from "./assets/wca.svg";
 import githubLogo from "./assets/github.svg";
 import AlgCombiner from "./AlgCombiner";
 import BatchSolver from "./BatchSolver";
+import PruningPieces, { type PruningGoal } from "./PruningPieces";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
@@ -682,6 +683,11 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pruningOpen, setPruningOpen] = useState(false);
   const [pruningKind, setPruningKind] = useState<"pattern" | "bloom">("pattern");
+  const [pruningMoves, setPruningMoves] = useState<string[]>([]);
+  const [patternGoal, setPatternGoal] = useState<PruningGoal | null>(null);
+  const [bloomGoal, setBloomGoal] = useState<PruningGoal | null>(null);
+  const [pieceEditor, setPieceEditor] = useState<"pattern" | "bloom" | null>(null);
+  const [partialMemory, setPartialMemory] = useState("512");
   const [bloomMoves, setBloomMoves] = useState<string[]>([]);
   const [bloomLastLayer, setBloomLastLayer] = useState(true);
   const [bloomDepth, setBloomDepth] = useState("8");
@@ -780,7 +786,7 @@ function App() {
     howToOpen ||
     stateErrorsOpen ||
     settingsOpen ||
-    pruningOpen ||
+    pruningOpen || Boolean(pieceEditor) ||
     storageOpen ||
     aboutOpen ||
     resetConfirmOpen ||
@@ -1264,7 +1270,7 @@ function App() {
   }
 
   async function generatePruningTable() {
-    if (running || allowedMoves.length === 0) {
+    if (running || pruningMoves.length === 0) {
       return;
     }
     setPruningOpen(false);
@@ -1275,7 +1281,7 @@ function App() {
     clearTerminal();
     appendLine(
       "info",
-      `generate pruning (moves=${restrictedPruning ? "selected" : "instance"} last-layer=${
+      `generate pruning (moves=${pruningMoves.join(" ")} last-layer=${
         pruningLastLayerMode ? "on" : "off"
       } threads=${threads})`,
     );
@@ -1283,13 +1289,14 @@ function App() {
       await invoke("generate_pruning_table", {
         request: {
           useGpu,
-          facelets,
-          centerTargets,
-          allowedMoves,
+          facelets: patternGoal?.facelets ?? facelets,
+          centerTargets: patternGoal?.centerTargets ?? centerTargets,
+          allowedMoves: pruningMoves,
           instanceMoves: activeInstance.moves,
-          selectedMovesOnly: restrictedPruning,
+          selectedMovesOnly: true,
           lastLayerMode: pruningLastLayerMode,
-          definedPiecesOnly: false,
+          definedPiecesOnly: patternGoal !== null,
+          partialMemoryMib: Number(partialMemory),
           threads: Number(threads),
         },
       });
@@ -1313,7 +1320,7 @@ function App() {
     appendLine("info", `generate ${bloomLastLayer ? "last-layer " : ""}Bloom table (depth=${bloomDepth} moves=${bloomMoves.join(" ")} cap=${bloomMemory} MiB)`);
     try {
       await invoke("generate_bloom_table", {
-        request: { useGpu, moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer },
+        request: { useGpu, moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer, facelets: bloomGoal?.facelets ?? null, centerTargets: bloomGoal?.centerTargets ?? null, partialMemoryMib: Number(partialMemory) },
       });
     } catch (error) {
       appendLine("error", `error: ${String(error)}`);
@@ -1393,6 +1400,22 @@ function App() {
     setStateErrorsOpen(false);
   }
 
+  const pruningMovePool = (selected: string[], setSelected: (value: string[]) => void) => <>
+    <h3>Choose moves for this table ({selected.length})</h3>
+    <div className="bloom-move-actions">
+      <button className="secondary" onClick={() => setSelected([...allowedMoves])}>Use current selection</button>
+      <button className="secondary" onClick={() => setSelected([...moves])}>Select all</button>
+      <button className="secondary" onClick={() => setSelected([])}>Clear</button>
+    </div>
+    <div className="modal-move-grid">{moves.map(move => <button key={move} type="button" className={`move-toggle${selected.includes(move) ? "" : " banned"}`} aria-pressed={selected.includes(move)} onClick={() => setSelected(selected.includes(move) ? selected.filter(m => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}</div>
+  </>;
+  const partialGoalControls = (kind: "pattern" | "bloom", goal: PruningGoal | null) => <div className="partial-goal-controls">
+    <div className="bloom-move-actions"><button className="secondary" onClick={() => setPieceEditor(kind)}>{goal ? "Edit defined pieces…" : "Undefine pieces…"}</button>{goal && <button className="secondary" onClick={() => kind === "pattern" ? setPatternGoal(null) : setBloomGoal(null)}>Use all pieces</button>}</div>
+    {goal && <><p className="hint">Dedicated partial goal: {goal.facelets.filter(c => c === 8).length} stickers undefined. Compatible partial searches load this table automatically.</p>
+      <label className="field">{kind === "pattern" ? "Pattern table budget (MiB)" : "Projection workspace budget (MiB)"}<input type="number" min="1" max="4096" step="1" value={partialMemory} onChange={e => setPartialMemory(e.target.value)} /></label>
+      <p className="hint">Builds a joint table for the remaining pieces, using up to this budget. The default is 512 MiB; the actual size depends on the useful projections available. More defined pieces generally give stronger pruning.</p></>}
+  </div>;
+
   const gpuIsSlower = gpuNotice.includes("slower than CPU");
   const accelerationControl = (generationStatus.active || gpuNotice) && <aside className="generation-acceleration" aria-label="Table generation acceleration">
         {gpuNotice && <p className="generation-notice" role="status">{gpuNotice}</p>}
@@ -1442,6 +1465,7 @@ function App() {
                   <button
                     className="menu-command"
                     onClick={() => {
+                      setPruningMoves([...allowedMoves]);
                       setBloomMoves([...allowedMoves]);
                       setPruningOpen(true);
                       closeOverlays();
@@ -1592,6 +1616,8 @@ function App() {
         </div>
       ) : null}
 
+      {pieceEditor && <PruningPieces initial={pieceEditor === "pattern" ? patternGoal : bloomGoal} lastLayer={pieceEditor === "pattern" ? pruningLastLayerMode : bloomLastLayer} faceColors={faceColors} onClose={() => setPieceEditor(null)} onSave={goal => { if (pieceEditor === "pattern") setPatternGoal(goal); else setBloomGoal(goal); setPieceEditor(null); }} />}
+
       {pruningOpen ? (
         <div className="modal-backdrop" onClick={() => setPruningOpen(false)}>
           <div className="modal pruning-modal" onClick={(event) => event.stopPropagation()}>
@@ -1608,22 +1634,16 @@ function App() {
                 <label className="check modal-check">
                   <input
                     type="checkbox"
-                    checked={restrictedPruning}
-                    onChange={(event) => setRestrictedPruning(event.target.checked)}
-                  />
-                  Use only the selected moves to generate the pruning table
-                </label>
-                <label className="check modal-check">
-                  <input
-                    type="checkbox"
                     checked={pruningLastLayerMode}
                     onChange={(event) => setPruningLastLayerMode(event.target.checked)}
                   />
                   Use last layer mode
                 </label>
               </div>
+              {pruningMovePool(pruningMoves, setPruningMoves)}
+              {partialGoalControls("pattern", patternGoal)}
               <div className="modal-footer">
-                <button className="primary" onClick={generatePruningTable} disabled={running || allowedMoves.length === 0}>
+                <button className="primary" onClick={generatePruningTable} disabled={running || pruningMoves.length === 0 || (patternGoal !== null && (!Number.isInteger(Number(partialMemory)) || Number(partialMemory) < 1 || Number(partialMemory) > 4096))}>
                   Generate pruning table
                 </button>
               </div>
@@ -1645,17 +1665,11 @@ function App() {
                 </label>
               </div>
               <div className="hint">No fixed memory cap. Large tables use system RAM; allocation is checked against available memory. Generation stops if the table fills up. The saved table may be smaller than the cap. Deeper tables can take a long time to build; Stop cancels the build.</div>
-              <h3>Allowed moves ({bloomMoves.length})</h3>
-              <div className="bloom-move-actions">
-                <button className="secondary" onClick={() => setBloomMoves([...allowedMoves])}>Use selected moves</button>
-                <button className="secondary" onClick={() => setBloomMoves([...activeInstance.moves])}>Use instance moves</button>
-              </div>
-              <div className="modal-move-grid">
-                {activeInstance.moves.map((move) => <button key={move} className={`move-toggle${bloomMoves.includes(move) ? "" : " banned"}`} aria-pressed={bloomMoves.includes(move)} onClick={() => setBloomMoves((selected) => selected.includes(move) ? selected.filter((m) => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}
-              </div>
-              <div className="hint">A table can cover searches using any subset of its moves in the same mode. Partial-position searches use their existing pruning.</div>
+              {pruningMovePool(bloomMoves, setBloomMoves)}
+              {partialGoalControls("bloom", bloomGoal)}
+              <div className="hint">Tables cover searches using any subset of their moves and compatible defined-piece goals.</div>
               <div className="modal-footer">
-                <button className="primary" onClick={generateBloomTable} disabled={running || !validBloom}>Generate Bloom table</button>
+                <button className="primary" onClick={generateBloomTable} disabled={running || !validBloom || (bloomGoal !== null && (!Number.isInteger(Number(partialMemory)) || Number(partialMemory) < 1 || Number(partialMemory) > 4096))}>Generate Bloom table</button>
               </div>
             </>}
 
@@ -1892,7 +1906,7 @@ function App() {
 
           <FtoViewer
             viewerApiRef={viewerApiRef}
-            active={mode === "solver" && !stateErrorsOpen && !howToOpen}
+            active={mode === "solver" && !modalOpen}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
@@ -2078,7 +2092,7 @@ function App() {
               {running ? "Stop" : "Solve"}
             </button>
             </div>
-            <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !(cacheStatus.hasPruning || cacheStatus.hasBloom)}>
+            <button className="secondary ram-button" onClick={unloadPruningTable} disabled={running || !(cacheStatus.hasTables || cacheStatus.hasPruning || cacheStatus.hasBloom)}>
               Unload pruning table from RAM
             </button>
           </section>

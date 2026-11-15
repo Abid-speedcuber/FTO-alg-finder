@@ -716,6 +716,7 @@ fn run(
                         &config,
                         threads,
                         case.checkpoint.as_ref(),
+                        Some(&pruning_path.join("partial-goal-v1")),
                     )
                 });
             let mut case = case;
@@ -763,13 +764,14 @@ fn resume_position(
     config: &SearchConfig,
     threads: usize,
     checkpoint: Option<&search::ResumeCheckpoint>,
+    partial_cache: Option<&Path>,
 ) -> Result<search::ResumeResult, String> {
     if let Some(mask) = position.1 {
         let problem = PartialProblem {
             cubie: position.0,
             mask,
         };
-        partial::PreparedPartialSearch::new(&problem, config, None)
+        partial::PreparedPartialSearch::new(&problem, config, partial_cache)
             .resume_depth(config, threads, checkpoint)
     } else {
         search::resume_exact(
@@ -787,9 +789,11 @@ fn search_position(
     config: &SearchConfig,
     threads: usize,
 ) -> search::SearchResult {
-    resume_position(position, tables, pruning, ll_pruning, config, threads, None)
-        .unwrap()
-        .result
+    resume_position(
+        position, tables, pruning, ll_pruning, config, threads, None, None,
+    )
+    .unwrap()
+    .result
 }
 
 #[cfg(test)]

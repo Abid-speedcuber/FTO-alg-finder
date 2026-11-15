@@ -93,8 +93,7 @@ Uncheck it to build a full-position table instead.
 Completed tables are saved by goal mode, move set, and depth. Searches load the
 deepest compatible saved table automatically, including tables covering a superset
 of the search's allowed moves. These supplement the existing pattern tables;
-full-position and last-layer caches are never mixed. Partial-position searches
-keep their existing pruning. Manage saved Bloom tables in **Settings → Manage
+full-position and last-layer caches are never mixed. Both Pruning tabs expose the full move pool, initially selecting the current solver moves. **Undefine pieces…** opens a separate solved puzzle: click whole pieces to toggle them and drag to orbit. Dedicated partial pattern tables use a joint coordinate projection with a configurable 512 MiB default budget. Actual size depends on useful projections; for example, corner+edge3 occupies 380.7 MiB. Partial Bloom tables use the same goal-aware projection, a temporary workspace budget, and a separate saved-filter memory cap. Compatible partial searches and batch cases load these caches automatically alongside their usual piece heuristics. A cache may cover a subset of the search’s defined pieces and a superset of its moves; the goal mode must match. Coordinate indices update through the existing move tables during search. Manage saved Bloom tables in **Settings → Manage
 storage**, or use **Unload pruning table from RAM** to release the loaded tables.
 Bloom membership is checked when the remaining search depth reaches the saved
 radius; a possible match still undergoes normal search and the mode's exact goal

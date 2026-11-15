@@ -1000,7 +1000,9 @@
           return;
         }
         if (!didDrag && x != null && y != null) {
-          if (shiftKey) {
+          if (options.leftClickUndefine) {
+            toggleIgnoredPieceAt(x, y);
+          } else if (shiftKey) {
             toggleCenterSlotAt(x, y);
           } else if (activeDragMode === "paint") {
             paintAt(x, y, shiftKey, ctrlKey);

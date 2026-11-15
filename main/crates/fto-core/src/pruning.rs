@@ -117,6 +117,17 @@ impl PatternDatabase {
         }
     }
 
+    pub fn load_cancellable(
+        spec: CandidateSpec,
+        path: impl AsRef<Path>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Self, String> {
+        crate::acceleration::check_host_allocation(spec.size().unwrap_or(0) as u64)?;
+        let table = read_table_reporting(path, spec.size().unwrap_or(0), None, "", cancel)
+            .map_err(|e| e.to_string())?;
+        Ok(Self { spec, table })
+    }
+
     #[must_use]
     pub fn name(&self) -> String {
         self.spec.name()
@@ -155,6 +166,41 @@ impl PatternDatabases {
     }
 
     #[must_use]
+    pub fn heuristic_cubie(&self, cubie: &crate::FtoCubie) -> u8 {
+        self.tables
+            .iter()
+            .map(|table| table.table[table.spec.index_of_cubie(cubie)])
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn indices_of_cubie(&self, cubie: &crate::FtoCubie) -> Vec<usize> {
+        self.tables
+            .iter()
+            .map(|t| t.spec.index_of_cubie(cubie))
+            .collect()
+    }
+    pub(crate) fn heuristic_indices(&self, indices: &[usize]) -> u8 {
+        self.tables
+            .iter()
+            .zip(indices)
+            .map(|(t, &i)| t.table[i])
+            .max()
+            .unwrap_or(0)
+    }
+    pub(crate) fn move_indices(
+        &self,
+        indices: &[usize],
+        mv: Move,
+        tables: &TransitionTables,
+    ) -> Vec<usize> {
+        self.tables
+            .iter()
+            .zip(indices)
+            .map(|(t, &i)| t.spec.move_index(i, mv, tables))
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.tables.len()
     }
@@ -873,6 +919,78 @@ impl CandidateSpec {
         )
     }
 
+    pub fn index_of_cubie(&self, cubie: &crate::FtoCubie) -> usize {
+        self.components.iter().fold(0, |index, &component| {
+            use crate::coord;
+            use Component::*;
+            let value = match component {
+                Corner => u32::from(coord::rank_corner(&cubie.cp, &cubie.co)),
+                E0 | E1 | E2 | E3 => {
+                    let e = coord::EdgeCoord::from_ep(&cubie.ep);
+                    u32::from(match component {
+                        E0 => e.e0,
+                        E1 => e.e1,
+                        E2 => e.e2,
+                        _ => e.e3,
+                    })
+                }
+                Edge3 => {
+                    coord::rank_multiset_colors(&cubie.ep.map(|p| p / 4), &coord::EDGE3_COUNTS)
+                }
+                Edge4 => {
+                    coord::rank_multiset_colors(&cubie.ep.map(|p| p / 3), &coord::EDGE4_COUNTS)
+                }
+                UfCenter | RlCenter => coord::rank_center_colors(
+                    &if component == UfCenter {
+                        cubie.uf
+                    } else {
+                        cubie.rl
+                    }
+                    .map(|p| p / 3),
+                ),
+                UfCenter2 | RlCenter2 => coord::rank_multiset_colors(
+                    &if component == UfCenter2 {
+                        cubie.uf
+                    } else {
+                        cubie.rl
+                    }
+                    .map(|p| p / 6),
+                    &coord::CENTER2_COUNTS,
+                ),
+                UfCenter3 | RlCenter3 => coord::rank_multiset_colors(
+                    &if component == UfCenter3 {
+                        cubie.uf
+                    } else {
+                        cubie.rl
+                    }
+                    .map(|p| {
+                        if p < 3 {
+                            0
+                        } else if p < 6 {
+                            1
+                        } else {
+                            2
+                        }
+                    }),
+                    &coord::CENTER3_COUNTS,
+                ),
+                _ => component.value_of(FtoCoord::from_cubie(cubie)),
+            };
+            index * component.size() + value as usize
+        })
+    }
+
+    pub(crate) fn move_index(&self, index: usize, mv: Move, tables: &TransitionTables) -> usize {
+        let n = self.components.len();
+        if n <= 13 {
+            let mut values = [0u32; 13];
+            let mut next = [0u32; 13];
+            self.next_index(index, mv, tables, &mut values[..n], &mut next[..n])
+        } else {
+            self.next_index(index, mv, tables, &mut vec![0; n], &mut vec![0; n])
+        }
+    }
+
     fn pack(&self, values: &[u32]) -> usize {
         let mut idx = 0_usize;
         for (&value, component) in values.iter().zip(&self.components) {
@@ -1077,7 +1195,8 @@ fn try_gpu_layer(
         .filter(|&i| table[i].load(Ordering::Relaxed) == depth)
         .map(|i| i as u32)
         .collect();
-    if frontier.is_empty() || (!acceleration::forced() && engine.is_none() && frontier.len() < 256) {
+    if frontier.is_empty() || (!acceleration::forced() && engine.is_none() && frontier.len() < 256)
+    {
         return Ok(None);
     }
     let mut committed = Vec::new();
@@ -1429,6 +1548,40 @@ fn build_pruning_table_from_index_parallel(
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
+    build_pruning_table_from_goals(
+        spec,
+        tables,
+        max_entries,
+        progress_interval,
+        &[vec![u32::try_from(root_index).map_err(
+            |_| "pruning root index exceeds the supported range",
+        )?]],
+        moves,
+        threads,
+        cancel,
+        report,
+        None,
+        false,
+    )
+}
+
+/// Joint-coordinate, multi-source reverse BFS for a partially specified goal.
+/// `goals` contains one list per component, or a single packed-index list.
+pub(crate) fn build_pruning_table_from_goals(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    max_entries: usize,
+    progress_interval: usize,
+    goals: &[Vec<u32>],
+    moves: &[Move],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
+    depth_limit: Option<u8>,
+    reverse: bool,
+) -> Result<(PruningStats, Vec<u8>), String> {
+    let reversed: Vec<_> = moves.iter().map(|m| m.inverse()).collect();
+    let moves = if reverse { reversed.as_slice() } else { moves };
     let _stage = crate::acceleration::stage(&spec.name());
     let size = spec
         .size()
@@ -1444,33 +1597,70 @@ fn build_pruning_table_from_index_parallel(
     let table = (0..size)
         .map(|_| AtomicU8::new(UNVISITED))
         .collect::<Vec<_>>();
-    table[root_index].store(0, Ordering::Relaxed);
+    let mut root_count = 0;
+    if goals.len() == 1 {
+        for &index in &goals[0] {
+            table[index as usize].store(0, Ordering::Relaxed);
+            root_count += 1;
+        }
+    } else {
+        if goals.len() != spec.components.len() || goals.iter().any(Vec::is_empty) {
+            return Err("invalid partial goal seeds".into());
+        }
+        let mut cursors = vec![0; goals.len()];
+        loop {
+            if root_count & 8191 == 0 && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(CANCELLED.into());
+            }
+            let mut index = 0;
+            for (i, component) in spec.components.iter().enumerate() {
+                index = index * component.size() + goals[i][cursors[i]] as usize;
+            }
+            table[index].store(0, Ordering::Relaxed);
+            root_count += 1;
+            let mut i = goals.len();
+            while i > 0 {
+                i -= 1;
+                cursors[i] += 1;
+                if cursors[i] < goals[i].len() {
+                    break;
+                }
+                cursors[i] = 0;
+            }
+            if i == 0 && cursors[0] == 0 {
+                break;
+            }
+        }
+    }
+    if root_count == 0 {
+        return Err("the partial goal has no seeds".into());
+    }
 
     let worker_count = threads.min(size).max(1);
     // Bounded CPU windows let a GPU request interrupt the current BFS depth.
     let chunk_size = 65_536;
     let window_size = chunk_size * worker_count;
-    let mut reached = 1_usize;
-    let mut histogram = vec![1_usize];
+    let mut reached = root_count;
+    let mut histogram = vec![root_count];
     let mut depth_sum = 0_u64;
     let mut max_depth = 0_u8;
     let mut expanded = 0_usize;
     let mut next_progress = progress_interval;
-    let tail_allowed = full_coordinate_reachability(spec, moves);
+    let tail_allowed = !reverse && full_coordinate_reachability(spec, moves);
 
     if let Some(report) = report {
         report(PruningProgress {
             name: spec.name(),
             depth: 0,
             expanded: 0,
-            reached: 1,
+            reached: root_count,
             total: size,
         });
     }
     #[cfg(feature = "gpu")]
     let mut gpu_layer = None;
     let mut last_window_report = Instant::now();
-    for depth in 0..u8::MAX {
+    for depth in 0..depth_limit.unwrap_or(u8::MAX) {
         if reached == size {
             break;
         }
@@ -1800,7 +1990,7 @@ fn write_table_with_metadata(
     write_table_with_metadata_reporting(path, table, metadata, None, "", None)
 }
 
-fn write_table_with_metadata_reporting(
+pub(crate) fn write_table_with_metadata_reporting(
     path: impl AsRef<Path>,
     table: &[u8],
     metadata: &str,
@@ -1836,7 +2026,7 @@ fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>
     read_table_reporting(path, expected_len, None, "", None)
 }
 
-fn read_table_reporting(
+pub(crate) fn read_table_reporting(
     path: impl AsRef<Path>,
     expected_len: usize,
     report: Option<&PruningReporter<'_>>,

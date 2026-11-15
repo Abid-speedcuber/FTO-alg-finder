@@ -124,6 +124,11 @@ struct GeneratePruningRequest {
     last_layer_mode: bool,
     defined_pieces_only: bool,
     threads: usize,
+    #[serde(default = "default_partial_budget")]
+    partial_memory_mib: u32,
+}
+fn default_partial_budget() -> u32 {
+    512
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -323,6 +328,7 @@ fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(
     cache.pruning = None;
     cache.ll_pruning = None;
     cache.bloom = None;
+    fto_core::partial_goal::clear_cache();
     Ok(())
 }
 
@@ -337,7 +343,7 @@ fn pruning_cache_status(
     Ok(PruningCacheStatus {
         has_bloom: cache.bloom.is_some(),
         has_tables: cache.tables.is_some(),
-        has_pruning: cache.pruning.is_some(),
+        has_pruning: cache.pruning.is_some() || fto_core::partial_goal::has_cache(),
     })
 }
 
@@ -607,6 +613,9 @@ fn generate_pruning_blocking(
     };
 
     if request.defined_pieces_only {
+        if !(1..=4096).contains(&request.partial_memory_mib) {
+            return Err("Partial table budget must be between 1 and 4096 MiB".into());
+        }
         let facelets = request
             .facelets
             .clone()
@@ -619,65 +628,42 @@ fn generate_pruning_blocking(
         let Some(mask) = partial_mask else {
             return Err("the current position is full; turn off defined-pieces pruning".to_owned());
         };
-        let specs = partial::coordinate_pruning_specs_for_mask(&mask);
-        if specs.is_empty() {
-            return Err(
-                "the defined pieces do not force a reusable coordinate pruning table".to_owned(),
-            );
-        }
-        let mut selected_specs = Vec::new();
-        selected_specs.push(specs[0].clone());
-        if specs[0].name() == "edge3+uf3" {
-            if let Some(corner_uf3) = specs.iter().find(|spec| spec.name() == "corner+uf3") {
-                selected_specs.push(corner_uf3.clone());
-            }
-        }
         let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
         let tables = load_transition_tables(cache, &tables_path, app, cancel)?;
-        let pruning_dir = pruning_dir(app, workspace_root).join("partial-coordinate-v1");
-        fs::create_dir_all(&pruning_dir).map_err(|error| error.to_string())?;
-        let move_suffix = pruning::move_set_suffix(&target_moves);
-        let move_code = pruning::move_set_codename(&move_suffix);
+        let plan = fto_core::partial_goal::plan(
+            &mask,
+            &tables,
+            request.partial_memory_mib as usize * 1024 * 1024,
+            Some(cancel),
+        )?;
         emit_line(
             app,
             "info",
-            "generating partial coordinate pruning table...",
+            &format!(
+                "generating dedicated partial {} table: {:.1} MiB, {} goal projections",
+                plan.spec.name(),
+                plan.entries as f64 / 1048576.,
+                plan.roots
+            ),
         );
-        let mut count = 0_usize;
-        for spec in selected_specs {
-            let key = partial::coordinate_pruning_cache_key(&spec, &move_code);
-            let table_path = pruning_dir.join(format!("{key}.prun"));
-            let meta_path = pruning_dir.join(format!("{key}.meta"));
-            let table = pruning::PatternDatabase::load_or_build_with_moves_reporting(
-                spec.clone(),
-                &tables,
-                pruning_progress_interval(target_moves.len()),
-                &table_path,
-                &target_moves,
-                request.threads.max(1),
-                Some(cancel),
-                Some(&progress),
-            )?;
-            fs::write(
-                meta_path,
-                format!("version=1\nspec={}\nmoves={}\n", spec.name(), move_suffix),
-            )
-            .map_err(|error| error.to_string())?;
-            emit_line(
-                app,
-                "done",
-                &format!(
-                    "generated {} pruning table ({:.1} MiB)",
-                    table.name(),
-                    table.bytes() as f64 / (1024.0 * 1024.0)
-                ),
-            );
-            count += 1;
-        }
+        let meta = fto_core::partial_goal::metadata(&plan, &mask, &target_moves, None);
+        fto_core::partial_goal::generate(
+            &plan,
+            &meta,
+            &tables,
+            &pruning_dir(app, workspace_root).join("partial-goal-v1"),
+            request.threads.max(1),
+            Some(cancel),
+            Some(&progress),
+            0,
+        )?;
         emit_line(
             app,
             "done",
-            &format!("generated {count} partial coordinate pruning table(s)"),
+            &format!(
+                "generated dedicated partial pruning table ({:.1} MiB)",
+                plan.entries as f64 / 1048576.
+            ),
         );
         return Ok(());
     }
@@ -778,9 +764,17 @@ fn run_in_process_solve(
             bloom: None,
             solution_reporter: Some(output.reporter.clone()),
         };
-        emit_line(app, "info", "using dynamic partial pruning tables");
+        emit_line(
+            app,
+            "info",
+            "preparing partial pruning, including compatible dedicated tables",
+        );
         let result = if let Some(depths) = &selected_depths {
-            let prepared = partial::PreparedPartialSearch::new(&problem, &config, None);
+            let prepared = partial::PreparedPartialSearch::new(
+                &problem,
+                &config,
+                Some(&pruning_dir.join("partial-goal-v1")),
+            );
             search::search_selected_depths(depths, request.find_all, Some(cancel), |depth| {
                 emit_line(app, "search", &format!("searching depth {depth}..."));
                 let result = prepared.solve_depth(&config, depth, request.threads.max(1));
@@ -790,7 +784,12 @@ fn run_in_process_solve(
                 Ok(result)
             })?
         } else {
-            partial::solve_partial_threads(&problem, &config, request.threads.max(1))
+            partial::solve_partial_threads_with_cache(
+                &problem,
+                &config,
+                request.threads.max(1),
+                Some(&pruning_dir.join("partial-goal-v1")),
+            )
         };
         let result = output.finish(result);
         let solutions = format_solutions(&result.solutions);
@@ -924,6 +923,7 @@ fn load_transition_tables(
             .map_err(|_| "solver cache lock poisoned".to_owned())?;
         if let Some(tables) = cache.tables.as_ref() {
             emit_line(app, "info", "using cached transition tables from RAM");
+            fto_core::partial_goal::set_transition_tables(tables.clone());
             return Ok(tables.clone());
         }
     }
@@ -952,6 +952,7 @@ fn load_transition_tables(
     let mut cache = cache
         .lock()
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
+    fto_core::partial_goal::set_transition_tables(tables.clone());
     cache.tables = Some(tables.clone());
     Ok(tables)
 }
@@ -1407,6 +1408,41 @@ fn discover_pruning_tables(out_dir: &Path) -> Result<Vec<PruningTableInfo>, Stri
             id: file_suffix.clone(),
             codename: pruning_codename(&file_suffix),
             moves: moves.iter().map(|mv| mv.name().to_owned()).collect(),
+            files,
+            bytes,
+        });
+    }
+    for (id, meta) in fto_core::partial_goal::discover(&out_dir.join("partial-goal-v1")) {
+        let suffix = if meta.depth.is_some() {
+            "gbloom"
+        } else {
+            "prun"
+        };
+        let files = vec![
+            format!("partial-goal-v1/{id}.{suffix}"),
+            format!("partial-goal-v1/{id}.json"),
+        ];
+        if !out_dir.join(&files[0]).exists() {
+            continue;
+        }
+        let bytes = files
+            .iter()
+            .filter_map(|f| fs::metadata(out_dir.join(f)).ok())
+            .map(|m| m.len())
+            .sum();
+        let moves = pruning::parse_move_set_suffix(&meta.moves).unwrap_or_default();
+        tables.push(PruningTableInfo {
+            id: format!("partial-{id}"),
+            codename: format!("Partial {}", &id[..4]),
+            kind: if meta.depth.is_some() {
+                "bloom"
+            } else {
+                "pattern"
+            }
+            .into(),
+            last_layer_mode: meta.mask.last_layer_centers,
+            depth: meta.depth,
+            moves: moves.iter().map(|m| m.name().to_owned()).collect(),
             files,
             bytes,
         });

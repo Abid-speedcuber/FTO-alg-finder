@@ -1,5 +1,5 @@
 use crate::{
-    FtoCoord, FtoCubie,
+    FtoCubie,
     moves::{MOVE_COUNT, Move, move_cubies},
     pruning::{
         self, CandidateSpec, Component, PatternDatabase, PatternDatabases, PruningProgress,
@@ -23,7 +23,7 @@ const MAX_DYNAMIC_TABLES: usize = 6;
 const MAX_DYNAMIC_TRANSITION_BYTES: usize = 96 * 1024 * 1024;
 const RL_LAST_LAYER_FIXED_CENTER_SLOT: [Option<u8>; 4] = [None, Some(3), Some(8), Some(10)];
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PartialMask {
     pub corners: [bool; 6],
     pub edges: [bool; 12],
@@ -134,32 +134,67 @@ impl<'a> PreparedPartialSearch<'a> {
         config: &SearchConfig,
         cache_dir: Option<&Path>,
     ) -> Self {
-        let coordinate_pruning = cache_dir
+        let (goal_pruning, goal_bloom) = cache_dir
             .and_then(|dir| {
-                load_coordinate_pruning_cache(&problem.mask, &config.allowed_moves, dir).ok()
+                crate::partial_goal::load(
+                    dir,
+                    &problem.mask,
+                    &config.allowed_moves,
+                    config.cancel.as_deref(),
+                )
+                .ok()
             })
-            .unwrap_or_default();
-        let pruning = if coordinate_pruning.len() > 0 {
-            eprintln!(
-                "using {} cached coordinate partial pruning tables: {}",
-                coordinate_pruning.len(),
-                coordinate_pruning.names().join(", ")
-            );
-            DynamicPruning::from_coordinate_pruning(coordinate_pruning)
+            .unwrap_or_else(|| (std::sync::Arc::new(PatternDatabases::default()), None));
+        let coordinate_pruning = if goal_pruning.len() > 0 {
+            goal_pruning
         } else {
-            let mut pruning = DynamicPruning::build(&problem.mask, &config.allowed_moves);
-            pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
-            eprintln!(
-                "using {} dynamic partial pruning tables ({:.1} MiB)",
-                pruning.tables.len(),
-                pruning.bytes() as f64 / (1024.0 * 1024.0)
-            );
-            for table in &pruning.tables {
-                eprintln!("  {}", table.name());
-            }
-            pruning
+            std::sync::Arc::new(
+                cache_dir
+                    .and_then(|dir| {
+                        load_coordinate_pruning_cache(&problem.mask, &config.allowed_moves, dir)
+                            .ok()
+                    })
+                    .unwrap_or_default(),
+            )
         };
-
+        if config
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return Self {
+                problem,
+                pruning: DynamicPruning::from_coordinate_pruning(PatternDatabases::default()),
+            };
+        }
+        let mut dynamic_moves = config.allowed_moves.clone();
+        if config.free_u_ends {
+            for m in [Move::U, Move::Up] {
+                if !dynamic_moves.contains(&m) {
+                    dynamic_moves.push(m);
+                }
+            }
+        }
+        let mut pruning = DynamicPruning::build(&problem.mask, &dynamic_moves);
+        pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
+        if coordinate_pruning.len() > 0 {
+            eprintln!(
+                "using {} dedicated partial pattern tables ({:.1} MiB)",
+                coordinate_pruning.len(),
+                coordinate_pruning.total_bytes() as f64 / 1048576.
+            );
+        }
+        eprintln!(
+            "partial pruning: {} piece tables, {:.1} MiB",
+            pruning.tables.len(),
+            pruning.bytes() as f64 / 1048576.
+        );
+        for table in &pruning.tables {
+            eprintln!("  {}", table.name());
+        }
+        pruning.coordinate = coordinate_pruning;
+        pruning.coordinate_tables = crate::partial_goal::transition_tables();
+        pruning.goal_bloom = goal_bloom;
         Self { problem, pruning }
     }
     pub fn solve_depth(&self, config: &SearchConfig, depth: u8, threads: usize) -> SearchResult {
@@ -790,7 +825,9 @@ fn dedup_solutions(solutions: &mut Vec<Vec<Move>>) {
 
 struct DynamicPruning {
     tables: Vec<DynamicTable>,
-    coordinate: PatternDatabases,
+    coordinate: std::sync::Arc<PatternDatabases>,
+    coordinate_tables: Option<std::sync::Arc<crate::tables::TransitionTables>>,
+    goal_bloom: Option<std::sync::Arc<crate::partial_goal::GoalBloom>>,
 }
 
 impl DynamicPruning {
@@ -825,14 +862,18 @@ impl DynamicPruning {
         );
         Self {
             tables,
-            coordinate: PatternDatabases::default(),
+            coordinate: std::sync::Arc::new(PatternDatabases::default()),
+            coordinate_tables: None,
+            goal_bloom: None,
         }
     }
 
     fn from_coordinate_pruning(coordinate: PatternDatabases) -> Self {
         Self {
             tables: Vec::new(),
-            coordinate,
+            coordinate: std::sync::Arc::new(coordinate),
+            coordinate_tables: None,
+            goal_bloom: None,
         }
     }
 
@@ -851,6 +892,11 @@ impl DynamicPruning {
     }
 
     fn heuristic_for_indices(&self, state: &FtoCubie, indices: &[usize]) -> u8 {
+        if indices.len()
+            != self.tables.len() + self.coordinate.len() + usize::from(self.goal_bloom.is_some())
+        {
+            return self.heuristic(state);
+        }
         let dynamic = self
             .tables
             .iter()
@@ -858,31 +904,59 @@ impl DynamicPruning {
             .map(|(idx, table)| table.value_for_index_or_state(indices[idx], state))
             .max()
             .unwrap_or(0);
-        dynamic.max(self.coordinate_heuristic(state))
+        let extra = &indices[self.tables.len()..];
+        dynamic.max(self.coordinate.heuristic_indices(extra)).max(
+            self.goal_bloom.as_ref().map_or(0, |bloom| {
+                bloom.heuristic_index(extra[self.coordinate.len()])
+            }),
+        )
     }
 
     /// Dynamic piece tables do not need the unrelated full coordinates.
     fn coordinate_heuristic(&self, state: &FtoCubie) -> u8 {
-        if self.coordinate.len() == 0 {
-            0
-        } else {
-            self.coordinate.heuristic(FtoCoord::from_cubie(state))
+        if self.coordinate.len() == 0 && self.goal_bloom.is_none() {
+            return 0;
         }
+        self.coordinate.heuristic_cubie(state).max(
+            self.goal_bloom
+                .as_ref()
+                .map_or(0, |bloom| bloom.heuristic_cubie(state)),
+        )
     }
 
     fn indices_of_state(&self, state: &FtoCubie) -> Vec<usize> {
-        self.tables
-            .iter()
-            .map(|table| table.index_of_state(state))
-            .collect()
+        let mut indices = Vec::with_capacity(
+            self.tables.len() + self.coordinate.len() + usize::from(self.goal_bloom.is_some()),
+        );
+        indices.extend(self.tables.iter().map(|table| table.index_of_state(state)));
+        indices.extend(self.coordinate.indices_of_cubie(state));
+        if let Some(bloom) = &self.goal_bloom {
+            indices.push(bloom.index_of_cubie(state));
+        }
+        indices
     }
 
     fn move_indices(&self, state: &FtoCubie, indices: &[usize], mv: Move) -> Vec<usize> {
-        self.tables
-            .iter()
-            .enumerate()
-            .map(|(idx, table)| table.move_cached_index(indices[idx], state, mv))
-            .collect()
+        let mut next = Vec::with_capacity(indices.len());
+        next.extend(
+            self.tables
+                .iter()
+                .enumerate()
+                .map(|(idx, table)| table.move_cached_index(indices[idx], state, mv)),
+        );
+        let extra = &indices[self.tables.len()..];
+        if let Some(tables) = &self.coordinate_tables {
+            next.extend(self.coordinate.move_indices(extra, mv, tables));
+            if let Some(bloom) = &self.goal_bloom {
+                next.push(bloom.move_index(extra[self.coordinate.len()], mv, tables));
+            }
+        } else {
+            next.extend(self.coordinate.indices_of_cubie(state));
+            if let Some(bloom) = &self.goal_bloom {
+                next.push(bloom.index_of_cubie(state));
+            }
+        }
+        next
     }
 
     fn bytes(&self) -> usize {
@@ -939,7 +1013,7 @@ pub fn load_coordinate_pruning_cache(
         if !allowed_set.iter().all(|mv| move_set.contains(mv)) {
             continue;
         }
-        let table_path = out_dir.join(format!("{key}.pdb"));
+        let table_path = out_dir.join(format!("{key}.prun"));
         if let Ok(table) = PatternDatabase::load(spec, &table_path) {
             candidates.push(table);
         }
@@ -1054,7 +1128,7 @@ fn add_piece_tables(
         if tables.len() >= MAX_DYNAMIC_TABLES {
             return;
         }
-        if chunk.len() >= 2 {
+        if !chunk.is_empty() {
             tables.push(DynamicTable::build(kind, chunk.to_vec(), allowed_moves));
         }
     }
@@ -1121,7 +1195,7 @@ impl DynamicTable {
             }
             let depth = this.table[idx];
             for &mv in allowed_moves {
-                if let Some(next) = this.move_index(idx, mv) {
+                if let Some(next) = this.move_index(idx, mv.inverse()) {
                     if this.table[next] == UNVISITED {
                         this.table[next] = depth + 1;
                         queue.push_back(next);
@@ -1433,8 +1507,8 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        DynamicKind, DynamicPruning, DynamicTable, PartialMask, PartialProblem, is_partial_solved,
-        partial_centers_solved, partial_free_u_suffix, solve_partial, SearchConfig,
+        DynamicKind, DynamicPruning, DynamicTable, PartialMask, PartialProblem, SearchConfig,
+        is_partial_solved, partial_centers_solved, partial_free_u_suffix, solve_partial,
     };
     use crate::{FtoCubie, moves::Move};
 

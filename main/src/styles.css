@@ -911,16 +911,18 @@ h2 {
 .move-toggle {
   min-height: 34px;
   padding: 7px 8px;
-  background: #ffffff;
+  border-color: #a8c8e4;
+  background: #e2eef9;
+  color: #1f2328;
   font-size: 13px;
   font-weight: 650;
 }
 
 .move-toggle.banned {
-  border-color: #d3a2a8;
-  background: #f8ecee;
-  color: #8c2532;
-  text-decoration: line-through;
+  border-color: #c7cdd4;
+  background: #ffffff;
+  color: #1f2328;
+  text-decoration: none;
 }
 
 .solve-options {
@@ -1653,7 +1655,7 @@ button.depth-info-button:hover {
 .batch-sidebar .check { margin-top: 12px; }
 .batch-moves { display: flex; flex-wrap: wrap; gap: 5px; }
 .batch-moves button { min-width: 37px; min-height: 32px; padding: 5px 8px; }
-.batch-moves button.selected { background: #e2edf9; border-color: #6b99c9; color: #174e86; }
+.batch-moves button.selected { background: #e2eef9; border-color: #a8c8e4; color: #1f2328; }
 .batch-move-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
 .batch-move-actions button { min-height: 28px; padding: 4px 7px; font-size: 11px; }
 .batch-search-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
@@ -1775,3 +1777,12 @@ button.depth-info-button:hover {
 
 .solver-output.has-acceleration .terminal { padding-bottom: 90px; }
 .batch-output-status { position: relative; padding-bottom: 65px; }
+
+.pruning-pieces-modal { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 20px; border: 1px solid #d4d9df; border-radius: 10px; }
+.pruning-pieces-modal::backdrop { background: #0008; }
+.pruning-pieces-modal .fto-stage { min-height: 320px; height: min(48vh, 440px); }
+.pruning-pieces-modal .viewer-controls-right { grid-template-columns: max-content; }
+.pruning-pieces-modal .viewer-controls-right button { min-width: 42px; }
+.partial-goal-controls { margin-top: 16px; padding-top: 12px; border-top: 1px solid #d4d9df; }
+.partial-goal-controls .field { margin-top: 10px; }
+.pruning-modal { max-height: calc(100vh - 32px); overflow-y: auto; }

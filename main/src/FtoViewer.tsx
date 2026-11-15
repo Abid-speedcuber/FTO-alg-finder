@@ -26,6 +26,7 @@ declare global {
       container: HTMLElement,
       options?: {
         keyboard?: boolean;
+        leftClickUndefine?: boolean;
         resolveAlgorithm?: (algorithm: string) => string;
         faceColors?: string[];
         onFacelets?: (facelets: number[]) => void;
@@ -60,6 +61,7 @@ type Props = {
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
   active?: boolean;
+  pieceSelection?: boolean;
   initialState?: { facelets: number[]; centerTargets?: CenterTargets };
 };
 
@@ -79,6 +81,7 @@ function FtoViewer({
   footer,
   active = true,
   initialState,
+  pieceSelection = false,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<FtoViewerApi | null>(null);
@@ -95,12 +98,13 @@ function FtoViewer({
 
     const viewer = window.createFtoViewer(hostRef.current, {
       faceColors,
+      leftClickUndefine: pieceSelection,
       resolveAlgorithm: resolveInputAlgorithm,
       onFacelets,
       onCenterTargets,
     });
     viewerRef.current = viewer;
-    viewer.setKeyboardEnabled(activeRef.current);
+    viewer.setKeyboardEnabled(activeRef.current && !pieceSelection);
     if (viewerApiRef) {
       viewerApiRef.current = viewer;
     }
@@ -132,7 +136,7 @@ function FtoViewer({
 
   // Only the visible tab's viewer listens to the keyboard; refit on show.
   useEffect(() => {
-    viewerRef.current?.setKeyboardEnabled(active);
+    viewerRef.current?.setKeyboardEnabled(active && !pieceSelection);
     if (active) {
       window.dispatchEvent(new Event("resize"));
     }
@@ -200,7 +204,7 @@ function FtoViewer({
             {stateText}
           </div>
         ) : null}
-        <div className="viewer-controls viewer-controls-left">
+        {!pieceSelection && <div className="viewer-controls viewer-controls-left">
           {faceColors.slice(0, 6).map((hex, index) => (
             <button
               key={hex}
@@ -211,9 +215,9 @@ function FtoViewer({
               aria-label={`Color ${index}`}
             />
           ))}
-        </div>
+        </div>}
         <div className="viewer-controls viewer-controls-right">
-          {faceColors.slice(6).map((hex, offset) => {
+          {!pieceSelection && faceColors.slice(6).map((hex, offset) => {
             const index = offset + 6;
             return (
               <button
@@ -226,10 +230,10 @@ function FtoViewer({
               />
             );
           })}
-          <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>
-          <button className={mode === "swap" ? "selected" : ""} onClick={setSwapMode}>Swap</button>
+          {!pieceSelection && <button className={mode === "pan" ? "selected" : ""} onClick={setPanMode}>Pan</button>}
+          {!pieceSelection && <button className={mode === "swap" ? "selected" : ""} onClick={setSwapMode}>Swap</button>}
           <button onClick={resetView}>View</button>
-          <button onClick={resetPuzzle}>Reset</button>
+          <button onClick={resetPuzzle}>{pieceSelection ? "Define all" : "Reset"}</button>
         </div>
       </div>
       {inputError && <p role="alert">{inputError}</p>}

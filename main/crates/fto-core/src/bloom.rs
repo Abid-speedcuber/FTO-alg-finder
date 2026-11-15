@@ -83,7 +83,7 @@ fn mix(mut x: u64) -> u64 {
 fn digest_step(h: u64, value: u64) -> u64 {
     (h ^ value).wrapping_mul(0x100000001b3)
 }
-fn model_signature() -> u64 {
+pub(crate) fn model_signature() -> u64 {
     static SIGNATURE: OnceLock<u64> = OnceLock::new();
     *SIGNATURE.get_or_init(|| {
         let mut h = 0xcbf29ce484222325;
