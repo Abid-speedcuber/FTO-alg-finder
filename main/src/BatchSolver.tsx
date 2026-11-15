@@ -52,12 +52,12 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   return <dialog ref={dialog} className="batch-visual-dialog" aria-labelledby="batch-case-title" onCancel={onClose}>
     <div className="batch-dialog-header"><h2 id="batch-case-title">Case {number}</h2><button type="button" aria-label="Close visual editor" onClick={onClose}>×</button></div>
     <div className="batch-visual-layout">
-      <FtoViewer setup={setup} inputMode="setup" applySignal={apply} lastLayerMode={lastLayer}
+      <FtoViewer setup={setup} inputMode="setup" applySignal={apply} applyFromSolved lastLayerMode={lastLayer}
         onFacelets={faceletChange} onCenterTargets={targetChange} faceColors={faceColors} viewerApiRef={viewer}
         initialState={entry.facelets ? { facelets: entry.facelets, centerTargets: entry.centerTargets ?? undefined } : undefined} />
       <div className="batch-visual-tools">
         <label>Setup moves<input value={setup} onChange={e => setSetup(e.target.value)} /></label>
-        <button type="button" onClick={() => { viewer.current?.resetPuzzle(); setApply(v => v + 1); }}>Apply setup</button>
+        <button type="button" onClick={() => setApply(v => v + 1)}>Apply setup</button>
         <LlSetupSection facelets={facelets} viewerApiRef={viewer} />
       </div>
     </div>

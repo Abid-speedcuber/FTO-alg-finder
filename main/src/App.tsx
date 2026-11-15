@@ -10,6 +10,7 @@ import BatchSolver from "./BatchSolver";
 import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
+import HowToUse from "./HowToUse";
 import useAppZoom from "./useAppZoom";
 import { parseDepthSelection } from "./depthSelection";
 import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm, normalizeMoveSelection } from "./rotation";
@@ -675,6 +676,8 @@ function App() {
   );
   const [menuOpen, setMenuOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
+  const [howToOpen, setHowToOpen] = useState(false);
+  const appMenuButton = useRef<HTMLButtonElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pruningOpen, setPruningOpen] = useState(false);
   const [pruningKind, setPruningKind] = useState<"pattern" | "bloom">("pattern");
@@ -710,6 +713,7 @@ function App() {
   const [setup, setSetup] = useState("");
   const [inputMode, setInputMode] = useState<"setup" | "alg">("setup");
   const [applySignal, setApplySignal] = useState(0);
+  const [applyFromSolved, setApplyFromSolved] = useState(false);
   const [facelets, setFacelets] = useState<number[]>([]);
   const [centerTargets, setCenterTargets] = useState<CenterTargets>(emptyCenterTargets);
   const [cubieState, setCubieState] = useState<CubieState | null>(solved);
@@ -740,6 +744,7 @@ function App() {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const pruningStartedAtRef = useRef<number | null>(null);
   const modalOpen =
+    howToOpen ||
     stateErrorsOpen ||
     settingsOpen ||
     pruningOpen ||
@@ -1348,7 +1353,9 @@ function App() {
             <button
               type="button"
               className="icon-trigger vertical"
+              ref={appMenuButton}
               aria-label="Open menu"
+              aria-expanded={appMenuOpen}
               title="Menu"
               onClick={() => setAppMenuOpen((open) => !open)}
             >
@@ -1358,6 +1365,9 @@ function App() {
               <>
                 <div className="menu-backdrop" onClick={closeOverlays} />
                 <div className="settings-panel app-menu-panel">
+                  <button className="menu-command" onClick={() => { setHowToOpen(true); closeOverlays(); }}>
+                    How to use
+                  </button>
                   <button
                     className="menu-command"
                     onClick={() => {
@@ -1420,6 +1430,11 @@ function App() {
           </button>
         </div>
       ) : null}
+
+      {howToOpen && <HowToUse onClose={() => {
+        setHowToOpen(false);
+        requestAnimationFrame(() => appMenuButton.current?.focus());
+      }} />}
 
       {stateErrorsOpen ? (
         <dialog
@@ -1812,15 +1827,16 @@ function App() {
                 autoComplete="off"
               />
             </label>
-            <button className="secondary" onClick={() => setApplySignal((current) => current + 1)}>Apply</button>
+            <button className="secondary" title="Apply to the current puzzle; Shift-click to start from solved" onClick={(event) => { setApplyFromSolved(event.shiftKey); setApplySignal((current) => current + 1); }}>Apply</button>
           </div>
 
           <FtoViewer
             viewerApiRef={viewerApiRef}
-            active={mode === "solver" && !stateErrorsOpen}
+            active={mode === "solver" && !stateErrorsOpen && !howToOpen}
             setup={setup}
             inputMode={inputMode}
             applySignal={applySignal}
+            applyFromSolved={applyFromSolved}
             lastLayerMode={lastLayerMode}
             onFacelets={handleFacelets}
             onCenterTargets={setCenterTargets}
@@ -2009,10 +2025,10 @@ function App() {
         </section>
       </div>
       <div hidden={mode !== "combiner"}>
-        <AlgCombiner active={mode === "combiner"} />
+        <AlgCombiner active={mode === "combiner" && !howToOpen} />
       </div>
       <div hidden={mode !== "batch"}>
-        <BatchSolver executionHold={executionHold} active={mode === "batch"} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
+        <BatchSolver executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

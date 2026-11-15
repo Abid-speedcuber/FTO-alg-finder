@@ -15,32 +15,36 @@ function viewer(path) {
     copy() { return this; } setFromAxisAngle() { return this; }
   }
   const context = vm.createContext({
-    fills, borders, performance,
+    fills, borders, performance, $: { UDPOLY_RE: "" }, DEBUG: false,
     THREE: { Quaternion, Vector3: class {} },
     window: { addEventListener: (name, handler) => { events[name] = handler; }, removeEventListener() {} },
   });
   const init = `
-    for (var f = 0; f < 72; f++) {
-      (function(slot) {
-        faceletToSticker[slot] = slot;
-        faceletColors[slot] = Math.floor(slot / 9);
-        cubePieces[slot] = [null, { matrix: { copy: function() {} }, update: function() {} },
-          faceletColors[slot], slot,
-          { materials: [{ color: { setHex: function(hex) { fills[slot] = hex; } } }] },
-          { color: { setHex: function(hex) { borders[slot] = hex; } } }];
-      })(f);
-    }
+    puzzle = poly3d.makePuzzle(8, [-5, 1 / 3, -1 / 3], [], [-5]);
+    puzzle.parser = poly3d.makePuzzleParser(puzzle);
+    puzzle.enumFacesPolys(function(face, p, poly, index) {
+      var slot = polyFaceToFaceletFace[face] * 9 + polyStickerToFaceletSlot[face][p];
+      faceletToSticker[slot] = index;
+      faceletColors[slot] = Math.floor(slot / 9);
+      cubePieces[index] = [null, { matrix: { copy: function() {} }, update: function() {} },
+        faceletColors[slot], slot,
+        { materials: [{ color: { setHex: function(hex) { fills[slot] = hex; } } }] },
+        { color: { setHex: function(hex) { borders[slot] = hex; } } }];
+    });
     render = function() {};
-    pickSticker = function(x) { return x >= 0 && x < 72 ? x : null; };
+    pickSticker = function(x) { return x >= 0 && x < 72 ? faceletToSticker[x] : null; };
     canvas = { style: {} };
     var mouseCleanup = setupMouseControls(canvas);
     var unbindKeyboard = function() {};
     function setKeyboardEnabled() {}
   `;
+  vm.runInContext(readFileSync(new URL("../public/fto-viewer/poly3dlib.js", import.meta.url), "utf8"), context);
   vm.runInContext(source.slice(0, start) + init + source.slice(end), context);
   const container = { style: {}, addEventListener: (name, handler) => { events[name] = handler; }, removeEventListener() {} };
   const api = context.window.createFtoViewer(container, {});
-  return { api, borders, click(facelet, shiftKey = true) {
+  return { api, borders, rightClick(facelet) {
+    events.contextmenu({clientX:facelet, clientY:0, preventDefault() {}});
+  }, click(facelet, shiftKey = true) {
     const event = { button: 0, clientX: facelet, clientY: 0, shiftKey, ctrlKey: false, preventDefault() {} };
     events.mousedown(event); events.mouseup(event);
   } };
@@ -79,5 +83,59 @@ for (const path of ['../public/fto-viewer/fto-viewer.js', '../../public/fto-view
     const legacy = api.getCenterTargets(); delete legacy.ufSlots; delete legacy.rlSlots;
     api.setCenterTargets(legacy);
     assert.equal(borders[20], 0x000000);
+  });
+}
+
+
+for (const path of ['../public/fto-viewer/fto-viewer.js', '../../public/fto-viewer/fto-viewer.js']) {
+  test(`${path}: right-click toggles corners, edges, and centers back to their previous colors`, () => {
+    const {api, rightClick, click, borders} = viewer(path);
+    api.applyAlgorithmInstant("R U F");
+    const before = Array.from(api.getFacelets());
+    for (const slots of [[0,54,9,63], [1,57], [20]]) {
+      rightClick(slots[0]);
+      for (const slot of slots) assert.equal(api.getFacelets()[slot], 8);
+      rightClick(slots[slots.length-1]);
+      assert.deepEqual(Array.from(api.getFacelets()), before);
+    }
+    click(20); rightClick(20); rightClick(20);
+    assert.equal(borders[20], 0xffd700);
+    assert.deepEqual(Array.from(api.getFacelets()), before);
+  });
+  test(`${path}: remembered colors follow ignored pieces through turns, swaps, and twists`, () => {
+    for (const action of ['turns', 'swap', 'twist']) {
+      const actual = viewer(path), expected = viewer(path);
+      actual.api.applyAlgorithmInstant('R F'); expected.api.applyAlgorithmInstant('R F');
+      actual.rightClick(0);
+      for (const current of [actual, expected]) {
+        if (action === 'turns') current.api.applyAlgorithmInstant("U L R'");
+        else {
+          current.api.setMode('swap');
+          current.click(0, false); current.click(action === 'swap' ? 4 : 0, false);
+        }
+      }
+      const ignored = actual.api.getFacelets().findIndex(color => color === 8);
+      assert.notEqual(ignored, -1);
+      actual.rightClick(ignored);
+      assert.deepEqual(Array.from(actual.api.getFacelets()), Array.from(expected.api.getFacelets()), action);
+    }
+  });
+  test(`${path}: loaded black pieces use home colors and stale remembered colors are cleared`, () => {
+    const {api, rightClick} = viewer(path);
+    const solved = Array.from(api.getFacelets());
+    api.applyAlgorithmInstant('R F'); rightClick(0);
+    api.resetPuzzle();
+    const loaded = solved.slice(); for (const slot of [0,54,9,63]) loaded[slot] = 8;
+    api.setFacelets(loaded); rightClick(0);
+    assert.deepEqual(Array.from(api.getFacelets()), solved);
+  });
+  test(`${path}: toggling the odd last-layer center restores its role`, () => {
+    const {api, rightClick} = viewer(path);
+    api.setLastLayerMode(true);
+    const before = api.getCenterTargets();
+    rightClick(47); assert.equal(api.getFacelets()[47], 8);
+    rightClick(47);
+    assert.equal(api.getFacelets()[47], 5);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.getCenterTargets())), JSON.parse(JSON.stringify(before)));
   });
 }

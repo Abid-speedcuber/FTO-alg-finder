@@ -40,7 +40,7 @@ Important implementation pieces:
 Solver app:
 
 - 3D graphical FTO input. Manually color in the pieces, or swap the pieces and twist the corners to do the input.
-- Text input for setup moves or algorithms. Both wide spellings (`r` / `Rw`, `u` / `Uw`, etc.) work. Slice moves follow their named layer: `Rs = r R'`, `Ls = l L'`, `Us = u U'`, `Fs = f F'`. Legacy aliases are `M = Rs'`, `E = Us'`, `S = Fs`, and `N = Ls`.
+- Text input for setup moves or algorithms. Shift-click Apply to start from solved before applying the sequence. Both wide spellings (`r` / `Rw`, `u` / `Uw`, etc.) work. Slice moves follow their named layer: `Rs = r R'`, `Ls = l L'`, `Us = u U'`, `Fs = f F'`. Legacy aliases are `M = Rs'`, `E = Us'`, `S = Fs`, and `N = Ls`.
 - Input orientation markers such as `{U,R}` set the original faces held at U and F for subsequent moves. They can appear at the start or in the middle, persist until another marker, and reset with `{U,F}`. For example, `{U,R} R U R' U'` means `BR U BR' U'`; `R' {U,L} R U R' U'` means `R' F U F' U'`. Each new input starts in the default orientation; markers are resolved before inversion in alg mode.
 - Print-style depth selection: `12-15, 17, 20` searches those exact depths, sorted and deduplicated (0–255). With All solutions enabled, results include every selected depth; otherwise search stops at the first successful depth. Empty input or `auto` finds the first successful depth and returns one or all solutions at that depth.
 - Option to return one solution or all found solutions.
@@ -51,7 +51,7 @@ Solver app:
 - Supports base moves, wide moves, slice moves, and bundled trigger moves exposed by the UI.
 - Restricted pruning mode, where pruning is built around the selected instance move set.
 - Last-layer mode: Separates the center piece that goes to the top layer and the center that goes to bottom so that the solution that the app generates is AUF independent.
-- Right click on a piece on the graphical FTO to do Partial-position input.
+- Right-click a piece to ignore it; right-click again to restore its previous colors. Ignored colors follow pieces through moves and swaps. Pieces loaded already black are restored using their home-slot colors.
 - Shift-click center slots to toggle golden target outlines, without painting. Defined centers of that color must fill as many selected home slots as possible, in any order. Selecting all three slots adds no restriction; neither does defining zero or all three centers.
 - If only one center is partially defined of a color, the ability to choose exactly where the center should end up after the solve.
 

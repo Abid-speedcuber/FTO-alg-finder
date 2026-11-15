@@ -49,6 +49,7 @@ type Props = {
   setup: string;
   inputMode: "setup" | "alg";
   applySignal: number;
+  applyFromSolved?: boolean;
   lastLayerMode: boolean;
   onFacelets: (facelets: number[]) => void;
   onCenterTargets: (targets: CenterTargets) => void;
@@ -66,6 +67,7 @@ function FtoViewer({
   setup,
   inputMode,
   applySignal,
+  applyFromSolved = false,
   lastLayerMode,
   onFacelets,
   onCenterTargets,
@@ -136,14 +138,15 @@ function FtoViewer({
     }
   }, [active]);
 
-  const applyStateRef = useRef({ setup, inputMode });
-  applyStateRef.current = { setup, inputMode };
+  const applyStateRef = useRef({ setup, inputMode, applyFromSolved });
+  applyStateRef.current = { setup, inputMode, applyFromSolved };
 
   useEffect(() => {
     if (applySignal > 0) {
-      const { setup: currentSetup, inputMode: currentMode } = applyStateRef.current;
+      const { setup: currentSetup, inputMode: currentMode, applyFromSolved: fromSolved } = applyStateRef.current;
       try {
         const algorithm = currentMode === "alg" ? invertInputAlgorithm(currentSetup) : resolveInputAlgorithm(currentSetup);
+        if (fromSolved) viewerRef.current?.resetPuzzle();
         viewerRef.current?.applyAlgorithmInstant(algorithm);
         setInputError("");
       } catch (error) {
@@ -229,7 +232,6 @@ function FtoViewer({
           <button onClick={resetPuzzle}>Reset</button>
         </div>
       </div>
-      <p className="hint">Shift-click a center slot to toggle its golden target outline.</p>
       {inputError && <p role="alert">{inputError}</p>}
       {footer}
     </div>

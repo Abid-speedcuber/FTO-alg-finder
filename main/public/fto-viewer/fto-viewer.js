@@ -49,6 +49,7 @@
     var scene;
     var camera;
     var renderer;
+    var resizeObserver = null;
     var canvas;
     var projector;
     var cubeObject;
@@ -56,6 +57,7 @@
     var stickerMeshes = [];
     var faceletToSticker = [];
     var faceletColors = [];
+    var ignoredStickerState = [];
     var puzzle;
     var defaultOrbitX = 0.5;
     var defaultOrbitY = -0.0;
@@ -266,6 +268,7 @@
       if (!sticker) {
         return;
       }
+      ignoredStickerState[sticker[3]] = null;
       var info = centerInfo(sticker[3]);
       if (info && info.orbit === "rl") {
         lastLayerCenterMarks[info.slot] = null;
@@ -328,6 +331,7 @@
       var pow = ((moveName.pow % maxPow) + maxPow) % maxPow;
       var perm = puzzle.moveTable[idx];
       var nextState = [];
+      var nextIgnoredState = [];
       for (var i = 0; i < perm.length; i++) {
         var val = i;
         for (var j = 0; j < pow; j++) {
@@ -338,12 +342,14 @@
           continue;
         }
         nextState[i] = sticker[2];
+        nextIgnoredState[i] = ignoredStickerState[sticker[3]];
       }
       for (var k = 0; k < perm.length; k++) {
         if (!cubePieces[k] || nextState[k] === undefined) {
           continue;
         }
         setStickerColor(k, nextState[k]);
+        ignoredStickerState[cubePieces[k][3]] = nextIgnoredState[k];
         cubePieces[k][1].matrix.copy(cubePieces[k][0]);
         cubePieces[k][1].update();
       }
@@ -614,17 +620,23 @@
       var colorsB = [];
       var marksA = [];
       var marksB = [];
+      var ignoredA = [];
+      var ignoredB = [];
       for (var i = 0; i < fa.length; i++) {
         colorsA.push(faceletColors[fa[i]]);
         colorsB.push(faceletColors[fb[i]]);
         marksA.push(lastLayerMarkForFacelet(fa[i]));
         marksB.push(lastLayerMarkForFacelet(fb[i]));
+        ignoredA.push(ignoredStickerState[fa[i]]);
+        ignoredB.push(ignoredStickerState[fb[i]]);
       }
       for (var i = 0; i < fa.length; i++) {
         setSwapStickerColor(faceletToSticker[fa[i]], colorsB[i]);
         setSwapStickerColor(faceletToSticker[fb[i]], colorsA[i]);
         setLastLayerMarkForFacelet(fa[i], marksB[i]);
         setLastLayerMarkForFacelet(fb[i], marksA[i]);
+        ignoredStickerState[fa[i]] = ignoredB[i];
+        ignoredStickerState[fb[i]] = ignoredA[i];
       }
       rebuildLastLayerTargetsFromMarks();
     }
@@ -632,11 +644,14 @@
     function flipCornerParity(pieceIdx) {
       var slots = pieceSlots[pieceIdx];
       var colors = [];
+      var ignored = [];
       for (var i = 0; i < slots.length; i++) {
         colors.push(faceletColors[slots[i]]);
+        ignored.push(ignoredStickerState[slots[i]]);
       }
       for (var i = 0; i < slots.length; i++) {
         setSwapStickerColor(faceletToSticker[slots[i]], colors[(i + 2) % slots.length]);
+        ignoredStickerState[slots[i]] = ignored[(i + 2) % slots.length];
       }
     }
 
@@ -1019,7 +1034,7 @@
       var onContextMenu = function(e) {
         e.preventDefault();
         endDrag();
-        ignorePieceAt(e.clientX, e.clientY);
+        toggleIgnoredPieceAt(e.clientX, e.clientY);
       };
       var onWheel = function(e) {
         if (!isDragging || activeDragMode !== "pan") {
@@ -1099,26 +1114,44 @@
       notifyState();
     }
 
-    function ignorePieceAt(x, y) {
+    function toggleIgnoredPieceAt(x, y) {
       var stickerIndex = pickSticker(x, y);
-      if (stickerIndex == null || !cubePieces[stickerIndex]) {
-        return;
-      }
+      if (stickerIndex == null || !cubePieces[stickerIndex]) return;
+      clearSwapSelection();
       var faceletIndex = cubePieces[stickerIndex][3];
       var group = pieceFacelets.find(function(facelets) {
         return facelets.indexOf(faceletIndex) !== -1;
-      });
-      if (!group) {
-        group = [faceletIndex];
-      }
+      }) || [faceletIndex];
+      var restore = group.every(function(facelet) { return faceletColors[facelet] === ignoredColor; });
       for (var i = 0; i < group.length; i++) {
-        var groupedSticker = faceletToSticker[group[i]];
-        if (groupedSticker != null) {
+        var facelet = group[i];
+        var groupedSticker = faceletToSticker[facelet];
+        if (groupedSticker == null) continue;
+        if (restore) {
+          var saved = ignoredStickerState[facelet];
+          var color = saved ? saved.color : Math.floor(facelet / 9);
+          setStickerColor(groupedSticker, color);
+          var info = centerInfo(facelet);
+          if (lastLayerMode && info && info.orbit === "rl" && isLastLayerCenterColor(color)) {
+            var colorGroup = selectedCenterGroupForColor(color).color;
+            var role = saved && saved.mark ? saved.mark
+              : info.slot === lastLayerUniqueCenterSlot[colorGroup] ? "fixed" : "top";
+            if (role === "fixed") clearLastLayerFixedCenter(colorGroup);
+            setLastLayerMarkForFacelet(facelet, role);
+          }
+        } else {
+          var saved = ignoredStickerState[facelet] || {
+            color: faceletColors[facelet] === ignoredColor ? Math.floor(facelet / 9) : faceletColors[facelet],
+            mark: lastLayerMarkForFacelet(facelet),
+          };
           setStickerColor(groupedSticker, ignoredColor);
+          ignoredStickerState[facelet] = saved;
         }
       }
+      if (lastLayerMode) rebuildLastLayerTargetsFromMarks();
       render();
       notifyState();
+      notifyCenterTargets();
     }
 
     function pickSticker(x, y) {
@@ -1190,12 +1223,19 @@
     }
 
     function resize() {
-      if (!canvas || !canvas.parentElement) {
-        return;
-      }
-      var rect = canvas.parentElement.getBoundingClientRect();
-      var size = Math.max(220, Math.min(rect.width, rect.height || rect.width));
-      renderer.setSize(size, size);
+      if (!canvas || !canvas.parentElement) return;
+      var host = canvas.parentElement;
+      var width = host.clientWidth;
+      var height = host.clientHeight || width;
+      if (width <= 0 || height <= 0) return;
+      // Layout dimensions are unzoomed CSS pixels. Keep the displayed square
+      // in that coordinate space; getBoundingClientRect already includes CSS zoom.
+      var size = Math.max(220, Math.min(width, height));
+      canvas.style.width = size + "px";
+      canvas.style.height = size + "px";
+      // Draw at physical-pixel resolution, including browser zoom and HiDPI.
+      var pixels = Math.max(1, Math.round(canvas.getBoundingClientRect().width * (window.devicePixelRatio || 1)));
+      if (canvas.width !== pixels || canvas.height !== pixels) renderer.setSize(pixels, pixels);
       render();
     }
 
@@ -1222,6 +1262,11 @@
     }
     setKeyboardEnabled(options.keyboard !== false);
     window.addEventListener("resize", resize);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", resize);
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(container);
+    }
     resize();
     notifyState();
     notifyCenterTargets();
@@ -1336,6 +1381,8 @@
         }
         unbindKeyboard();
         window.removeEventListener("resize", resize);
+        if (window.visualViewport) window.visualViewport.removeEventListener("resize", resize);
+        if (resizeObserver) resizeObserver.disconnect();
         if (canvas && canvas.parentElement) {
           canvas.parentElement.removeChild(canvas);
         }

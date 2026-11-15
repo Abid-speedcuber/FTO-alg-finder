@@ -30,6 +30,7 @@ type Solution = {
 function AlgCombiner({ active = true }: { active?: boolean }) {
   const [scramble, setScramble] = useState("");
   const [scrambleSignal, setScrambleSignal] = useState(0);
+  const [scrambleFromSolved, setScrambleFromSolved] = useState(false);
   const [algText, setAlgText] = useState(() => serializeIntermediateAlgs(DEFAULT_INTERMEDIATE_ALGS));
   const [useTriples, setUseTriples] = useState(false);
   const [running, setRunning] = useState(false);
@@ -63,10 +64,11 @@ function AlgCombiner({ active = true }: { active?: boolean }) {
     setTerminal([]);
   }, []);
 
-  const applyScramble = useCallback(() => {
-    if (!scramble.trim()) {
+  const applyScramble = useCallback((fromSolved = false) => {
+    if (!scramble.trim() && !fromSolved) {
       return;
     }
+    setScrambleFromSolved(fromSolved);
     setScrambleSignal((current) => current + 1);
   }, [scramble]);
 
@@ -209,7 +211,7 @@ function AlgCombiner({ active = true }: { active?: boolean }) {
                 onChange={(event) => setScramble(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
-                    applyScramble();
+                    applyScramble(event.shiftKey);
                   }
                 }}
                 placeholder="e.g. BR U BR' U' R L' D"
@@ -217,7 +219,7 @@ function AlgCombiner({ active = true }: { active?: boolean }) {
                 autoComplete="off"
               />
             </label>
-            <button className="secondary" onClick={applyScramble}>
+            <button className="secondary" title="Apply to the current puzzle; Shift-click to start from solved" onClick={(event) => applyScramble(event.shiftKey)}>
               Apply
             </button>
           </div>
@@ -226,6 +228,7 @@ function AlgCombiner({ active = true }: { active?: boolean }) {
             setup={scramble}
             inputMode="setup"
             applySignal={scrambleSignal}
+            applyFromSolved={scrambleFromSolved}
             lastLayerMode={false}
             onFacelets={handleFacelets}
             onCenterTargets={handleCenterTargets}

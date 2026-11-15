@@ -1712,3 +1712,57 @@ button.depth-info-button:hover {
 .batch-editor-row-status .batch-remove { flex-shrink: 0; }
 
 .batch-editor-visuals .batch-visual-link.text-selected { background: #b8d8ff; }
+
+.how-to-modal {
+  width: min(880px, calc(100vw - 32px));
+  height: min(850px, calc(100dvh - 40px));
+  overflow: hidden;
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  border: 1px solid #d4d9df;
+  border-radius: 14px;
+  color: #1f2328;
+  background: #fff;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 0.28);
+}
+
+.how-to-header, .how-to-content { min-width: 0; }
+.how-to-modal[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.how-to-modal::backdrop { background: rgb(23 26 31 / 0.45); }
+.how-to-header { padding: 20px 24px 16px; border-bottom: 1px solid #e4e8ed; }
+.how-to-header h2 { margin: 0; font-size: 20px; }
+.how-to-header p { margin: 8px 0 14px; color: #59636e; font-size: 13px; }
+.how-to-topics { display: flex; flex-wrap: wrap; gap: 6px; }
+.how-to-topics button {
+  padding: 5px 9px;
+  border: 1px solid #dce2e8;
+  border-radius: 6px;
+  background: #f7f9fb;
+  color: #33465a;
+  font-size: 12px;
+  font-weight: 500;
+}
+.how-to-topics button:hover { background: #eaf0f6; }
+.how-to-content { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 22px 24px 28px; font-size: 14px; line-height: 1.65; }
+.how-to-content section { scroll-margin-top: 20px; }
+.how-to-content section + section { margin-top: 28px; padding-top: 22px; border-top: 1px solid #e4e8ed; }
+.how-to-content h3 { margin: 0 0 12px; font-size: 16px; }
+.how-to-content p { margin: 0 0 12px; }
+.how-to-content ul { padding-left: 22px; margin: 0 0 14px; }
+.how-to-content li + li { margin-top: 7px; }
+.how-to-content code, .how-to-content kbd { font-size: 0.92em; white-space: normal; overflow-wrap: anywhere; }
+.how-to-content kbd { padding: 1px 5px; border: 1px solid #d4d9df; border-radius: 4px; background: #f7f9fb; }
+.how-to-table-scroll { overflow-x: auto; margin: 14px 0; }
+.how-to-content table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.how-to-content caption { margin-bottom: 7px; text-align: left; font-weight: 600; color: #59636e; }
+.how-to-content th, .how-to-content td { padding: 8px 10px; border: 1px solid #e0e5eb; vertical-align: top; }
+.how-to-content th { background: #f7f9fb; font-weight: 600; }
+.how-to-content section:focus-visible { outline: 2px solid #698aaf; outline-offset: 5px; }
+
+@media (max-width: 600px) {
+  .how-to-modal { width: calc(100vw - 16px); height: calc(100dvh - 20px); max-height: calc(100dvh - 20px); }
+  .how-to-header { padding: 16px; }
+  .how-to-content { padding: 18px 16px 24px; }
+  .how-to-topics { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .how-to-topics button { flex-shrink: 0; }
+}
