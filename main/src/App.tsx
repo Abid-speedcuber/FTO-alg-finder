@@ -1648,14 +1648,10 @@ function App() {
                 </button>
               </div>
             </> : <>
-              <p className="modal-subtitle">Store positions within the chosen depth of the goal. Saved tables are used automatically for compatible searches in the same mode, alongside pattern pruning.</p>
               <label className="check modal-check">
                 <input type="checkbox" checked={bloomLastLayer} onChange={(event) => setBloomLastLayer(event.target.checked)} />
-                Last-layer mode (free leading/trailing U, unique centers)
+                Last-layer mode
               </label>
-              <div className="hint">{bloomLastLayer
-                ? "Matches the last-layer solver’s center identities and free U adjustments, even if U is absent from the selected moves. Depth counts the moves between those adjustments."
-                : "Matches the exact full-position goal, with no free U adjustments."}</div>
               <div className="bloom-controls">
                 <label className="field">Depth
                   <input type="number" min="1" max="20" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
@@ -1664,10 +1660,8 @@ function App() {
                   <input type="number" min="1" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
                 </label>
               </div>
-              <div className="hint">No fixed memory cap. Large tables use system RAM; allocation is checked against available memory. Generation stops if the table fills up. The saved table may be smaller than the cap. Deeper tables can take a long time to build; Stop cancels the build.</div>
               {pruningMovePool(bloomMoves, setBloomMoves)}
               {partialGoalControls("bloom", bloomGoal)}
-              <div className="hint">Tables cover searches using any subset of their moves and compatible defined-piece goals.</div>
               <div className="modal-footer">
                 <button className="primary" onClick={generateBloomTable} disabled={running || !validBloom || (bloomGoal !== null && (!Number.isInteger(Number(partialMemory)) || Number(partialMemory) < 1 || Number(partialMemory) > 4096))}>Generate Bloom table</button>
               </div>

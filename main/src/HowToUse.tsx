@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 const topics = [
+  ["search-guide", "How to search"],
   ["input", "Input & notation"],
   ["viewer", "Viewer controls"],
   ["partial", "Partial positions"],
@@ -40,12 +41,46 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <h2 id="how-to-title">How to use</h2>
           <button type="button" className="secondary" autoFocus onClick={onClose}>Close</button>
         </div>
-        <p>Input controls, partial goals, notation, and search behavior.</p>
+        <p>Why the app works this way, and how to get the most out of it.</p>
+      </header>
+      <div className="how-to-body">
         <nav aria-label="Help topics" className="how-to-topics">
+          <span className="how-to-topics-label">In this guide</span>
           {topics.map(([id, label]) => <button key={id} type="button" onClick={() => jump(id)}>{label}</button>)}
         </nav>
-      </header>
-      <div className="how-to-content">
+        <label className="how-to-topic-picker">
+          Jump to
+          <select defaultValue="search-guide" onChange={(event) => jump(event.target.value)}>
+            {topics.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
+        <div className="how-to-content">
+        <section id="how-to-search-guide" tabIndex={-1}>
+          <h3>How to search</h3>
+          <h4>Why instances exist</h4>
+          <p>Allowing every move when generating a pruning table makes the table take much longer to build and weakens its pruning, slowing down your searches too. An <strong>instance</strong> gives a particular move set its own space, with pruning tables built for that set.</p>
+          <p>Instances serve three purposes:</p>
+          <ol>
+            <li><strong>Faster searches.</strong> Build tables around the moves you actually intend to use.</li>
+            <li><strong>A cleaner right sidebar.</strong> Keep the relevant moves easy to find.</li>
+            <li><strong>Separate workflows.</strong> Give each use of the solver its own move set and tables.</li>
+          </ol>
+          <h4>Choose your generators carefully</h4>
+          <p>This app is designed to find algorithms quickly. Treating it as a general-purpose FTO solver can lead to very long searches. The moves you allow have a huge effect on how much work the solver has to do.</p>
+          <p>For a practical algorithm, you usually want to stick to four or five move types rather than mixing seven different ones. Start with move sets you would actually be comfortable executing.</p>
+          <p>For example, suppose you like algorithms using any of these sets:</p>
+          <ul>
+            <li><code>R Rw U</code></li>
+            <li><code>R Rw BR U</code></li>
+            <li><code>R Rw F U</code></li>
+            <li><code>R Rw U D</code></li>
+            <li><code>R Rw U L</code></li>
+          </ul>
+          <p>It is tempting to enable <code>R Rw L U BR F D</code> and search them all at once. That also allows every mixture of those seven move types, making the search space much larger and potentially taking ages to finish.</p>
+          <p><strong>Run those four searches separately instead.</strong> Keep each search focused on one move set to get the most speed out of the solver and find algorithms you would actually use.</p>
+          <p>You can speed up searches further with pruning and Bloom tables. See <a href="#how-to-tables" onClick={(event) => { event.preventDefault(); jump("tables"); }}>Pruning tables &amp; storage</a> for how to build and use them.</p>
+        </section>
+
         <section id="how-to-input" tabIndex={-1}>
           <h3>Input &amp; notation</h3>
           <p><strong>Setup Move</strong> applies the sequence you enter. <strong>alg</strong> applies its inverse to construct a case for that algorithm. Apply acts on the current puzzle. Hold Shift while clicking Apply to reset to solved first, then apply the input. This works in Setup Move and alg mode, and in the combiner; Shift+Enter also works in the combiner input. The batch visual editor’s Apply setup always starts from solved.</p>
@@ -174,6 +209,7 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           </table></div>
           <p>Press Escape or Close to dismiss this guide.</p>
         </section>
+        </div>
       </div>
     </dialog>
   );

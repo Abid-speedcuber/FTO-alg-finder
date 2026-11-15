@@ -62,9 +62,7 @@ export default function DepthHelp() {
     {open ? createPortal(
       <div ref={popup} id="depth-help-popup" role="tooltip" className="depth-help-popup" style={position}
         onMouseEnter={cancelClose} onMouseLeave={leave}>
-        <p><code>12-15, 17, 20</code>: depths and inclusive ranges (0–255).</p>
-        <p><strong>All:</strong> every selected depth. <strong>Single:</strong> lowest first, stop on success.</p>
-        <p><code>auto</code> or blank: first successful depth.</p>
+        <p><code>12-15, 17, 20</code>: depths and inclusive ranges.</p>
       </div>, document.body,
     ) : null}
   </>;

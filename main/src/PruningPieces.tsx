@@ -18,11 +18,10 @@ export default function PruningPieces({ initial, lastLayer, faceColors, onSave, 
   }
   return <dialog ref={dialog} className="pruning-pieces-modal" aria-labelledby="pruning-pieces-title" onCancel={onClose}>
     <div className="modal-title-row"><h2 id="pruning-pieces-title">Defined pieces for this table</h2><button className="secondary" onClick={onClose}>Cancel</button></div>
-    <p>Click a piece to undefine it. Click again to restore it. Drag to orbit the puzzle.</p>
-    <p className="hint">The table targets the remaining pieces in their solved positions. This selection does not change the puzzle in the main window.</p>
+    <p>Left-click a piece to undefine it. Click again to restore it.</p>
     <FtoViewer setup="" inputMode="setup" applySignal={0} lastLayerMode={lastLayer} pieceSelection
       initialState={initial ?? undefined} faceColors={faceColors} viewerApiRef={viewer}
       onFacelets={setFacelets} onCenterTargets={setTargets} />
-    <div className="modal-footer"><span className="hint">{facelets.filter(c => c === 8).length} stickers undefined</span><button className="primary" onClick={save}>Use these pieces</button></div>
+    <div className="modal-footer"><button className="primary" onClick={save}>Confirm</button></div>
   </dialog>;
 }
