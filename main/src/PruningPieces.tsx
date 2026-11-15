@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
+import FtoViewer, { type CenterTargets, type FtoViewerApi, type IgnoredStickerState } from "./FtoViewer";
 
-export type PruningGoal = { facelets: number[]; centerTargets: CenterTargets };
+export type PruningGoal = { facelets: number[]; centerTargets: CenterTargets; ignoredStickerState?: IgnoredStickerState };
 type Props = { initial: PruningGoal | null; lastLayer: boolean; faceColors: string[]; onSave: (goal: PruningGoal | null) => void; onClose: () => void };
 
 export default function PruningPieces({ initial, lastLayer, faceColors, onSave, onClose }: Props) {
@@ -14,7 +14,7 @@ export default function PruningPieces({ initial, lastLayer, faceColors, onSave, 
     const api = viewer.current;
     if (!api) return;
     const colors = api.getFacelets();
-    onSave(colors.includes(8) ? { facelets: colors, centerTargets: api.getCenterTargets() } : null);
+    onSave(colors.includes(8) ? { facelets: colors, centerTargets: api.getCenterTargets(), ignoredStickerState: api.getIgnoredStickerState() } : null);
   }
   return <dialog ref={dialog} className="pruning-pieces-modal" aria-labelledby="pruning-pieces-title" onCancel={onClose}>
     <div className="modal-title-row"><h2 id="pruning-pieces-title">Defined pieces for this table</h2><button className="secondary" onClick={onClose}>Cancel</button></div>

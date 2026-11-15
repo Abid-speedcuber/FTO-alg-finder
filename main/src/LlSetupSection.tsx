@@ -92,7 +92,7 @@ function LlSetupSection({ facelets, viewerApiRef }: Props) {
     }
     const next = direction === 1 ? applyU(facelets) : applyUPrime(facelets);
     expectedRef.current = next;
-    viewer.setFacelets(next);
+    viewer.applyAlgorithmInstant(direction === 1 ? "U" : "U'");
   }
 
   function renderOption(group: LlGroup, option: EpOption | CpOption) {

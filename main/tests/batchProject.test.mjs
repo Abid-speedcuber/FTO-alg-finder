@@ -71,3 +71,21 @@ test('entitled center slot sets survive batch round trips and reject invalid hom
   delete p.cases[0].centerTargets.ufSlots; delete p.cases[0].centerTargets.rlSlots;
   assert.doesNotThrow(() => parseProject(JSON.stringify(p)));
 });
+
+
+test('ignored sticker colors and last-layer roles survive portable projects', () => {
+  const p = createProject(['R'], ['R']);
+  p.cases[0].facelets = Array(72).fill(8);
+  p.cases[0].ignoredStickerState = Array(72).fill(null);
+  p.cases[0].ignoredStickerState[47] = {color: 5, mark: 'fixed'};
+  const restored = parseProject(JSON.stringify(p));
+  assert.deepEqual(restored.cases[0].ignoredStickerState, p.cases[0].ignoredStickerState);
+  assert.deepEqual(JSON.parse(csv(projectCsv(p))[1][1]).ignoredStickerState, p.cases[0].ignoredStickerState);
+  assert.deepEqual(clearCase(restored.cases[0]).ignoredStickerState, p.cases[0].ignoredStickerState);
+  for (const invalid of [[], Array(72).fill({color: 8, mark: null}), Array(72).fill({color: 0, mark: 'unknown'})]) {
+    const copy = structuredClone(p); copy.cases[0].ignoredStickerState = invalid;
+    assert.throws(() => parseProject(JSON.stringify(copy)), /remembered sticker/);
+  }
+  delete p.cases[0].ignoredStickerState;
+  assert.doesNotThrow(() => parseProject(JSON.stringify(p)), 'older projects remain compatible');
+});

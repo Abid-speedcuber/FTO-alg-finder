@@ -2,7 +2,7 @@ import { rotateAlgorithm, normalizeMoveSelection, type ExecutionHold } from "./r
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import FtoViewer, { type CenterTargets, type FtoViewerApi } from "./FtoViewer";
+import FtoViewer, { type CenterTargets, type FtoViewerApi, type IgnoredStickerState } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
 import BatchCaseInput, { type BatchCaseInputApi } from "./BatchCaseInput";
@@ -27,7 +27,7 @@ type BatchEvent = { runId: string; kind: string; caseId?: string; depth?: number
 
 function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   entry: BatchCase; number: number; lastLayer: boolean; faceColors: string[];
-  onSave: (facelets: number[], targets: CenterTargets) => void; onClose: () => void;
+  onSave: (facelets: number[], targets: CenterTargets, ignoredStickerState: IgnoredStickerState) => void; onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const viewer = useRef<FtoViewerApi | null>(null);
@@ -46,7 +46,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
       const response = await invoke<{ errors: unknown[] }>("validate_facelets", { facelets: colors });
       // Native validation also happens on solve. Keep invalid edits in the modal.
       if (response?.errors?.length) { setError("This state has invalid pieces. Correct the colors or center targets before saving."); return; }
-      onSave(colors, targets);
+      onSave(colors, targets, api.getIgnoredStickerState());
     } catch (e) { setError(String(e)); }
   }
   return <dialog ref={dialog} className="batch-visual-dialog" aria-labelledby="batch-case-title" onCancel={onClose}>
@@ -54,7 +54,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
     <div className="batch-visual-layout">
       <FtoViewer setup={setup} inputMode="setup" applySignal={apply} applyFromSolved lastLayerMode={lastLayer}
         onFacelets={faceletChange} onCenterTargets={targetChange} faceColors={faceColors} viewerApiRef={viewer}
-        initialState={entry.facelets ? { facelets: entry.facelets, centerTargets: entry.centerTargets ?? undefined } : undefined} />
+        initialState={entry.facelets ? { facelets: entry.facelets, centerTargets: entry.centerTargets ?? undefined, ignoredStickerState: entry.ignoredStickerState } : undefined} />
       <div className="batch-visual-tools">
         <label>Setup moves<input value={setup} onChange={e => setSetup(e.target.value)} /></label>
         <button type="button" onClick={() => setApply(v => v + 1)}>Apply setup</button>
@@ -155,7 +155,7 @@ export default function BatchSolver({ accelerationControl, executionHold, active
         }
         if (e.kind === "case" && e.case) {
           setActiveCases(cases => { const next = { ...cases }; delete next[e.case!.id]; return next; });
-          setProject(p => ({ ...p, updatedAt: Date.now(), cases: p.cases.map(c => c.id === e.case!.id ? e.case! : c) }));
+          setProject(p => ({ ...p, updatedAt: Date.now(), cases: p.cases.map(c => c.id === e.case!.id ? { ...e.case!, ignoredStickerState: c.ignoredStickerState } : c) }));
         }
         if (["done", "paused", "error"].includes(e.kind)) {
           runId.current = null; setActiveCases({});
@@ -289,6 +289,6 @@ export default function BatchSolver({ accelerationControl, executionHold, active
         </section>
       </aside>
     </div>
-    {active && editEntry && !running && <CaseEditor key={editEntry.id} entry={editEntry} number={editNumber} lastLayer={project.settings.lastLayer} faceColors={faceColors} onClose={() => { setEditing(null); focus(editEntry.id); }} onSave={(facelets, centerTargets) => { updateCases(entries => entries.map(c => c.id === editEntry.id ? clearCase({ ...c, facelets, centerTargets }) : c)); setEditing(null); }} />}
+    {active && editEntry && !running && <CaseEditor key={editEntry.id} entry={editEntry} number={editNumber} lastLayer={project.settings.lastLayer} faceColors={faceColors} onClose={() => { setEditing(null); focus(editEntry.id); }} onSave={(facelets, centerTargets, ignoredStickerState) => { updateCases(entries => entries.map(c => c.id === editEntry.id ? clearCase({ ...c, facelets, centerTargets, ignoredStickerState }) : c)); setEditing(null); }} />}
   </section>;
 }

@@ -268,7 +268,17 @@
       if (!sticker) {
         return;
       }
-      ignoredStickerState[sticker[3]] = null;
+      var facelet = sticker[3];
+      if (color === ignoredColor) {
+        // Mask the sticker without discarding the piece underneath it.
+        if (faceletColors[facelet] !== ignoredColor) {
+          ignoredStickerState[facelet] = {
+            color: faceletColors[facelet], mark: lastLayerMarkForFacelet(facelet),
+          };
+        }
+      } else {
+        ignoredStickerState[facelet] = null;
+      }
       var info = centerInfo(sticker[3]);
       if (info && info.orbit === "rl") {
         lastLayerCenterMarks[info.slot] = null;
@@ -872,7 +882,14 @@
       }
     }
 
-    function setFacelets(colors) {
+    function getIgnoredStickerState() {
+      return Array.from({ length: 72 }, function(_, facelet) {
+        var saved = faceletColors[facelet] === ignoredColor && ignoredStickerState[facelet];
+        return saved ? { color: saved.color, mark: saved.mark } : null;
+      });
+    }
+
+    function setFacelets(colors, remembered) {
       if (!colors || colors.length !== 72) {
         return;
       }
@@ -883,6 +900,13 @@
           continue;
         }
         setStickerColor(stickerIndex, colors[f]);
+        var saved = remembered && remembered[f];
+        if (colors[f] === ignoredColor && saved && Number.isInteger(saved.color)
+            && saved.color >= 0 && saved.color < ignoredColor) {
+          ignoredStickerState[f] = {
+            color: saved.color, mark: saved.mark === "fixed" || saved.mark === "top" ? saved.mark : null,
+          };
+        }
       }
       if (lastLayerMode) {
         assignLastLayerCenterMarks();
@@ -1278,6 +1302,7 @@
       applyAlgorithmInstant: applyAlgorithmInstant,
       queueMove: queueMove,
       getFacelets: getFacelets,
+      getIgnoredStickerState: getIgnoredStickerState,
       setFacelets: setFacelets,
       setKeyboardEnabled: setKeyboardEnabled,
       getFaceletTransition: getFaceletTransition,

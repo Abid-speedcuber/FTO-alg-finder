@@ -129,6 +129,39 @@ for (const path of ['../public/fto-viewer/fto-viewer.js', '../../public/fto-view
     api.setFacelets(loaded); rightClick(0);
     assert.deepEqual(Array.from(api.getFacelets()), solved);
   });
+  test(`${path}: loading a mask preserves the underlying colors, including repeated loads`, () => {
+    const {api, rightClick} = viewer(path);
+    api.applyAlgorithmInstant("R F U");
+    const before = Array.from(api.getFacelets());
+    const mask = before.slice();
+    for (const slot of [0,54,9,63]) mask[slot] = 8;
+    api.setFacelets(mask);
+    api.setFacelets(mask);
+    rightClick(0);
+    assert.deepEqual(Array.from(api.getFacelets()), before);
+  });
+  test(`${path}: saved black pieces retain their colors through a fresh viewer and later moves`, () => {
+    const original = viewer(path), expected = viewer(path), restored = viewer(path);
+    for (const current of [original, expected]) current.api.applyAlgorithmInstant("R F U");
+    for (const slot of [0,1,20]) original.rightClick(slot);
+    const saved = JSON.parse(JSON.stringify({facelets: original.api.getFacelets(), remembered: original.api.getIgnoredStickerState()}));
+    restored.api.setFacelets(saved.facelets, saved.remembered);
+    for (const current of [restored, expected]) current.api.applyAlgorithmInstant("L U R'");
+    while (restored.api.getFacelets().includes(8)) restored.rightClick(restored.api.getFacelets().findIndex(color => color === 8));
+    assert.deepEqual(Array.from(restored.api.getFacelets()), Array.from(expected.api.getFacelets()));
+  });
+  test(`${path}: saved black last-layer centers retain their distinguished identity`, () => {
+    const original = viewer(path), restored = viewer(path);
+    original.api.setLastLayerMode(true);
+    const before = JSON.parse(JSON.stringify(original.api.getCenterTargets()));
+    original.rightClick(47);
+    restored.api.setLastLayerMode(true);
+    restored.api.setFacelets(original.api.getFacelets(), JSON.parse(JSON.stringify(original.api.getIgnoredStickerState())));
+    restored.api.setCenterTargets?.(original.api.getCenterTargets());
+    restored.rightClick(47);
+    assert.equal(restored.api.getFacelets()[47], 5);
+    assert.deepEqual(JSON.parse(JSON.stringify(restored.api.getCenterTargets())), before);
+  });
   test(`${path}: toggling the odd last-layer center restores its role`, () => {
     const {api, rightClick} = viewer(path);
     api.setLastLayerMode(true);

@@ -2,11 +2,14 @@ import { invertInputAlgorithm, resolveInputAlgorithm } from "./rotation";
 import type { MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
+export type IgnoredStickerState = Array<{ color: number; mark: "fixed" | "top" | null } | null>;
+
 export type FtoViewerApi = {
   applyAlgorithm(algorithm: string): void;
   applyAlgorithmInstant(algorithm: string): void;
   getFacelets(): number[];
-  setFacelets(facelets: number[]): void;
+  setFacelets(facelets: number[], ignoredStickerState?: IgnoredStickerState): void;
+  getIgnoredStickerState(): IgnoredStickerState;
   setKeyboardEnabled(enabled: boolean): void;
   getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
@@ -62,7 +65,7 @@ type Props = {
   footer?: ReactNode;
   active?: boolean;
   pieceSelection?: boolean;
-  initialState?: { facelets: number[]; centerTargets?: CenterTargets };
+  initialState?: { facelets: number[]; centerTargets?: CenterTargets; ignoredStickerState?: IgnoredStickerState };
 };
 
 function FtoViewer({
@@ -164,7 +167,7 @@ function FtoViewer({
   useEffect(() => {
     const initial = initialStateRef.current;
     if (initial) {
-      viewerRef.current?.setFacelets(initial.facelets);
+      viewerRef.current?.setFacelets(initial.facelets, initial.ignoredStickerState);
       if (initial.centerTargets) viewerRef.current?.setCenterTargets(initial.centerTargets);
     }
   }, []);

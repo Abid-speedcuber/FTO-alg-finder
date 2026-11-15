@@ -1,4 +1,4 @@
-import type { CenterTargets } from "./FtoViewer";
+import type { CenterTargets, IgnoredStickerState } from "./FtoViewer";
 
 export type SearchCheckpoint = {
   version: 1; depth: number; input: number[];
@@ -6,6 +6,7 @@ export type SearchCheckpoint = {
 };
 export type BatchCase = {
   id: string; setup: string; facelets?: number[] | null; centerTargets?: CenterTargets | null;
+  ignoredStickerState?: IgnoredStickerState;
   deferredDepth?: number | null; checkpoint?: SearchCheckpoint | null;
   completedDepths: number[]; firstDepth: number | null;
   solutions: { depth: number; algorithm: string }[]; nodes: number; error: string | null;
@@ -33,7 +34,7 @@ export function projectCsv(project: BatchProject): string {
   const rows: unknown[][] = [["Case", "Setup / state", "Depth", "Solution", "First solution depth", "Completed depths", "Status", "Nodes", "Allowed moves", "Selected depths", "Last layer", "Deferred depth"]];
   project.cases.forEach((entry, index) => {
     if (!hasCase(entry)) return;
-    const state = entry.facelets ? JSON.stringify({ facelets: entry.facelets, centerTargets: entry.centerTargets }) : entry.setup;
+    const state = entry.facelets ? JSON.stringify({ facelets: entry.facelets, centerTargets: entry.centerTargets, ignoredStickerState: entry.ignoredStickerState }) : entry.setup;
     const status = entry.error || (entry.solutions.length ? "Solved" : project.status === "done" ? "No solution in selected depths" : entry.deferredDepth != null ? `Deferred at depth ${entry.deferredDepth}` : "Pending");
     for (const solution of entry.solutions.length ? entry.solutions : [null]) {
       rows.push([index + 1, state, solution?.depth, solution?.algorithm, entry.firstDepth, entry.completedDepths.join(", "), status, entry.nodes, project.settings.moves.join(" "), project.settings.depth || "auto", project.settings.lastLayer ? "Yes" : "No", entry.deferredDepth]);
@@ -61,6 +62,9 @@ export function parseProject(text: string): BatchProject {
         !Array.isArray(c.solutions) || !c.solutions.every(s => integer(s.depth) && typeof s.algorithm === "string") ||
         !Number.isFinite(c.nodes) || c.nodes < 0 || !(c.error === null || typeof c.error === "string") ||
         (c.facelets != null && (!Array.isArray(c.facelets) || c.facelets.length !== 72 || !c.facelets.every(v => Number.isInteger(v) && v >= 0 && v <= 8)))) throw Error("Invalid case in batch project.");
+    if (c.ignoredStickerState !== undefined && (!Array.isArray(c.ignoredStickerState) || c.ignoredStickerState.length !== 72 ||
+        c.ignoredStickerState.some(saved => saved !== null && (!saved || !Number.isInteger(saved.color) || saved.color < 0 || saved.color > 7 ||
+          ![null, "fixed", "top"].includes(saved.mark))))) throw Error("Invalid remembered sticker colors.");
     if (c.checkpoint != null) {
       const cp = c.checkpoint;
       const byte = (v: unknown) => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 255;
