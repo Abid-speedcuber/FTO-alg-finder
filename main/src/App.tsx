@@ -77,6 +77,7 @@ const moveChooserNote =
   "Move labels follow the execution hold. Selections refer to the same physical moves when the hold changes. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
 
 const INSTANCES_KEY = "fto.instances.v1";
+const GPU_KEY = "fto.gpuAcceleration.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
 const defaultFaceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 const faceColorSlots = [
@@ -684,7 +685,39 @@ function App() {
   const [bloomMoves, setBloomMoves] = useState<string[]>([]);
   const [bloomLastLayer, setBloomLastLayer] = useState(true);
   const [bloomDepth, setBloomDepth] = useState("8");
-  const [useGpu, setUseGpu] = useState(true);
+  const [useGpu, setUseGpu] = useState(() => {
+    try { return localStorage.getItem(GPU_KEY) === "true"; } catch { return false; }
+  });
+  const [generationStatus, setGenerationStatus] = useState({ active: false, gpuEnabled: false, backend: "cpu", message: "" });
+  const [gpuNotice, setGpuNotice] = useState("");
+  const [gpuSwitchPending, setGpuSwitchPending] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem(GPU_KEY, String(useGpu)); } catch { /* Optional persistence. */ }
+  }, [useGpu]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<typeof generationStatus>("generation-status", ({ payload }) => {
+      if (disposed) return;
+      setGenerationStatus(payload);
+      if (!payload.gpuEnabled && payload.message.includes("without losing progress")) {
+        setUseGpu(false);
+        setGpuNotice(payload.message);
+      }
+    }).then(remove => {
+      if (disposed) remove(); else unlisten = remove;
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  async function changeGpu(enabled: boolean, remember = true) {
+    if (remember) setUseGpu(enabled);
+    setGpuNotice("");
+    setGpuSwitchPending(true);
+    try { await invoke("set_generation_gpu", { enabled }); }
+    catch (error) {
+      setGpuNotice(`${remember ? "Preference saved. " : ""}Could not change the running generation: ${String(error)}`);
+    } finally { setGpuSwitchPending(false); }
+  }
   const [bloomMemory, setBloomMemory] = useState("200");
   const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
     Number(bloomDepth) >= 1 && Number(bloomDepth) <= 20 && Number.isInteger(Number(bloomMemory)) &&
@@ -997,6 +1030,7 @@ function App() {
   useEffect(() => {
     let disposed = false;
     let unlisteners: (() => void)[] = [];
+    let completed = false;
     (async () => {
       const fns = await Promise.all([
         listen<SolveLine>("solve-line", (event) => {
@@ -1022,6 +1056,7 @@ function App() {
           appendLine(event.payload.kind, event.payload.text, createdAt);
         }),
         listen<SolveResult>("solve-result", (event) => {
+          completed = true;
           setResult(event.payload);
           setRunning(false);
           resetPruningTimer();
@@ -1029,6 +1064,7 @@ function App() {
           refreshCacheStatus();
         }),
         listen<string>("solve-error", (event) => {
+          completed = true;
           retainStreamedSolutions();
           appendLine("error", `error: ${event.payload}`);
           setRunning(false);
@@ -1037,6 +1073,7 @@ function App() {
           refreshCacheStatus();
         }),
         listen("solve-cancelled", () => {
+          completed = true;
           retainStreamedSolutions();
           setTerminal((lines) => {
             if (lines[lines.length - 1]?.kind === "cancel") {
@@ -1052,6 +1089,7 @@ function App() {
           refreshCacheStatus();
         }),
         listen("bloom-generated", () => {
+          completed = true;
           setRunning(false);
           resetPruningTimer();
           setStatus("Bloom table generated");
@@ -1059,6 +1097,7 @@ function App() {
           refreshPruningTables();
         }),
         listen("pruning-generated", () => {
+          completed = true;
           setRunning(false);
           resetPruningTimer();
           setStatus("Pruning table generated");
@@ -1070,6 +1109,15 @@ function App() {
         fns.forEach((fn) => fn());
       } else {
         unlisteners = fns;
+        try {
+          const snapshot = await invoke<{ running: boolean; batch: boolean; lines: SolveLine[]; generation: typeof generationStatus | null }>("get_solver_status");
+          if (!disposed && !completed && snapshot.running && !snapshot.batch) {
+            setRunning(true);
+            setStatus("Reconnected to the running operation");
+            setTerminal(snapshot.lines.map(line => ({ ...line, id: ++lineId.current, createdAt: Date.now() })));
+            if (snapshot.generation) setGenerationStatus(snapshot.generation);
+          }
+        } catch { /* Older preview bridges may not expose native recovery. */ }
       }
     })();
     return () => {
@@ -1210,8 +1258,9 @@ function App() {
   }
 
   async function stopSolve() {
-    await invoke("stop_solve");
-    setStatus("Stopping");
+    setStatus("Stopping…");
+    try { await invoke("stop_solve"); }
+    catch (error) { appendLine("error", `Could not stop: ${String(error)}`); }
   }
 
   async function generatePruningTable() {
@@ -1303,6 +1352,7 @@ function App() {
     try {
       localStorage.removeItem(INSTANCES_KEY);
       localStorage.removeItem(FACE_COLORS_KEY);
+      localStorage.removeItem(GPU_KEY);
     } catch {
       // storage unavailable; keep going with in-memory reset
     }
@@ -1310,6 +1360,8 @@ function App() {
     setInstances([instance]);
     setActiveId(instance.id);
     setFaceColors(defaultFaceColors);
+    setUseGpu(false);
+    setGpuNotice("");
     setSetup("");
     setInputMode("setup");
     setApplySignal((current) => current + 1);
@@ -1340,6 +1392,13 @@ function App() {
     stateErrorsDialog.current?.close();
     setStateErrorsOpen(false);
   }
+
+  const accelerationControl = (generationStatus.active || gpuNotice) && <aside className="generation-acceleration" aria-label="Table generation acceleration">
+        {gpuNotice && <div className="generation-notice"><p role="status">{gpuNotice}</p><button type="button" aria-label="Dismiss acceleration notice" onClick={()=>setGpuNotice("")}>×</button></div>}
+        {generationStatus.active && generationStatus.backend === "cpu" && !generationStatus.gpuEnabled && <button type="button" className="gpu-enable-link" disabled={gpuSwitchPending} title="Use GPU for this build; change the default in Settings" onClick={()=>void changeGpu(true, false)}>{gpuSwitchPending ? "Requesting GPU…" : "Enable GPU acceleration"}</button>}
+        {generationStatus.active && generationStatus.gpuEnabled && generationStatus.backend === "cpu" && <p role="status">Testing GPU speed against CPU…</p>}
+        {generationStatus.active && generationStatus.backend === "gpu" && <p role="status">Generating on GPU</p>}
+      </aside>;
 
   return (
     <main>
@@ -1492,6 +1551,11 @@ function App() {
                 onChange={(event) => setShowDebugInfo(event.target.checked)}
               />
             </label>
+            <label className="settings-toggle modal-toggle">
+              <span>Use GPU acceleration by default for table generation</span>
+              <input type="checkbox" checked={useGpu} disabled={gpuSwitchPending} onChange={(event) => void changeGpu(event.target.checked)} />
+            </label>
+            <div className="hint">CPU is the default. GPU generation is timed against the CPU and switches back if slower. Changing this setting during a build keeps completed work.</div>
             <div className="settings-group">
               <div className="settings-group-title">
                 <h3>Face colors</h3>
@@ -1538,11 +1602,6 @@ function App() {
               <button role="tab" aria-selected={pruningKind === "pattern"} className={pruningKind === "pattern" ? "primary" : "secondary"} onClick={() => setPruningKind("pattern")}>Pattern tables</button>
               <button role="tab" aria-selected={pruningKind === "bloom"} className={pruningKind === "bloom" ? "primary" : "secondary"} onClick={() => setPruningKind("bloom")}>Bloom tables</button>
             </div>
-            <label className="check modal-check">
-              <input type="checkbox" checked={useGpu} onChange={(event) => setUseGpu(event.target.checked)} />
-              Use GPU acceleration when available
-            </label>
-            <div className="hint">Adapts batch sizes to your GPU and leaves room for the desktop. Uses the CPU for small jobs, when a timing pilot favors it, or when GPU support or memory is insufficient.</div>
             {pruningKind === "pattern" ? <>
               <div className="option-list modal-option-list">
                 <label className="check modal-check">
@@ -1845,7 +1904,8 @@ function App() {
             stateInvalid={stateErrors.length > 0}
             onInvalidStateClick={() => setStateErrorsOpen(true)}
             footer={
-              <div className="solver-output">
+              <div className={`solver-output${generationStatus.active || gpuNotice ? " has-acceleration" : ""}`}>
+                {accelerationControl}
                 <div className="output-toolbar">
                   <input
                     className="output-rotation"
@@ -2028,7 +2088,7 @@ function App() {
         <AlgCombiner active={mode === "combiner" && !howToOpen} />
       </div>
       <div hidden={mode !== "batch"}>
-        <BatchSolver executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
+        <BatchSolver accelerationControl={accelerationControl} executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

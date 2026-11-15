@@ -63,18 +63,14 @@ is not included yet. Generation runs in the background with progress and can be
 cancelled with **Stop**. If the table fills up, generation stops without saving an
 incomplete table or replacing an existing one.
 
-**Use GPU acceleration when available** applies to both generators and to table
-builds needed by subsequent solves. The native compute path uses wgpu (Vulkan,
+**Table generation uses the CPU by default.** Enable GPU acceleration in Settings to remember the choice for later builds, or click the underlined **Enable GPU acceleration** link at the bottom right of the output area during a CPU build. The link affects the current build; Settings controls the default for later builds. The active build switches at a bounded batch boundary without restarting. If the timing comparison favors the CPU, a notice explains the fallback, CPU generation resumes with completed work retained, and the saved preference returns to CPU. This applies to both generators and to table builds needed by subsequent solves. The native compute path uses wgpu (Vulkan,
 Metal, DX12, or compatible OpenGL), prefers a discrete GPU, and falls back to CPU
-when unsupported. Small jobs stay on CPU; larger jobs compare CPU/GPU throughput
-and switch to CPU if the pilot favors it. GPU failure or timeout discards the GPU
-attempt rather than saving incomplete data.
+when unsupported. Small frontiers stay on CPU; a short bounded pilot compares newly visited nodes per second, including GPU transfer and readback time. Backend switches do not wait for a complete BFS depth. GPU failure or a slower pilot returns to CPU with completed batches retained. Stop also cancels transition builds and cache I/O; reloading the interface reconnects to the active operation.
 
 GPU dispatch sizes adapt to measured completion time (an 8 ms target on integrated or
 unclassified graphics, 16 ms on discrete GPUs), with brief scheduling gaps for the desktop.
 Working buffers obey device binding limits and a conservative memory budget.
-Bloom filters that fit that budget are built directly on the GPU and read back
-at completion. Larger filters stay in system RAM and use bounded GPU hash batches,
+Live Bloom generation keeps the filter in system RAM and merges bounded GPU hash batches,
 so a multi-GiB filter does not require matching VRAM. This is a scheduling target, not a hardware power or utilization
 limit. The option can be disabled to force CPU generation. Cache contents and
 search results are independent of the generation backend.

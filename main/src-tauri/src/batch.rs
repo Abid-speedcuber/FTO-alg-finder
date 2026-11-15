@@ -9,6 +9,11 @@ thread_local! { pub(super) static BATCH_LOG: std::cell::Cell<bool> = const { std
 pub(super) struct BatchState {
     active: AtomicBool,
 }
+impl BatchState {
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -443,6 +448,7 @@ pub(super) async fn start_batch(
         state.active.store(true, Ordering::SeqCst);
     }
     let cache = solver.cache.clone();
+    let generation = solver.generation.clone();
     let current = solver.current_cancel.clone();
     tauri::async_runtime::spawn(async move {
         let run_app = app.clone();
@@ -456,7 +462,7 @@ pub(super) async fn start_batch(
                 }
             }
             let _scope = LogScope(BATCH_LOG.with(|flag| flag.replace(true)));
-            with_gpu_generation(run_request.use_gpu, &run_app, || {
+            with_gpu_generation(run_request.use_gpu, &run_app, &generation, || {
                 run(&run_request, &run_cancel, &run_app, &cache)
             })
         })
@@ -557,6 +563,7 @@ fn run(
         cache,
         &transition_dir(app, root).join("transition-table.tran"),
         app,
+        cancel,
     )?;
     if cancel.load(Ordering::SeqCst) {
         return Ok(());

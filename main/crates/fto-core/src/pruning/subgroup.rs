@@ -360,32 +360,66 @@ impl CompactIndexing {
             reference.len()
         );
     }
-    pub(super) fn build_table(
+    #[cfg(feature = "gpu")]
+    fn live_gpu_layer(
         &self,
         kind: Kind,
-        interval: usize,
+        table: &mut [u8],
+        queue: &std::collections::VecDeque<u32>,
+        first: usize,
+        depth: u8,
+        engine: &mut Option<crate::acceleration::PruningCompute>,
         cancel: Option<&AtomicBool>,
-        report: Option<&PruningReporter<'_>>,
-    ) -> Result<Vec<u8>, String> {
-        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(CANCELLED.to_owned());
+    ) -> Result<Option<(Vec<u32>, usize)>, String> {
+        use crate::acceleration;
+        if !acceleration::enabled() {
+            if engine.take().is_some() {
+                acceleration::log(
+                    "generation backend: CPU; GPU disabled by user; completed layers retained",
+                );
+            }
+            return Ok(None);
+        }
+        if table.len() > u32::MAX as usize {
+            return Ok(None);
+        }
+        if !acceleration::forced()
+            && engine.is_none()
+            && queue
+                .iter()
+                .take(255)
+                .filter(|&&i| table[i as usize] == depth)
+                .count()
+                < 255
+        {
+            return Ok(None);
         }
         let rows = self.row(kind);
-        #[cfg(feature = "gpu")]
-        if self.table_len(kind)
-            >= (if crate::acceleration::forced() {
-                0
-            } else {
-                1_000_000
-            })
-        {
-            if let Some(gpu) = crate::acceleration::gpu() {
-                let dimensions = [(rows.original.len() + 1) as u32, (self.uf_mask + 1) as u32];
-                let steps = match kind {
-                    Kind::Edge => &self.packed.edge,
-                    Kind::Corner => &self.packed.corner,
+        let steps = match kind {
+            Kind::Edge => &self.packed.edge,
+            Kind::Corner => &self.packed.corner,
+        };
+        let next_index = |index: usize, mv: Move| {
+            let row = usize::from(rows.original[index >> self.uf_bits]);
+            let uf = usize::from(self.uf.original[index & self.uf_mask]);
+            let slot = usize::from(self.packed.slots[mv.idx()]);
+            ((steps[(row << self.packed.bits) | slot] >> 16)
+                | (self.packed.uf[(uf << self.packed.bits) | slot] >> 16)) as usize
+        };
+        let attempt = (|| {
+            if engine.is_none() {
+                let Some(gpu) = acceleration::gpu() else {
+                    return Err("GPU unavailable".to_owned());
                 };
+                let dimensions = [(rows.original.len() + 1) as u32, (self.uf_mask + 1) as u32];
+                let count = (dimensions[0] as usize + dimensions[1] as usize) * self.moves.len();
+                if count as u64 * 4 > gpu.binding_limit {
+                    return Err("GPU transitions exceed the device memory limit".into());
+                }
                 let mut transitions = Vec::new();
+                transitions
+                    .try_reserve_exact(count)
+                    .map_err(|_| "not enough RAM for GPU transitions")?;
                 for row in 0..=rows.original.len() {
                     for &mv in &self.moves {
                         let next = if row == rows.original.len() {
@@ -411,29 +445,95 @@ impl CompactIndexing {
                         transitions.push(next as u32);
                     }
                 }
-                match gpu.pruning(
-                    &kind.spec().name(),
+                acceleration::check_host_allocation(table.len().div_ceil(32) as u64 * 4)?;
+                let mut visited = vec![0_u32; table.len().div_ceil(32)];
+                for (index, &value) in table.iter().enumerate() {
+                    if value != UNVISITED {
+                        visited[index / 32] |= 1 << (index % 32);
+                    }
+                }
+                *engine = acceleration::PruningCompute::new(
+                    gpu,
                     &dimensions,
                     &transitions,
-                    0,
+                    &visited,
                     self.moves.len(),
-                    cancel,
-                    report,
-                ) {
-                    Ok(Some(table)) => return Ok(table),
-                    Ok(None) => {}
-                    Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
-                        return Err(error);
-                    }
-                    Err(error) if error.contains("pilot is slower") => {
-                        crate::acceleration::log(&format!("{error}; switching to CPU"))
-                    }
-                    Err(error) => crate::acceleration::log(&format!(
-                        "GPU compact pruning failed; rebuilding safely on CPU: {error}"
-                    )),
+                )?;
+                if engine.is_none() {
+                    return Err("GPU working set exceeds its safe memory budget".into());
                 }
             }
+            let sample: Vec<_> = std::iter::once(first)
+                .chain(queue.iter().map(|&i| i as usize))
+                .take_while(|&i| table[i] == depth)
+                .take(engine.as_ref().unwrap().capacity())
+                .collect();
+            let input: Vec<_> = sample.iter().map(|&i| i as u32).collect();
+            // Measure the same frontier and discoveries on the CPU before dispatch.
+            let mut changed = Vec::new();
+            let started = std::time::Instant::now();
+            for &index in &sample {
+                for &mv in &self.moves {
+                    let child = next_index(index, mv);
+                    if table[child] == UNVISITED {
+                        table[child] = depth + 1;
+                        changed.push(child);
+                    }
+                }
+            }
+            let cpu_time = started.elapsed();
+            let cpu_new = changed.len();
+            for index in changed {
+                table[index] = UNVISITED;
+            }
+            let (bits, gpu_time) = engine.as_mut().unwrap().expand(&input, cancel)?;
+            for &index in &bits {
+                if index as usize >= table.len()
+                    || table[index as usize] != UNVISITED
+                    || depth == 254
+                {
+                    return Err("GPU returned an invalid compact discovery".into());
+                }
+            }
+            if !acceleration::forced() {
+                let cpu_rate = cpu_new.max(1) as f64 / cpu_time.as_secs_f64().max(1e-9);
+                let gpu_rate = bits.len().max(1) as f64 / gpu_time.as_secs_f64().max(1e-9);
+                acceleration::log(&format!(
+                    "GPU timing: CPU {cpu_rate:.0} vs GPU {gpu_rate:.0} new nodes/s ({} input nodes)",
+                    sample.len()
+                ));
+                if gpu_rate < cpu_rate {
+                    acceleration::fallback(&format!(
+                        "GPU is slower than CPU ({gpu_rate:.0} vs {cpu_rate:.0} new nodes/s)"
+                    ));
+                    *engine = None;
+                }
+            }
+            Ok((bits, sample.len()))
+        })();
+        match attempt {
+            Ok(result) => Ok(Some(result)),
+            Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => Err(error),
+            Err(error) => {
+                *engine = None;
+                acceleration::fallback(&error);
+                Ok(None)
+            }
         }
+    }
+
+    pub(super) fn build_table(
+        &self,
+        kind: Kind,
+        interval: usize,
+        cancel: Option<&AtomicBool>,
+        report: Option<&PruningReporter<'_>>,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(CANCELLED.to_owned());
+        }
+        let _stage = crate::acceleration::stage(&kind.spec().name());
+        let rows = self.row(kind);
         crate::acceleration::check_host_allocation(self.table_len(kind) as u64)?;
         let mut table = vec![UNVISITED; self.table_len(kind)];
         table[0] = 0;
@@ -446,6 +546,18 @@ impl CompactIndexing {
             Kind::Edge => &self.packed.edge,
             Kind::Corner => &self.packed.corner,
         };
+        #[cfg(feature = "gpu")]
+        let mut gpu_layer = None;
+        let mut last_report = std::time::Instant::now();
+        if let Some(report) = report {
+            report(PruningProgress {
+                name: kind.spec().name(),
+                depth: 0,
+                expanded: 0,
+                reached: 1,
+                total,
+            });
+        }
         while let Some(index) = queue.pop_front() {
             if reached == total {
                 break;
@@ -455,6 +567,39 @@ impl CompactIndexing {
             }
             let index = index as usize;
             let depth = table[index];
+            #[cfg(feature = "gpu")]
+            if crate::acceleration::enabled() || gpu_layer.is_some() {
+                if let Some((discoveries, processed)) = self.live_gpu_layer(
+                    kind,
+                    &mut table,
+                    &queue,
+                    index,
+                    depth,
+                    &mut gpu_layer,
+                    cancel,
+                )? {
+                    expanded += processed;
+                    for _ in 1..processed {
+                        queue.pop_front();
+                    }
+                    for child in discoveries {
+                        table[child as usize] = depth + 1;
+                        queue.push_back(child);
+                        reached += 1;
+                    }
+                    if let Some(report) = report {
+                        report(PruningProgress {
+                            name: kind.spec().name(),
+                            depth: usize::from(depth),
+                            expanded,
+                            reached,
+                            total,
+                        });
+                    }
+                    last_report = std::time::Instant::now();
+                    continue;
+                }
+            }
             expanded += 1;
             let row = usize::from(rows.original[index >> self.uf_bits]);
             let uf = usize::from(self.uf.original[index & self.uf_mask]);
@@ -474,7 +619,8 @@ impl CompactIndexing {
                     reached += 1;
                 }
             }
-            if interval > 0 && expanded >= next_report {
+            if interval > 0 && (expanded >= next_report || last_report.elapsed().as_millis() >= 200)
+            {
                 if let Some(report) = report {
                     report(PruningProgress {
                         name: kind.spec().name(),
@@ -485,6 +631,7 @@ impl CompactIndexing {
                     });
                 }
                 next_report = expanded.saturating_add(interval);
+                last_report = std::time::Instant::now();
             }
         }
         if let Some(report) = report {
@@ -512,11 +659,15 @@ impl CompactIndexing {
         cancel: Option<&AtomicBool>,
         report: Option<&PruningReporter<'_>>,
     ) -> Result<Vec<u8>, String> {
-        if let Ok(table) = self.load(kind, path, report) {
-            return Ok(table);
+        match self.load(kind, path, report, cancel) {
+            Ok(table) => return Ok(table),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                return Err(error.to_string());
+            }
+            Err(_) => {}
         }
         let table = self.build_table(kind, interval, cancel, report)?;
-        self.save(kind, path, &table, report)
+        self.save(kind, path, &table, report, cancel)
             .map_err(|e| e.to_string())?;
         Ok(table)
     }
@@ -526,7 +677,9 @@ impl CompactIndexing {
         kind: Kind,
         path: &Path,
         report: Option<&PruningReporter<'_>>,
+        cancel: Option<&AtomicBool>,
     ) -> io::Result<Vec<u8>> {
+        check_table_cancel(cancel)?;
         let mut file = File::open(path)?;
         let len = file.metadata()?.len();
         let mut magic = [0; 16];
@@ -553,6 +706,7 @@ impl CompactIndexing {
         let mut buffer = vec![UNVISITED; CENTER3_COUNT];
         let interval = (rows.original.len() / 100).max(1);
         for (rank, &original) in rows.original.iter().enumerate() {
+            check_table_cancel(cancel)?;
             file.seek(SeekFrom::Start(
                 start + u64::from(original) * CENTER3_COUNT as u64,
             ))?;
@@ -573,11 +727,13 @@ impl CompactIndexing {
         path: &Path,
         table: &[u8],
         report: Option<&PruningReporter<'_>>,
+        cancel: Option<&AtomicBool>,
     ) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut writer = BufWriter::new(File::create(path)?);
+        let pending = crate::cache_file::CacheWrite::new(path)?;
+        let mut writer = BufWriter::new(File::create(pending.path())?);
         let metadata = format!(
             "spec={}\nmoves={}\n",
             kind.spec().name(),
@@ -594,6 +750,7 @@ impl CompactIndexing {
         report_table_io(report, &name, 0, total);
         let interval = (rows.rank.len() / 100).max(1);
         for (original, &rank) in rows.rank.iter().enumerate() {
+            check_table_cancel(cancel)?;
             if rank == OUTSIDE {
                 writer.write_all(&empty)?;
             } else {
@@ -606,12 +763,55 @@ impl CompactIndexing {
                 report_table_io(report, &name, (original + 1) * CENTER3_COUNT, total);
             }
         }
-        writer.flush()
+        writer.flush()?;
+        check_table_cancel(cancel)?;
+        drop(writer);
+        pending.commit()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires GPU compute"]
+    fn live_compact_handoff_preserves_queue_and_progress() {
+        use crate::acceleration::{self, GenerationControl, GenerationLog, Policy};
+        use std::sync::{Arc, Mutex};
+        let indexing = fixture(false);
+        for kind in [Kind::Edge, Kind::Corner] {
+            let expected = indexing.build_table(kind, 0, None, None).unwrap();
+            let control = Arc::new(GenerationControl::new(false));
+            let gpu_seen = Arc::new(AtomicBool::new(false));
+            let seen = gpu_seen.clone();
+            let log: Arc<GenerationLog> = Arc::new(move |message| {
+                println!("{message}");
+                if message.starts_with("generation backend: GPU") {
+                    seen.store(true, Ordering::Relaxed);
+                }
+            });
+            let counts = Mutex::new(Vec::new());
+            let report = |p: PruningProgress| {
+                counts.lock().unwrap().push(p.reached);
+                if gpu_seen.load(Ordering::Relaxed) {
+                    acceleration::fallback(
+                        "GPU is slower than CPU (injected compact timing result)",
+                    );
+                } else {
+                    control.set_enabled(true);
+                }
+            };
+            let actual =
+                acceleration::with_control(Policy::Gpu, control.clone(), Some(log), || {
+                    indexing.build_table(kind, 1, None, Some(&report))
+                })
+                .unwrap();
+            assert!(gpu_seen.load(Ordering::Relaxed));
+            assert!(!control.enabled());
+            assert_eq!(expected, actual);
+            assert!(counts.lock().unwrap().windows(2).all(|w| w[0] <= w[1]));
+        }
+    }
     #[cfg(feature = "gpu")]
     #[test]
     #[ignore = "requires GPU hardware"]
@@ -792,9 +992,12 @@ mod tests {
                 file.write_all(&values).unwrap();
             }
             drop(file);
-            assert_eq!(indexing.load(Kind::Corner, &path, None).unwrap(), expected);
+            assert_eq!(
+                indexing.load(Kind::Corner, &path, None, None).unwrap(),
+                expected
+            );
         }
         File::create(&path).unwrap().set_len(7).unwrap();
-        assert!(indexing.load(Kind::Corner, &path, None).is_err());
+        assert!(indexing.load(Kind::Corner, &path, None, None).is_err());
     }
 }

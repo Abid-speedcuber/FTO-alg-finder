@@ -50,6 +50,7 @@ impl PatternDatabase {
         let path = path.as_ref();
         match read_table(path, spec.size().unwrap_or(0)) {
             Ok(table) => Ok(Self { spec, table }),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error.to_string()),
             Err(_) => {
                 let (_, table) =
                     build_pruning_table(&spec, tables, max_entries, progress_interval)?;
@@ -82,6 +83,7 @@ impl PatternDatabase {
                 spec.size().unwrap_or(0),
                 report,
                 &format!("loading {}", spec.name()),
+                cancel,
             )
         } else {
             Err(io::Error::new(
@@ -107,6 +109,7 @@ impl PatternDatabase {
                     "",
                     report,
                     &format!("saving {}", spec.name()),
+                    cancel,
                 )
                 .map_err(|error| error.to_string())?;
                 Ok(Self { spec, table })
@@ -561,6 +564,7 @@ fn load_or_build_solver_table(
             spec.size().unwrap_or(0),
             report,
             &format!("loading {}", spec.name()),
+            cancel,
         )
     } else {
         Err(io::Error::new(
@@ -569,6 +573,7 @@ fn load_or_build_solver_table(
         ))
     } {
         Ok(table) => Ok(table),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error.to_string()),
         Err(_) => {
             let (_, table) = build_pruning_table_with_moves_threaded(
                 &spec,
@@ -586,6 +591,7 @@ fn load_or_build_solver_table(
                 &format!("spec={}\nmoves={}\n", spec.name(), move_set_suffix(moves)),
                 report,
                 &format!("saving {}", spec.name()),
+                cancel,
             )
             .map_err(|error| error.to_string())?;
             Ok(table)
@@ -1014,115 +1020,6 @@ fn build_pruning_table_from_index_threaded(
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
-    #[cfg(feature = "gpu")]
-    if spec.size().is_some_and(|size| {
-        size >= (if crate::acceleration::forced() {
-            0
-        } else {
-            1_000_000
-        }) && size <= max_entries
-            && size <= u32::MAX as usize
-    }) {
-        if crate::acceleration::enabled() && !crate::acceleration::forced() {
-            // A large coordinate product can contain a tiny reachable subgroup.
-            // Finish those on CPU rather than paying for GPU startup and scans.
-            let mut found = std::collections::HashMap::from([(root_index, 0_u8)]);
-            let mut queue = std::collections::VecDeque::from([root_index]);
-            let mut values = vec![0; spec.components.len()];
-            let mut next_values = values.clone();
-            while found.len() < 4096 {
-                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                    return Err(CANCELLED.to_owned());
-                }
-                let Some(index) = queue.pop_front() else {
-                    let size = spec.size().unwrap();
-                    crate::acceleration::check_host_allocation(size as u64)?;
-                    let mut table = Vec::new();
-                    table
-                        .try_reserve_exact(size)
-                        .map_err(|_| "not enough RAM for pruning")?;
-                    table.resize(size, UNVISITED);
-                    for (index, depth) in found {
-                        table[index] = depth;
-                    }
-                    if let Some(report) = report {
-                        let reached = table.iter().filter(|&&d| d != UNVISITED).count();
-                        report(PruningProgress {
-                            name: spec.name(),
-                            depth: table
-                                .iter()
-                                .filter(|&&d| d != UNVISITED)
-                                .copied()
-                                .max()
-                                .unwrap_or(0) as usize,
-                            expanded: reached,
-                            reached,
-                            total: size,
-                        });
-                    }
-                    return Ok((stats_from_table(spec, &table), table));
-                };
-                let depth = found[&index];
-                for &mv in moves {
-                    let next = spec.next_index(index, mv, tables, &mut values, &mut next_values);
-                    if let std::collections::hash_map::Entry::Vacant(entry) = found.entry(next) {
-                        if depth >= 254 {
-                            return Err(
-                                "pruning distance exceeds the table's byte representation".into()
-                            );
-                        }
-                        entry.insert(depth + 1);
-                        queue.push_back(next);
-                    }
-                }
-            }
-        }
-        if let Some(gpu) = crate::acceleration::gpu() {
-            let attempt = (|| {
-                let mut transitions = Vec::new();
-                let dimensions: Vec<_> = spec.components.iter().map(|c| c.size() as u32).collect();
-                let count: usize = spec.components.iter().map(|c| c.size() * moves.len()).sum();
-                if count as u64 * 4 > gpu.binding_limit {
-                    return Ok(None);
-                }
-                transitions
-                    .try_reserve_exact(count)
-                    .map_err(|_| "not enough memory for GPU transitions")?;
-                for component in &spec.components {
-                    for index in 0..component.size() {
-                        if index & 1023 == 0 && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                            return Err(CANCELLED.to_owned());
-                        }
-                        for &mv in moves {
-                            transitions.push(component.next(index as u32, mv, tables));
-                        }
-                    }
-                }
-                gpu.pruning(
-                    &spec.name(),
-                    &dimensions,
-                    &transitions,
-                    root_index,
-                    moves.len(),
-                    cancel,
-                    report,
-                )
-            })();
-            match attempt {
-                Ok(Some(table)) => return Ok((stats_from_table(spec, &table), table)),
-                Ok(None) => {}
-                Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
-                    return Err(error);
-                }
-                Err(error) if error.contains("pilot is slower") => {
-                    crate::acceleration::log(&format!("{error}; switching to CPU"))
-                }
-                Err(error) => crate::acceleration::log(&format!(
-                    "GPU pruning failed; rebuilding safely on CPU: {error}"
-                )),
-            }
-        }
-    }
     if threads <= 1 {
         return build_pruning_table_from_index(
             spec,
@@ -1149,31 +1046,199 @@ fn build_pruning_table_from_index_threaded(
 }
 
 #[cfg(feature = "gpu")]
-fn stats_from_table(spec: &CandidateSpec, table: &[u8]) -> PruningStats {
-    let mut histogram = vec![0; 255];
-    let mut sum = 0_u64;
-    for &depth in table {
-        if depth != UNVISITED {
-            histogram[depth as usize] += 1;
-            sum += u64::from(depth);
+fn try_gpu_layer(
+    spec: &CandidateSpec,
+    tables: &TransitionTables,
+    moves: &[Move],
+    table: &[AtomicU8],
+    depth: u8,
+    threads: usize,
+    engine: &mut Option<crate::acceleration::PruningCompute>,
+    cancel: Option<&AtomicBool>,
+    start: usize,
+    end: usize,
+    reached: usize,
+    expanded: usize,
+    report: Option<&PruningReporter<'_>>,
+) -> Result<Option<(Vec<u32>, bool)>, String> {
+    use crate::acceleration;
+    if !acceleration::enabled() {
+        if engine.take().is_some() {
+            acceleration::log(
+                "generation backend: CPU; GPU disabled by user; completed batches retained",
+            );
         }
+        return Ok(None);
     }
-    let max_depth = histogram.iter().rposition(|&n| n > 0).unwrap_or(0);
-    histogram.truncate(max_depth + 1);
-    let reached: usize = histogram.iter().sum();
-    PruningStats {
-        name: spec.name(),
-        table_entries: table.len(),
-        table_bytes: table.len(),
-        reached,
-        max_depth: max_depth as u8,
-        average_depth_milli: ((sum * 1000) / reached.max(1) as u64) as u32,
-        histogram,
+    if table.len() > u32::MAX as usize {
+        return Ok(None);
+    }
+    let frontier: Vec<_> = (start..end)
+        .filter(|&i| table[i].load(Ordering::Relaxed) == depth)
+        .map(|i| i as u32)
+        .collect();
+    if frontier.is_empty() || (!acceleration::forced() && engine.is_none() && frontier.len() < 256) {
+        return Ok(None);
+    }
+    let mut committed = Vec::new();
+    let attempt = (|| -> Result<bool, String> {
+        if engine.is_none() {
+            let Some(gpu) = acceleration::gpu() else {
+                return Err("GPU unavailable".to_owned());
+            };
+            let dimensions: Vec<_> = spec.components.iter().map(|c| c.size() as u32).collect();
+            let count: usize = spec.components.iter().map(|c| c.size() * moves.len()).sum();
+            if count as u64 * 4 > gpu.binding_limit {
+                return Err("GPU transition data exceeds device memory limits".into());
+            }
+            let mut transitions = Vec::new();
+            transitions
+                .try_reserve_exact(count)
+                .map_err(|_| "not enough RAM for GPU transitions")?;
+            for component in &spec.components {
+                for index in 0..component.size() {
+                    if index & 1023 == 0 && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                        return Err(CANCELLED.into());
+                    }
+                    for &mv in moves {
+                        transitions.push(component.next(index as u32, mv, tables));
+                    }
+                }
+            }
+            acceleration::check_host_allocation(table.len().div_ceil(32) as u64 * 4)?;
+            let mut visited = vec![0_u32; table.len().div_ceil(32)];
+            for (i, v) in table.iter().enumerate() {
+                if v.load(Ordering::Relaxed) != UNVISITED {
+                    visited[i / 32] |= 1 << (i % 32);
+                }
+            }
+            *engine = acceleration::PruningCompute::new(
+                gpu,
+                &dimensions,
+                &transitions,
+                &visited,
+                moves.len(),
+            )?;
+            if engine.is_none() {
+                return Err("GPU working set exceeds the safe memory budget".into());
+            }
+        }
+
+        let mut processed = 0;
+        while processed < frontier.len() {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(CANCELLED.into());
+            }
+            let capacity = engine.as_ref().unwrap().capacity();
+            let sample = &frontier[processed..(processed + capacity).min(frontier.len())];
+            let cpu_new;
+            let cpu_time;
+            {
+                let count = sample.len();
+                let (elapsed, changed) = thread::scope(|scope| {
+                    let chunk_size = count.div_ceil(threads.max(1));
+                    let handles: Vec<_> = sample
+                        .chunks(chunk_size)
+                        .map(|chunk| {
+                            scope.spawn(move || {
+                                let mut changed = Vec::new();
+                                let mut values = vec![0; spec.components.len()];
+                                let mut next_values = values.clone();
+                                let started = Instant::now();
+                                for &index in chunk {
+                                    for &mv in moves {
+                                        let child = spec.next_index(
+                                            index as usize,
+                                            mv,
+                                            tables,
+                                            &mut values,
+                                            &mut next_values,
+                                        );
+                                        if table[child]
+                                            .compare_exchange(
+                                                UNVISITED,
+                                                depth + 1,
+                                                Ordering::Relaxed,
+                                                Ordering::Relaxed,
+                                            )
+                                            .is_ok()
+                                        {
+                                            changed.push(child);
+                                        }
+                                    }
+                                }
+                                (started.elapsed(), changed)
+                            })
+                        })
+                        .collect();
+                    let mut elapsed = std::time::Duration::ZERO;
+                    let mut changed = Vec::new();
+                    for handle in handles {
+                        let (time, items) = handle.join().expect("CPU timing worker panicked");
+                        elapsed = elapsed.max(time);
+                        changed.extend(items);
+                    }
+                    (elapsed, changed)
+                });
+                cpu_new = changed.len();
+                cpu_time = elapsed;
+                for index in changed {
+                    table[index].store(UNVISITED, Ordering::Relaxed);
+                }
+            }
+            let (discoveries, gpu_time) = engine.as_mut().unwrap().expand(sample, cancel)?;
+            for &index in &discoveries {
+                if index as usize >= table.len()
+                    || table[index as usize].load(Ordering::Relaxed) != UNVISITED
+                    || depth == 254
+                {
+                    return Err("GPU returned an invalid discovery".into());
+                }
+            }
+            for &index in &discoveries {
+                table[index as usize].store(depth + 1, Ordering::Relaxed);
+            }
+            let gpu_new = discoveries.len();
+            committed.extend(discoveries);
+            processed += sample.len();
+            if let Some(report) = report {
+                report(PruningProgress {
+                    name: spec.name(),
+                    depth: depth.into(),
+                    expanded: expanded + processed,
+                    reached: reached + committed.len(),
+                    total: table.len(),
+                });
+            }
+            if !acceleration::forced() {
+                let cpu_rate = cpu_new.max(1) as f64 / cpu_time.as_secs_f64().max(1e-9);
+                let gpu_rate = gpu_new.max(1) as f64 / gpu_time.as_secs_f64().max(1e-9);
+                acceleration::log(&format!(
+                    "GPU timing: CPU {cpu_rate:.0} vs GPU {gpu_rate:.0} new nodes/s ({} input nodes)",
+                    sample.len()
+                ));
+                if gpu_rate < cpu_rate {
+                    acceleration::fallback(&format!(
+                        "GPU is slower than CPU ({gpu_rate:.0} vs {cpu_rate:.0} new nodes/s)"
+                    ));
+                    *engine = None;
+                    return Ok(processed == frontier.len());
+                }
+            }
+        }
+        Ok(true)
+    })();
+    match attempt {
+        Ok(complete) => Ok(Some((committed, complete))),
+        Err(error) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => Err(error),
+        Err(error) => {
+            *engine = None;
+            acceleration::fallback(&error);
+            Ok(Some((committed, false)))
+        }
     }
 }
 
-// These face turns generate the full FTO group. Only certify products of
-// independent piece orbits; overlapping coordinates can contain impossible pairs.
 fn full_coordinate_reachability(spec: &CandidateSpec, moves: &[Move]) -> bool {
     if !(0..8).all(|axis| moves.iter().any(|mv| usize::from(mv.axis()) == axis)) {
         return false;
@@ -1364,6 +1429,7 @@ fn build_pruning_table_from_index_parallel(
     cancel: Option<&AtomicBool>,
     report: Option<&PruningReporter<'_>>,
 ) -> Result<(PruningStats, Vec<u8>), String> {
+    let _stage = crate::acceleration::stage(&spec.name());
     let size = spec
         .size()
         .ok_or_else(|| format!("{} size overflows usize", spec.name()))?;
@@ -1381,7 +1447,9 @@ fn build_pruning_table_from_index_parallel(
     table[root_index].store(0, Ordering::Relaxed);
 
     let worker_count = threads.min(size).max(1);
-    let chunk_size = size.div_ceil(worker_count);
+    // Bounded CPU windows let a GPU request interrupt the current BFS depth.
+    let chunk_size = 65_536;
+    let window_size = chunk_size * worker_count;
     let mut reached = 1_usize;
     let mut histogram = vec![1_usize];
     let mut depth_sum = 0_u64;
@@ -1390,6 +1458,18 @@ fn build_pruning_table_from_index_parallel(
     let mut next_progress = progress_interval;
     let tail_allowed = full_coordinate_reachability(spec, moves);
 
+    if let Some(report) = report {
+        report(PruningProgress {
+            name: spec.name(),
+            depth: 0,
+            expanded: 0,
+            reached: 1,
+            total: size,
+        });
+    }
+    #[cfg(feature = "gpu")]
+    let mut gpu_layer = None;
+    let mut last_window_report = Instant::now();
     for depth in 0..u8::MAX {
         if reached == size {
             break;
@@ -1406,173 +1486,253 @@ fn build_pruning_table_from_index_parallel(
         let mut next_frontier = 0_usize;
         let mut depth_sum_delta = 0_u64;
 
-        thread::scope(|scope| -> Result<(), String> {
-            let mut handles = Vec::with_capacity(worker_count);
-            for worker in 0..worker_count {
-                let start = worker * chunk_size;
-                let end = ((worker + 1) * chunk_size).min(size);
-                if start >= end {
+        for window_start in (0..size).step_by(window_size) {
+            if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
+                break;
+            }
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(CANCELLED.to_owned());
+            }
+            let window_end = (window_start + window_size).min(size);
+            // Sparse early layers should not spawn workers for empty windows.
+            if !table[window_start..window_end]
+                .iter()
+                .any(|v| v.load(Ordering::Relaxed) == depth)
+            {
+                continue;
+            }
+            #[cfg(feature = "gpu")]
+            let gpu_result = try_gpu_layer(
+                spec,
+                tables,
+                moves,
+                &table,
+                depth,
+                threads,
+                &mut gpu_layer,
+                cancel,
+                window_start,
+                window_end,
+                reached + next_frontier,
+                expanded + depth_expanded,
+                report,
+            )?;
+            #[cfg(not(feature = "gpu"))]
+            let gpu_result: Option<(Vec<u32>, bool)> = None;
+            if let Some((discoveries, complete)) = gpu_result {
+                let added = discoveries.len();
+                next_frontier += added;
+                depth_sum_delta += added as u64 * u64::from(next_depth);
+                if track_remaining {
+                    remaining.fetch_sub(added, Ordering::Relaxed);
+                }
+                histogram.resize(histogram.len().max(usize::from(next_depth) + 1), 0);
+                histogram[usize::from(next_depth)] += added;
+                if added > 0 {
+                    max_depth = max_depth.max(next_depth);
+                }
+                if complete {
+                    depth_expanded += (window_start..window_end)
+                        .filter(|&i| table[i].load(Ordering::Relaxed) == depth)
+                        .count();
                     continue;
                 }
-                let table = &table;
-                let remaining = &remaining;
-                handles.push(scope.spawn(move || {
-                    let mut values = vec![0; spec.components.len()];
-                    let mut next_values = vec![0; spec.components.len()];
-                    let mut local_expanded = 0_usize;
-                    let mut local_reached = 0_usize;
-                    let mut local_depth_sum = 0_u64;
-                    let mut local_histogram = vec![0_usize; 255];
-                    let mut window_start = Instant::now();
-                    let mut window_reached = 0_usize;
-                    let mut local_next_progress = next_progress.saturating_sub(expanded);
-                    for idx in start..end {
-                        if idx & 8191 == 0 {
-                            if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
-                                return Err(CANCELLED.to_owned());
+            }
+            let progress_reached = AtomicUsize::new(reached + next_frontier);
+            let progress_expanded = AtomicUsize::new(expanded + depth_expanded);
+            let progress_clock = std::sync::Mutex::new(Instant::now());
+            thread::scope(|scope| -> Result<(), String> {
+                let mut handles = Vec::with_capacity(worker_count);
+                for worker in 0..worker_count {
+                    let start = window_start + worker * chunk_size;
+                    let end = (start + chunk_size).min(window_end);
+                    if start >= end {
+                        continue;
+                    }
+                    let table = &table;
+                    let remaining = &remaining;
+                    let progress_reached = &progress_reached;
+                    let progress_expanded = &progress_expanded;
+                    let progress_clock = &progress_clock;
+                    handles.push(scope.spawn(move || {
+                        let mut values = vec![0; spec.components.len()];
+                        let mut next_values = vec![0; spec.components.len()];
+                        let mut local_expanded = 0_usize;
+                        let mut local_reached = 0_usize;
+                        let mut local_depth_sum = 0_u64;
+                        let mut local_histogram = vec![0_usize; 255];
+                        let mut window_start = Instant::now();
+                        let mut window_reached = 0_usize;
+                        let mut reported_reached = 0;
+                        let mut reported_expanded = 0;
+                        for idx in start..end {
+                            if idx & 8191 == 0 {
+                                if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+                                    return Err(CANCELLED.to_owned());
+                                }
+                                if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
+                                    break;
+                                }
+                            }
+                            if table[idx].load(Ordering::Relaxed) != depth {
+                                continue;
                             }
                             if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
                                 break;
                             }
-                        }
-                        if table[idx].load(Ordering::Relaxed) != depth {
-                            continue;
-                        }
-                        if track_remaining && remaining.load(Ordering::Relaxed) == 0 {
-                            break;
-                        }
-                        local_expanded += 1;
-                        if (local_expanded & 8191) == 0
-                            && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
-                        {
-                            return Err(CANCELLED.to_owned());
-                        }
-                        for &mv in moves {
-                            let next =
-                                spec.next_index(idx, mv, tables, &mut values, &mut next_values);
-                            if table[next].load(Ordering::Relaxed) == UNVISITED
-                                && table[next]
-                                    .compare_exchange(
-                                        UNVISITED,
-                                        next_depth,
-                                        Ordering::Relaxed,
-                                        Ordering::Relaxed,
-                                    )
-                                    .is_ok()
+                            local_expanded += 1;
+                            if (local_expanded & 8191) == 0
+                                && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
                             {
-                                if next_depth == UNVISITED {
-                                    return Err(
+                                return Err(CANCELLED.to_owned());
+                            }
+                            for &mv in moves {
+                                let next =
+                                    spec.next_index(idx, mv, tables, &mut values, &mut next_values);
+                                if table[next].load(Ordering::Relaxed) == UNVISITED
+                                    && table[next]
+                                        .compare_exchange(
+                                            UNVISITED,
+                                            next_depth,
+                                            Ordering::Relaxed,
+                                            Ordering::Relaxed,
+                                        )
+                                        .is_ok()
+                                {
+                                    if next_depth == UNVISITED {
+                                        return Err(
                                         "pruning distance exceeds the table's byte representation"
                                             .to_owned(),
                                     );
-                                }
-                                local_reached += 1;
-                                local_depth_sum += u64::from(next_depth);
-                                local_histogram[usize::from(next_depth)] += 1;
-                                let last = track_remaining
-                                    && remaining.fetch_sub(1, Ordering::Relaxed) == 1;
-                                if last {
-                                    break;
-                                }
-                            }
-                        }
-                        if local_expanded % 2048 == 0 {
-                            let new = local_reached - window_reached;
-                            let bfs_rate =
-                                new as f64 / window_start.elapsed().as_secs_f64().max(1e-9);
-                            if tail_allowed
-                                && track_remaining
-                                && new < 512
-                                && remaining.load(Ordering::Relaxed) < size / 2
-                            {
-                                // Try small batches inside this unfinished BFS layer.
-                                // Recheck throughput after each batch and resume BFS if it loses.
-                                for batch in 0..16 {
-                                    let started = Instant::now();
-                                    let paths = probe_reverse_paths(
-                                        spec,
-                                        tables,
-                                        moves,
-                                        size,
-                                        idx.wrapping_add(batch * 7919),
-                                        depth,
-                                        bfs_rate,
-                                        |node| table[node].load(Ordering::Relaxed),
-                                        cancel,
-                                    )?;
-                                    let mut added = 0;
-                                    for (node, distance) in paths {
-                                        if table[node]
-                                            .compare_exchange(
-                                                UNVISITED,
-                                                distance,
-                                                Ordering::Relaxed,
-                                                Ordering::Relaxed,
-                                            )
-                                            .is_ok()
-                                        {
-                                            added += 1;
-                                            local_reached += 1;
-                                            local_depth_sum += u64::from(distance);
-                                            local_histogram[usize::from(distance)] += 1;
-                                            remaining.fetch_sub(1, Ordering::Relaxed);
-                                        }
                                     }
-                                    if added == 0
-                                        || added as f64 / started.elapsed().as_secs_f64().max(1e-9)
-                                            <= bfs_rate * 1.25
-                                    {
+                                    local_reached += 1;
+                                    local_depth_sum += u64::from(next_depth);
+                                    local_histogram[usize::from(next_depth)] += 1;
+                                    let last = track_remaining
+                                        && remaining.fetch_sub(1, Ordering::Relaxed) == 1;
+                                    if last {
                                         break;
                                     }
                                 }
                             }
-                            window_start = Instant::now();
-                            window_reached = local_reached;
-                        }
-                        if worker_count == 1
-                            && progress_interval > 0
-                            && local_expanded >= local_next_progress
-                        {
-                            if let Some(report) = report {
-                                report(PruningProgress {
-                                    name: spec.name(),
-                                    depth: depth.into(),
-                                    expanded: expanded + local_expanded,
-                                    reached: reached + local_reached,
-                                    total: size,
-                                });
+                            if local_expanded % 2048 == 0 {
+                                let new = local_reached - window_reached;
+                                let bfs_rate =
+                                    new as f64 / window_start.elapsed().as_secs_f64().max(1e-9);
+                                if tail_allowed
+                                    && track_remaining
+                                    && new < 512
+                                    && remaining.load(Ordering::Relaxed) < size / 2
+                                {
+                                    // Try small batches inside this unfinished BFS layer.
+                                    // Recheck throughput after each batch and resume BFS if it loses.
+                                    for batch in 0..16 {
+                                        let started = Instant::now();
+                                        let paths = probe_reverse_paths(
+                                            spec,
+                                            tables,
+                                            moves,
+                                            size,
+                                            idx.wrapping_add(batch * 7919),
+                                            depth,
+                                            bfs_rate,
+                                            |node| table[node].load(Ordering::Relaxed),
+                                            cancel,
+                                        )?;
+                                        let mut added = 0;
+                                        for (node, distance) in paths {
+                                            if table[node]
+                                                .compare_exchange(
+                                                    UNVISITED,
+                                                    distance,
+                                                    Ordering::Relaxed,
+                                                    Ordering::Relaxed,
+                                                )
+                                                .is_ok()
+                                            {
+                                                added += 1;
+                                                local_reached += 1;
+                                                local_depth_sum += u64::from(distance);
+                                                local_histogram[usize::from(distance)] += 1;
+                                                remaining.fetch_sub(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                        if added == 0
+                                            || added as f64
+                                                / started.elapsed().as_secs_f64().max(1e-9)
+                                                <= bfs_rate * 1.25
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                                window_start = Instant::now();
+                                window_reached = local_reached;
                             }
-                            local_next_progress =
-                                local_next_progress.saturating_add(progress_interval);
+                            if local_expanded % 256 == 0 {
+                                progress_reached
+                                    .fetch_add(local_reached - reported_reached, Ordering::Relaxed);
+                                progress_expanded.fetch_add(
+                                    local_expanded - reported_expanded,
+                                    Ordering::Relaxed,
+                                );
+                                reported_reached = local_reached;
+                                reported_expanded = local_expanded;
+                                if let Ok(mut clock) = progress_clock.try_lock() {
+                                    if clock.elapsed().as_millis() >= 200 {
+                                        if let Some(report) = report {
+                                            report(PruningProgress {
+                                                name: spec.name(),
+                                                depth: depth.into(),
+                                                expanded: progress_expanded.load(Ordering::Relaxed),
+                                                reached: progress_reached.load(Ordering::Relaxed),
+                                                total: size,
+                                            });
+                                        }
+                                        *clock = Instant::now();
+                                    }
+                                }
+                            }
                         }
-                    }
-                    Ok((
-                        local_expanded,
-                        local_reached,
-                        local_depth_sum,
-                        local_histogram,
-                    ))
-                }));
-            }
+                        Ok((
+                            local_expanded,
+                            local_reached,
+                            local_depth_sum,
+                            local_histogram,
+                        ))
+                    }));
+                }
 
-            for handle in handles {
-                let (local_expanded, local_reached, local_depth_sum, local_histogram) = handle
-                    .join()
-                    .map_err(|_| "parallel pruning worker panicked".to_owned())??;
-                depth_expanded += local_expanded;
-                next_frontier += local_reached;
-                depth_sum_delta += local_depth_sum;
-                for (distance, count) in local_histogram.into_iter().enumerate() {
-                    if count > 0 {
-                        histogram.resize(histogram.len().max(distance + 1), 0);
-                        histogram[distance] += count;
-                        max_depth = max_depth.max(distance as u8);
+                for handle in handles {
+                    let (local_expanded, local_reached, local_depth_sum, local_histogram) = handle
+                        .join()
+                        .map_err(|_| "parallel pruning worker panicked".to_owned())??;
+                    depth_expanded += local_expanded;
+                    next_frontier += local_reached;
+                    depth_sum_delta += local_depth_sum;
+                    for (distance, count) in local_histogram.into_iter().enumerate() {
+                        if count > 0 {
+                            histogram.resize(histogram.len().max(distance + 1), 0);
+                            histogram[distance] += count;
+                            max_depth = max_depth.max(distance as u8);
+                        }
                     }
                 }
+                Ok(())
+            })?;
+            if last_window_report.elapsed().as_millis() >= 200 {
+                if let Some(report) = report {
+                    report(PruningProgress {
+                        name: spec.name(),
+                        depth: depth.into(),
+                        expanded: expanded + depth_expanded,
+                        reached: reached + next_frontier,
+                        total: size,
+                    });
+                }
+                last_window_report = Instant::now();
             }
-            Ok(())
-        })?;
-
+        }
         expanded += depth_expanded;
         reached += next_frontier;
         depth_sum += depth_sum_delta;
@@ -1637,7 +1797,7 @@ fn write_table_with_metadata(
     table: &[u8],
     metadata: &str,
 ) -> io::Result<()> {
-    write_table_with_metadata_reporting(path, table, metadata, None, "")
+    write_table_with_metadata_reporting(path, table, metadata, None, "", None)
 }
 
 fn write_table_with_metadata_reporting(
@@ -1646,11 +1806,13 @@ fn write_table_with_metadata_reporting(
     metadata: &str,
     report: Option<&PruningReporter<'_>>,
     progress_name: &str,
+    cancel: Option<&AtomicBool>,
 ) -> io::Result<()> {
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut writer = BufWriter::new(File::create(path)?);
+    let pending = crate::cache_file::CacheWrite::new(path.as_ref())?;
+    let mut writer = BufWriter::new(File::create(pending.path())?);
     let total = table.len().max(1);
     report_table_io(report, progress_name, 0, total);
     writer.write_all(PRUN_MAGIC)?;
@@ -1659,15 +1821,19 @@ fn write_table_with_metadata_reporting(
     let chunk_size = (total / 100).max(1024 * 1024).min(total);
     let mut written = 0_usize;
     for chunk in table.chunks(chunk_size) {
+        check_table_cancel(cancel)?;
         writer.write_all(chunk)?;
         written += chunk.len();
         report_table_io(report, progress_name, written.min(total), total);
     }
-    writer.flush()
+    writer.flush()?;
+    check_table_cancel(cancel)?;
+    drop(writer);
+    pending.commit()
 }
 
 fn read_table(path: impl AsRef<Path>, expected_len: usize) -> io::Result<Vec<u8>> {
-    read_table_reporting(path, expected_len, None, "")
+    read_table_reporting(path, expected_len, None, "", None)
 }
 
 fn read_table_reporting(
@@ -1675,7 +1841,9 @@ fn read_table_reporting(
     expected_len: usize,
     report: Option<&PruningReporter<'_>>,
     progress_name: &str,
+    cancel: Option<&AtomicBool>,
 ) -> io::Result<Vec<u8>> {
+    check_table_cancel(cancel)?;
     let mut file = File::open(path)?;
     let total = file
         .metadata()?
@@ -1689,6 +1857,7 @@ fn read_table_reporting(
     let mut buffer = vec![0; chunk_size];
     let mut read = 0_usize;
     loop {
+        check_table_cancel(cancel)?;
         let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
@@ -1849,6 +2018,78 @@ fn push_combinations(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires GPU compute (software adapters may be enabled for parity tests)"]
+    #[cfg(feature = "gpu")]
+    fn live_cpu_gpu_cpu_handoff_preserves_bfs_progress_and_table() {
+        use super::{PruningProgress, build_pruning_table_from_index_threaded};
+        use crate::acceleration::{self, GenerationControl, GenerationLog, Policy};
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex};
+        let tables = TransitionTables::corner_only_for_tests();
+        let spec = CandidateSpec::new(vec![Component::Corner]);
+        let moves = [Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp];
+        let baseline = acceleration::with_policy(Policy::Cpu, None, || {
+            build_pruning_table_from_index_threaded(
+                &spec,
+                &tables,
+                usize::MAX,
+                1,
+                spec.solved_index(),
+                &moves,
+                2,
+                None,
+                None,
+            )
+            .unwrap()
+        });
+        let control = Arc::new(GenerationControl::new(false));
+        let gpu_seen = Arc::new(AtomicBool::new(false));
+        let fallback_seen = Arc::new(AtomicBool::new(false));
+        let seen = gpu_seen.clone();
+        let log: Arc<GenerationLog> = Arc::new(move |s| {
+            if s.starts_with("generation backend: GPU") {
+                seen.store(true, Ordering::Relaxed);
+            }
+        });
+        let reached = Mutex::new(Vec::new());
+        let report = |p: PruningProgress| {
+            reached.lock().unwrap().push(p.reached);
+            if gpu_seen.load(Ordering::Relaxed) && !fallback_seen.swap(true, Ordering::Relaxed) {
+                acceleration::fallback(
+                    "GPU is slower than CPU (injected timing result for handoff parity)",
+                );
+            } else if !gpu_seen.load(Ordering::Relaxed) {
+                control.set_enabled(true);
+            }
+        };
+        let actual = acceleration::with_control(Policy::Gpu, control.clone(), Some(log), || {
+            build_pruning_table_from_index_threaded(
+                &spec,
+                &tables,
+                usize::MAX,
+                1,
+                spec.solved_index(),
+                &moves,
+                2,
+                None,
+                Some(&report),
+            )
+            .unwrap()
+        });
+        assert!(
+            gpu_seen.load(Ordering::Relaxed),
+            "GPU compute did not execute"
+        );
+        assert!(fallback_seen.load(Ordering::Relaxed));
+        assert!(!control.enabled());
+        assert_eq!(actual.1, baseline.1);
+        assert_eq!(actual.0.histogram, baseline.0.histogram);
+        assert!(
+            reached.lock().unwrap().windows(2).all(|w| w[0] <= w[1]),
+            "reached-state progress went backwards during handoff"
+        );
+    }
     #[test]
     fn bounded_dense_reads_preserve_surviving_values_and_skip_rejected_reads() {
         for first in [0, 1, 7, 254, 255] {
@@ -2205,5 +2446,13 @@ mod tests {
             super::move_set_suffix(&[U, R, Up]),
             super::move_set_suffix(&[R, U, Up])
         );
+    }
+}
+
+fn check_table_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        Err(io::Error::new(io::ErrorKind::Interrupted, CANCELLED))
+    } else {
+        Ok(())
     }
 }

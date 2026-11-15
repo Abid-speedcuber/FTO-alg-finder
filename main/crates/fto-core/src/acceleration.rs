@@ -1,9 +1,15 @@
 //! Per-operation GPU policy. CPU-only callers and builds keep the original generators.
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 #[cfg(feature = "gpu")]
 mod backend;
 #[cfg(feature = "gpu")]
-pub(crate) use backend::{BloomCompute, Gpu};
+pub(crate) use backend::{BloomCompute, Gpu, PruningCompute};
 
 pub type GenerationLog = dyn Fn(&str) + Send + Sync;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,7 +19,25 @@ pub enum Policy {
     /// Explicit compute path for diagnostics; hardware/error fallback still applies.
     Gpu,
 }
+pub struct GenerationControl {
+    enabled: AtomicBool,
+}
+impl GenerationControl {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled: AtomicBool::new(enabled),
+        }
+    }
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+}
 struct Session {
+    control: Arc<GenerationControl>,
+    live: bool,
     #[cfg(feature = "gpu")]
     policy: Policy,
     log: Option<Arc<GenerationLog>>,
@@ -29,21 +53,45 @@ pub fn with_policy<T>(
     log: Option<Arc<GenerationLog>>,
     action: impl FnOnce() -> T,
 ) -> T {
+    scoped_policy(
+        policy,
+        Arc::new(GenerationControl::new(policy != Policy::Cpu)),
+        false,
+        log,
+        action,
+    )
+}
+
+pub fn with_control<T>(
+    policy: Policy,
+    control: Arc<GenerationControl>,
+    log: Option<Arc<GenerationLog>>,
+    action: impl FnOnce() -> T,
+) -> T {
+    scoped_policy(policy, control, true, log, action)
+}
+fn scoped_policy<T>(
+    policy: Policy,
+    control: Arc<GenerationControl>,
+    live: bool,
+    log: Option<Arc<GenerationLog>>,
+    action: impl FnOnce() -> T,
+) -> T {
     struct Restore(Option<Arc<Session>>);
     impl Drop for Restore {
         fn drop(&mut self) {
             SESSION.with(|s| *s.borrow_mut() = self.0.take());
         }
     }
-    let next = (policy != Policy::Cpu).then(|| {
-        Arc::new(Session {
-            #[cfg(feature = "gpu")]
-            policy,
-            log,
-            #[cfg(feature = "gpu")]
-            gpu: std::sync::OnceLock::new(),
-        })
-    });
+    let next = Some(Arc::new(Session {
+        control,
+        live,
+        #[cfg(feature = "gpu")]
+        policy,
+        log,
+        #[cfg(feature = "gpu")]
+        gpu: std::sync::OnceLock::new(),
+    }));
     let _restore = Restore(SESSION.with(|s| s.replace(next)));
     #[cfg(not(feature = "gpu"))]
     if policy != Policy::Cpu {
@@ -62,15 +110,22 @@ pub(crate) fn log(message: &str) {
 }
 #[cfg(feature = "gpu")]
 pub(crate) fn forced() -> bool {
-    SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.policy == Policy::Gpu))
+    SESSION.with(|s| {
+        s.borrow()
+            .as_ref()
+            .is_some_and(|s| s.policy == Policy::Gpu && s.control.enabled())
+    })
 }
 #[cfg(feature = "gpu")]
 pub(crate) fn enabled() -> bool {
-    SESSION.with(|s| s.borrow().is_some())
+    SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.control.enabled()))
 }
 #[cfg(feature = "gpu")]
 pub(crate) fn gpu() -> Option<Arc<Gpu>> {
     let session = SESSION.with(|s| s.borrow().clone())?;
+    if !session.control.enabled() {
+        return None;
+    }
     session
         .gpu
         .get_or_init(|| {
@@ -89,6 +144,34 @@ pub(crate) fn gpu() -> Option<Arc<Gpu>> {
         .as_ref()
         .ok()
         .cloned()
+}
+
+pub(crate) fn live() -> bool {
+    SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.live))
+}
+pub(crate) fn fallback(reason: &str) {
+    SESSION.with(|s| {
+        if let Some(session) = s.borrow().as_ref() {
+            session.control.set_enabled(false);
+        }
+    });
+    log(&format!(
+        "generation backend: CPU; {reason}; continuing without losing progress"
+    ));
+}
+pub(crate) struct GenerationStage;
+impl Drop for GenerationStage {
+    fn drop(&mut self) {
+        log("generation stage: finished");
+    }
+}
+pub(crate) fn stage(name: &str) -> GenerationStage {
+    log(&format!("generation stage: CPU; {name}"));
+    #[cfg(not(feature = "gpu"))]
+    if SESSION.with(|s| s.borrow().as_ref().is_some_and(|s| s.control.enabled())) {
+        fallback("GPU acceleration is not compiled in");
+    }
+    GenerationStage
 }
 
 pub fn available_memory_bytes() -> u64 {
@@ -116,6 +199,34 @@ pub(crate) fn check_host_allocation(bytes: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(feature = "gpu")]
+    fn live_cpu_policy_can_be_changed_from_another_thread_and_reject_gpu() {
+        let control = Arc::new(GenerationControl::new(false));
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let saved = messages.clone();
+        let log: Arc<GenerationLog> =
+            Arc::new(move |message| saved.lock().unwrap().push(message.to_owned()));
+        with_control(Policy::Auto, control.clone(), Some(log), || {
+            assert!(!enabled());
+            let other = control.clone();
+            std::thread::spawn(move || other.set_enabled(true))
+                .join()
+                .unwrap();
+            assert!(enabled());
+            assert!(live());
+            fallback("GPU is slower than CPU in the timing comparison");
+            assert!(!enabled());
+        });
+        assert!(!enabled());
+        assert!(
+            messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains("slower") && m.contains("without losing progress"))
+        );
+    }
     #[cfg(feature = "gpu")]
     #[test]
     fn policy_scope_restores_after_nested_cpu_scope_and_panic() {

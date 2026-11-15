@@ -33,11 +33,17 @@ pub(crate) async fn generate_bloom_table(
             return Err("a solve or table build is already running".into());
         }
         *current = Some(cancel.clone());
+        solver_state
+            .operation_log
+            .lock()
+            .map_err(|_| "operation log lock poisoned")?
+            .clear();
     }
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
+    let generation = solver_state.generation.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = with_gpu_generation(request.use_gpu, &app, || {
+        let result = with_gpu_generation(request.use_gpu, &app, &generation, || {
             generate(&request, &cancel, &app, &cache)
         });
         if let Ok(mut current) = cancels.lock() {
@@ -79,6 +85,7 @@ fn generate(
         cache,
         &transition_dir(app, workspace).join("transition-table.tran"),
         app,
+        cancel,
     )?;
     emit_line(
         app,

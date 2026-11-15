@@ -1,6 +1,8 @@
 mod batch;
 mod bloom_cache;
 mod depths;
+mod generation;
+use generation::with_gpu_generation;
 mod validation;
 
 use fto_core::{
@@ -187,6 +189,8 @@ struct PruningTableInfo {
 
 #[derive(Default)]
 struct SolverState {
+    generation: generation::GenerationSlot,
+    operation_log: Mutex<std::collections::VecDeque<SolveLine>>,
     current_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     cache: Arc<Mutex<SolverCache>>,
 }
@@ -225,12 +229,18 @@ async fn solve_fto(
             return Err("a solve is already running".to_owned());
         }
         *current = Some(cancel.clone());
+        solver_state
+            .operation_log
+            .lock()
+            .map_err(|_| "operation log lock poisoned")?
+            .clear();
     }
 
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
+    let generation = solver_state.generation.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = with_gpu_generation(request.use_gpu, &app, || {
+        let response = with_gpu_generation(request.use_gpu, &app, &generation, || {
             run_solve_blocking(&request, &cancel, &app, &cancels, &cache)
         });
         let _ = response;
@@ -255,12 +265,18 @@ async fn generate_pruning_table(
             return Err("a solve or pruning build is already running".to_owned());
         }
         *current = Some(cancel.clone());
+        solver_state
+            .operation_log
+            .lock()
+            .map_err(|_| "operation log lock poisoned")?
+            .clear();
     }
 
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
+    let generation = solver_state.generation.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = with_gpu_generation(request.use_gpu, &app, || {
+        let result = with_gpu_generation(request.use_gpu, &app, &generation, || {
             generate_pruning_blocking(&request, &cancel, &app, &cache)
         });
         if let Ok(mut current) = cancels.lock() {
@@ -410,35 +426,64 @@ fn run_solve_blocking(
 }
 
 fn default_use_gpu() -> bool {
-    true
-}
-fn with_gpu_generation<T>(enabled: bool, app: &AppHandle, action: impl FnOnce() -> T) -> T {
-    let progress_app = app.clone();
-    let log: Arc<fto_core::acceleration::GenerationLog> =
-        Arc::new(move |message| emit_line(&progress_app, "acceleration", message));
-    fto_core::acceleration::with_policy(
-        if enabled {
-            fto_core::acceleration::Policy::Auto
-        } else {
-            fto_core::acceleration::Policy::Cpu
-        },
-        Some(log),
-        action,
-    )
+    false
 }
 
 fn emit_line(app: &AppHandle, kind: &str, text: &str) {
-    let _ = app.emit(
-        if batch::BATCH_LOG.with(|flag| flag.get()) {
-            "batch-log"
+    let line = SolveLine {
+        kind: kind.to_owned(),
+        text: text.to_owned(),
+    };
+    let is_batch = batch::BATCH_LOG.with(|flag| flag.get());
+    if !is_batch {
+        if let Some(state) = app.try_state::<SolverState>() {
+            if let Ok(mut log) = state.operation_log.lock() {
+                log.push_back(line.clone());
+                while log.len() > 500 {
+                    log.pop_front();
+                }
+            }
+        }
+    }
+    let _ = app.emit(if is_batch { "batch-log" } else { "solve-line" }, line);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SolverStatus {
+    running: bool,
+    batch: bool,
+    lines: Vec<SolveLine>,
+    generation: Option<generation::GenerationStatus>,
+}
+
+/// Reattach a reloaded webview to the worker that still owns the solver.
+#[tauri::command]
+fn get_solver_status(
+    state: tauri::State<'_, SolverState>,
+    batch: tauri::State<'_, batch::BatchState>,
+) -> Result<SolverStatus, String> {
+    let running = state
+        .current_cancel
+        .lock()
+        .map_err(|_| "solver state lock poisoned")?
+        .is_some();
+    Ok(SolverStatus {
+        running,
+        batch: batch.is_active(),
+        lines: if running {
+            state
+                .operation_log
+                .lock()
+                .map_err(|_| "operation log lock poisoned")?
+                .iter()
+                .cloned()
+                .collect()
         } else {
-            "solve-line"
+            Vec::new()
         },
-        SolveLine {
-            kind: kind.to_owned(),
-            text: text.to_owned(),
-        },
-    );
+        generation: generation::snapshot(&state.generation),
+    })
 }
 
 fn solve_fto_inner(
@@ -509,6 +554,7 @@ pub fn run() {
         .manage(batch::BatchState::default())
         .invoke_handler(tauri::generate_handler![
             solve_fto,
+            generation::set_generation_gpu,
             batch::start_batch,
             batch::pause_batch,
             batch::batch_status,
@@ -516,6 +562,7 @@ pub fn run() {
             generate_pruning_table,
             bloom_cache::generate_bloom_table,
             stop_solve,
+            get_solver_status,
             unload_pruning_table,
             pruning_cache_status,
             list_pruning_tables,
@@ -586,7 +633,7 @@ fn generate_pruning_blocking(
             }
         }
         let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
-        let tables = load_transition_tables(cache, &tables_path, app)?;
+        let tables = load_transition_tables(cache, &tables_path, app, cancel)?;
         let pruning_dir = pruning_dir(app, workspace_root).join("partial-coordinate-v1");
         fs::create_dir_all(&pruning_dir).map_err(|error| error.to_string())?;
         let move_suffix = pruning::move_set_suffix(&target_moves);
@@ -638,7 +685,7 @@ fn generate_pruning_blocking(
     let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
     let pruning_dir = pruning_dir(app, workspace_root);
     emit_line(app, "info", "generating pruning table...");
-    let tables = load_transition_tables(cache, &tables_path, app)?;
+    let tables = load_transition_tables(cache, &tables_path, app, cancel)?;
     if request.last_layer_mode {
         let pruning = load_ll_solver_pruning(
             cache,
@@ -716,7 +763,7 @@ fn run_in_process_solve(
     let selected_depths = depths::normalize(request.depths.as_deref(), request.max_depth)?;
     let tables_path = transition_dir(app, workspace_root).join("transition-table.tran");
     let pruning_dir = pruning_dir(app, workspace_root);
-    let tables = load_transition_tables(cache, &tables_path, app)?;
+    let tables = load_transition_tables(cache, &tables_path, app, cancel)?;
 
     if let Some(mask) = partial_mask {
         let problem = PartialProblem { cubie, mask };
@@ -869,6 +916,7 @@ fn load_transition_tables(
     cache: &Mutex<SolverCache>,
     path: &Path,
     app: &AppHandle,
+    cancel: &AtomicBool,
 ) -> Result<Arc<TransitionTables>, String> {
     {
         let cache = cache
@@ -898,7 +946,7 @@ fn load_transition_tables(
         );
     };
     let tables = Arc::new(
-        TransitionTables::load_or_build_reporting(path, Some(&progress))
+        TransitionTables::load_or_build_cancellable(path, Some(&progress), Some(cancel))
             .map_err(|error| error.to_string())?,
     );
     let mut cache = cache
@@ -2293,7 +2341,8 @@ mod tests {
         };
         targets.uf_slots[2] = vec![6, 7];
         targets.rl_slots[2] = vec![7, 8];
-        let (_, mask) = cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).unwrap();
+        let (_, mask) =
+            cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).unwrap();
         let mask = mask.unwrap();
         assert_eq!(mask.uf_entitled_slots[2], (1 << 6) | (1 << 7));
         assert_eq!(mask.rl_entitled_slots[2], (1 << 7) | (1 << 8));

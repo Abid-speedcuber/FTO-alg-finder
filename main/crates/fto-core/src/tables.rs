@@ -1,3 +1,4 @@
+// Cancellation never publishes an incomplete transition table to RAM.
 use crate::{
     FtoCoord, FtoCubie,
     coord::{
@@ -13,6 +14,7 @@ use std::{
     fs::File,
     io::{self, BufReader, BufWriter, Read, Write},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 const CACHE_MAGIC: &[u8; 16] = b"FTO_TRANS_V5\0\0\0\0";
@@ -45,7 +47,7 @@ impl TransitionTables {
     #[cfg(test)]
     pub(crate) fn add_search_transitions_for_tests(&mut self, allowed: &[Move]) {
         let moves = move_cubies();
-        self.edge_choice = build_edge_choice_table(&moves, None);
+        self.edge_choice = build_edge_choice_table(&moves, None).unwrap();
         let root = FtoCoord::solved();
         for (table, is_uf, start) in [
             (&mut self.uf_center, true, root.uf_center),
@@ -81,16 +83,18 @@ impl TransitionTables {
     pub(crate) fn solver_components_for_tests() -> Self {
         let mut tables = Self::corner_only_for_tests();
         let moves = move_cubies();
-        tables.edge3 = build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS, None);
+        tables.edge3 =
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::Edge, &EDGE3_COUNTS, None).unwrap();
         tables.uf_center3 =
-            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS, None);
+            build_color_table_u16(&moves, EdgeOrCenterOrbit::UfCenter, &CENTER3_COUNTS, None)
+                .unwrap();
         tables
     }
 
     #[cfg(test)]
     pub(crate) fn corner_only_for_tests() -> Self {
         Self {
-            corner: build_corner_table(&move_cubies(), None),
+            corner: build_corner_table(&move_cubies(), None).unwrap(),
             edge_choice: Vec::new(),
             edge3: Vec::new(),
             edge4: Vec::new(),
@@ -110,6 +114,14 @@ impl TransitionTables {
 
     #[must_use]
     pub fn build_reporting(report: Option<&TransitionReporter<'_>>) -> Self {
+        Self::build_cancellable(report, None).expect("uncancelled transition build")
+    }
+
+    pub fn build_cancellable(
+        report: Option<&TransitionReporter<'_>>,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<Self> {
+        check_cancel(cancel)?;
         let moves = move_cubies();
         let remaining_rows = EDGE_CHOICE_COUNT
             + EDGE3_COUNT
@@ -126,7 +138,9 @@ impl TransitionTables {
                                completed_before: usize,
                                table_weight: usize,
                                local_done: usize,
-                               local_total: usize| {
+                               local_total: usize|
+         -> io::Result<()> {
+            check_cancel(cancel)?;
             let weighted_local = if local_done >= local_total {
                 table_weight
             } else {
@@ -139,6 +153,7 @@ impl TransitionTables {
                     TRANSITION_PROGRESS_TOTAL,
                 );
             }
+            check_cancel(cancel)
         };
         if let Some(report) = report {
             report("corner", 0, TRANSITION_PROGRESS_TOTAL);
@@ -155,7 +170,7 @@ impl TransitionTables {
                     CORNER_COUNT,
                 )
             };
-            let table = build_corner_table(&moves, Some(&mut progress));
+            let table = build_corner_table(&moves, Some(&mut progress))?;
             table
         };
         let mut completed = CORNER_TRANSITION_PROGRESS_WEIGHT;
@@ -164,7 +179,7 @@ impl TransitionTables {
             let weight = weight_for_rows(EDGE_CHOICE_COUNT);
             let mut progress =
                 |done| report_progress("edge-choice", before, weight, done, EDGE_CHOICE_COUNT);
-            let table = build_edge_choice_table(&moves, Some(&mut progress));
+            let table = build_edge_choice_table(&moves, Some(&mut progress))?;
             completed += weight;
             table
         };
@@ -177,7 +192,7 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::Edge,
                 &EDGE3_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             completed += weight;
             table
         };
@@ -190,7 +205,7 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::Edge,
                 &EDGE4_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             completed += weight;
             table
         };
@@ -199,7 +214,7 @@ impl TransitionTables {
             let weight = weight_for_rows(CENTER_COUNT);
             let mut progress =
                 |done| report_progress("uf-center", before, weight, done, CENTER_COUNT);
-            let table = build_center_table(&moves, CenterOrbit::Uf, Some(&mut progress));
+            let table = build_center_table(&moves, CenterOrbit::Uf, Some(&mut progress))?;
             completed += weight;
             table
         };
@@ -208,7 +223,7 @@ impl TransitionTables {
             let weight = weight_for_rows(CENTER_COUNT);
             let mut progress =
                 |done| report_progress("rl-center", before, weight, done, CENTER_COUNT);
-            let table = build_center_table(&moves, CenterOrbit::Rl, Some(&mut progress));
+            let table = build_center_table(&moves, CenterOrbit::Rl, Some(&mut progress))?;
             completed += weight;
             table
         };
@@ -222,7 +237,7 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::UfCenter,
                 &CENTER2_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             completed += weight;
             table
         };
@@ -236,7 +251,7 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::UfCenter,
                 &CENTER3_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             completed += weight;
             table
         };
@@ -250,7 +265,7 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::RlCenter,
                 &CENTER2_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             completed += weight;
             table
         };
@@ -270,10 +285,10 @@ impl TransitionTables {
                 EdgeOrCenterOrbit::RlCenter,
                 &CENTER3_COUNTS,
                 Some(&mut progress),
-            );
+            )?;
             table
         };
-        Self {
+        Ok(Self {
             corner,
             edge_choice,
             edge3,
@@ -284,7 +299,7 @@ impl TransitionTables {
             uf_center3,
             rl_center2,
             rl_center3,
-        }
+        })
     }
 
     pub fn load_or_build(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -295,15 +310,25 @@ impl TransitionTables {
         path: impl AsRef<Path>,
         report: Option<&TransitionReporter<'_>>,
     ) -> io::Result<Self> {
+        Self::load_or_build_cancellable(path, report, None)
+    }
+
+    pub fn load_or_build_cancellable(
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<Self> {
+        check_cancel(cancel)?;
         let path = path.as_ref();
-        match Self::load_reporting(path, report) {
+        match Self::load_cancellable(path, report, cancel) {
             Ok(tables) => Ok(tables),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
             Err(_) => {
-                let tables = Self::build_reporting(report);
+                let tables = Self::build_cancellable(report, cancel)?;
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                tables.save_reporting(path, report)?;
+                tables.save_cancellable(path, report, cancel)?;
                 Ok(tables)
             }
         }
@@ -318,7 +343,18 @@ impl TransitionTables {
         path: impl AsRef<Path>,
         report: Option<&TransitionReporter<'_>>,
     ) -> io::Result<()> {
-        let mut writer = BufWriter::new(File::create(path)?);
+        self.save_cancellable(path, report, None)
+    }
+
+    pub fn save_cancellable(
+        &self,
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<()> {
+        check_cancel(cancel)?;
+        let pending = crate::cache_file::CacheWrite::new(path.as_ref())?;
+        let mut writer = BufWriter::new(File::create(pending.path())?);
         let total_rows = self.corner.len()
             + self.edge_choice.len()
             + self.edge3.len()
@@ -335,6 +371,7 @@ impl TransitionTables {
                 report("saving transition tables", written_rows, total_rows.max(1));
             }
         };
+        check_cancel(cancel)?;
         report_rows(0);
         writer.write_all(CACHE_MAGIC)?;
         write_u32(&mut writer, self.corner.len() as u32)?;
@@ -354,6 +391,7 @@ impl TransitionTables {
             }
             written_rows += 1;
             if written_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(written_rows);
             }
         }
@@ -363,6 +401,7 @@ impl TransitionTables {
             }
             written_rows += 1;
             if written_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(written_rows);
             }
         }
@@ -372,6 +411,7 @@ impl TransitionTables {
             }
             written_rows += 1;
             if written_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(written_rows);
             }
         }
@@ -381,6 +421,7 @@ impl TransitionTables {
             }
             written_rows += 1;
             if written_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(written_rows);
             }
         }
@@ -391,6 +432,7 @@ impl TransitionTables {
                 }
                 written_rows += 1;
                 if written_rows % 4096 == 0 {
+                    check_cancel(cancel)?;
                     report_rows(written_rows);
                 }
             }
@@ -407,12 +449,16 @@ impl TransitionTables {
                 }
                 written_rows += 1;
                 if written_rows % 4096 == 0 {
+                    check_cancel(cancel)?;
                     report_rows(written_rows);
                 }
             }
         }
         report_rows(total_rows);
-        writer.flush()
+        writer.flush()?;
+        check_cancel(cancel)?;
+        drop(writer);
+        pending.commit()
     }
 
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -423,6 +469,15 @@ impl TransitionTables {
         path: impl AsRef<Path>,
         report: Option<&TransitionReporter<'_>>,
     ) -> io::Result<Self> {
+        Self::load_cancellable(path, report, None)
+    }
+
+    pub fn load_cancellable(
+        path: impl AsRef<Path>,
+        report: Option<&TransitionReporter<'_>>,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<Self> {
+        check_cancel(cancel)?;
         let mut reader = BufReader::new(File::open(path)?);
         let mut magic = [0; 16];
         reader.read_exact(&mut magic)?;
@@ -474,6 +529,7 @@ impl TransitionTables {
                 report("loading transition tables", read_rows, total_rows.max(1));
             }
         };
+        check_cancel(cancel)?;
         report_rows(0);
 
         let mut corner = vec![[0; MOVE_COUNT]; CORNER_COUNT];
@@ -485,6 +541,7 @@ impl TransitionTables {
             }
             read_rows += 1;
             if read_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(read_rows);
             }
         }
@@ -498,6 +555,7 @@ impl TransitionTables {
             }
             read_rows += 1;
             if read_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(read_rows);
             }
         }
@@ -511,6 +569,7 @@ impl TransitionTables {
             }
             read_rows += 1;
             if read_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(read_rows);
             }
         }
@@ -524,6 +583,7 @@ impl TransitionTables {
             }
             read_rows += 1;
             if read_rows % 4096 == 0 {
+                check_cancel(cancel)?;
                 report_rows(read_rows);
             }
         }
@@ -539,6 +599,7 @@ impl TransitionTables {
                 }
                 read_rows += 1;
                 if read_rows % 4096 == 0 {
+                    check_cancel(cancel)?;
                     report_rows(read_rows);
                 }
             }
@@ -562,6 +623,7 @@ impl TransitionTables {
                 }
                 read_rows += 1;
                 if read_rows % 4096 == 0 {
+                    check_cancel(cancel)?;
                     report_rows(read_rows);
                 }
             }
@@ -682,8 +744,8 @@ enum EdgeOrCenterOrbit {
 
 fn build_corner_table(
     moves: &[FtoCubie; MOVE_COUNT],
-    mut progress: Option<&mut dyn FnMut(usize)>,
-) -> Vec<[u16; MOVE_COUNT]> {
+    mut progress: Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<Vec<[u16; MOVE_COUNT]>> {
     let mut table = vec![[0; MOVE_COUNT]; CORNER_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let (cp, co) = unrank_corner(rank as u16);
@@ -703,15 +765,15 @@ fn build_corner_table(
             CORNER_COUNT,
             CORNER_TRANSITION_PROGRESS_INTERVAL,
             &mut progress,
-        );
+        )?;
     }
-    table
+    Ok(table)
 }
 
 fn build_edge_choice_table(
     moves: &[FtoCubie; MOVE_COUNT],
-    mut progress: Option<&mut dyn FnMut(usize)>,
-) -> Vec<[u16; MOVE_COUNT]> {
+    mut progress: Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<Vec<[u16; MOVE_COUNT]>> {
     let mut table = vec![[0; MOVE_COUNT]; EDGE_CHOICE_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let bitmap = unrank_choice6(rank as u16);
@@ -723,16 +785,16 @@ fn build_edge_choice_table(
             EDGE_CHOICE_COUNT,
             TRANSITION_PROGRESS_INTERVAL,
             &mut progress,
-        );
+        )?;
     }
-    table
+    Ok(table)
 }
 
 fn build_center_table(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: CenterOrbit,
-    mut progress: Option<&mut dyn FnMut(usize)>,
-) -> Vec<[u32; MOVE_COUNT]> {
+    mut progress: Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<Vec<[u32; MOVE_COUNT]>> {
     let mut table = vec![[0; MOVE_COUNT]; CENTER_COUNT];
     for (rank, row) in table.iter_mut().enumerate() {
         let colors = unrank_center_colors(rank as u32);
@@ -749,17 +811,17 @@ fn build_center_table(
             CENTER_COUNT,
             TRANSITION_PROGRESS_INTERVAL,
             &mut progress,
-        );
+        )?;
     }
-    table
+    Ok(table)
 }
 
 fn build_color_table_u16(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: EdgeOrCenterOrbit,
     counts: &[u8],
-    mut progress: Option<&mut dyn FnMut(usize)>,
-) -> Vec<[u16; MOVE_COUNT]> {
+    mut progress: Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<Vec<[u16; MOVE_COUNT]>> {
     let size = multiset_count(counts) as usize;
     let mut table = vec![[0; MOVE_COUNT]; size];
     for (rank, row) in table.iter_mut().enumerate() {
@@ -768,17 +830,17 @@ fn build_color_table_u16(
             let next = apply_color_perm(&colors, move_perm(mv, orbit));
             row[move_idx] = rank_multiset_colors(&next, counts) as u16;
         }
-        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress);
+        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress)?;
     }
-    table
+    Ok(table)
 }
 
 fn build_color_table_u32(
     moves: &[FtoCubie; MOVE_COUNT],
     orbit: EdgeOrCenterOrbit,
     counts: &[u8],
-    mut progress: Option<&mut dyn FnMut(usize)>,
-) -> Vec<[u32; MOVE_COUNT]> {
+    mut progress: Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<Vec<[u32; MOVE_COUNT]>> {
     let size = multiset_count(counts) as usize;
     let mut table = vec![[0; MOVE_COUNT]; size];
     for (rank, row) in table.iter_mut().enumerate() {
@@ -787,22 +849,23 @@ fn build_color_table_u32(
             let next = apply_color_perm(&colors, move_perm(mv, orbit));
             row[move_idx] = rank_multiset_colors(&next, counts);
         }
-        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress);
+        report_transition_rows(rank + 1, size, TRANSITION_PROGRESS_INTERVAL, &mut progress)?;
     }
-    table
+    Ok(table)
 }
 
 fn report_transition_rows(
     done: usize,
     total: usize,
     interval: usize,
-    progress: &mut Option<&mut dyn FnMut(usize)>,
-) {
+    progress: &mut Option<&mut dyn FnMut(usize) -> io::Result<()>>,
+) -> io::Result<()> {
     if done % interval == 0 || done == total {
         if let Some(progress) = progress.as_deref_mut() {
-            progress(done);
+            progress(done)?;
         }
     }
+    Ok(())
 }
 
 fn move_perm(mv: &FtoCubie, orbit: EdgeOrCenterOrbit) -> &[u8; 12] {
@@ -861,5 +924,76 @@ mod tests {
             coord = tables.apply(coord, mv);
             assert_eq!(coord, cubie.coord());
         }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn transition_build_stops_between_chunks_without_writing_a_cache() {
+        let cancel = AtomicBool::new(false);
+        let reports = std::sync::Mutex::new(Vec::new());
+        let report = |name: &str, done: usize, _: usize| {
+            reports.lock().unwrap().push((name.to_owned(), done));
+            if done > 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        };
+        let error = TransitionTables::build_cancellable(Some(&report), Some(&cancel)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let reports = reports.lock().unwrap();
+        assert!(reports.iter().all(|(name, _)| name == "corner"));
+        assert!(reports.last().unwrap().1 < CORNER_TRANSITION_PROGRESS_WEIGHT);
+        // Cancellation must not be mistaken for a cache miss and start rebuilding.
+        let path = std::env::temp_dir().join(format!(
+            "fto-cancelled-transitions-{}.tran",
+            std::process::id()
+        ));
+        assert_eq!(
+            TransitionTables::load_or_build_cancellable(&path, None, Some(&cancel))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(!path.exists());
+        std::fs::write(&path, b"previous cache").unwrap();
+        cancel.store(false, Ordering::Relaxed);
+        let tables = TransitionTables {
+            corner: Vec::new(),
+            edge_choice: Vec::new(),
+            edge3: Vec::new(),
+            edge4: Vec::new(),
+            uf_center: Vec::new(),
+            rl_center: Vec::new(),
+            uf_center2: Vec::new(),
+            uf_center3: Vec::new(),
+            rl_center2: Vec::new(),
+            rl_center3: Vec::new(),
+        };
+        let stop_saving = |_: &str, _: usize, _: usize| {
+            cancel.store(true, Ordering::Relaxed);
+        };
+        assert_eq!(
+            tables
+                .save_cancellable(&path, Some(&stop_saving), Some(&cancel))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous cache");
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "table generation cancelled",
+        ))
+    } else {
+        Ok(())
     }
 }

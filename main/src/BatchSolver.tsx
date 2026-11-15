@@ -9,7 +9,7 @@ import BatchCaseInput, { type BatchCaseInputApi } from "./BatchCaseInput";
 import { parseDepthSelection } from "./depthSelection";
 import { clearCase, createProject, downloadFile, hasCase, newCase, parseProject, projectCsv, savedProjects, saveProject, type BatchCase, type BatchProject } from "./batchProject";
 
-type Props = { executionHold: ExecutionHold; active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
+type Props = { accelerationControl?: React.ReactNode; executionHold: ExecutionHold; active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
 function normalizeProject(project: BatchProject): BatchProject {
   const moves = normalizeMoveSelection(project.settings.moves);
   const removedTriggers = moves.length !== project.settings.moves.length;
@@ -66,7 +66,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   </dialog>;
 }
 
-export default function BatchSolver({ executionHold, active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
+export default function BatchSolver({ accelerationControl, executionHold, active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
   const [project, setProject] = useState<BatchProject>(() => createProject(moves, instanceMoves));
   const [projects, setProjects] = useState<BatchProject[]>([]);
   const [ready, setReady] = useState(false);
@@ -253,7 +253,7 @@ export default function BatchSolver({ executionHold, active, moves, instanceMove
         </section>
         <section className="batch-output-panel">
           <div className="batch-section-header"><h2>Output <span>{solutionCount} solutions</span></h2><button disabled={!count} onClick={() => void exportFile("csv")}>Export CSV</button></div>
-          <div className="batch-progress" role="status"><span>{solved}/{count} cases solved</span><span>{message || (project.status === "done" ? "Batch complete" : project.status === "paused" ? "Paused" : "Ready")}</span></div>
+          <div className="batch-output-status">{accelerationControl}<div className="batch-progress" role="status"><span>{solved}/{count} cases solved</span><span>{message || (project.status === "done" ? "Batch complete" : project.status === "paused" ? "Paused" : "Ready")}</span></div></div>
           <input className="batch-output-filter" aria-label="Filter output" placeholder="Filter by case number or setup" value={filter} onChange={e => setFilter(e.target.value)} />
           <div className="batch-output" tabIndex={0} aria-label="Batch results">
             {project.cases.map((entry,index) => hasCase(entry) && (!filter || String(index+1) === filter.trim() || entry.setup.toLowerCase().includes(filter.toLowerCase())) &&

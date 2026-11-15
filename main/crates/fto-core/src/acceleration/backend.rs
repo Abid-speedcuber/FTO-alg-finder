@@ -230,6 +230,7 @@ impl Gpu {
         // must finish before resources can be reused, even after cancellation.
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
+            active(cancel)?;
             self.healthy()?;
             if Instant::now() >= deadline {
                 return Err("GPU batch timed out; using CPU".into());
@@ -316,6 +317,7 @@ impl BatchSize {
 
 // Implementations below share adapter selection, allocation checks and pacing.
 
+#[cfg(test)]
 impl Gpu {
     pub(crate) fn pruning(
         &self,
@@ -563,6 +565,150 @@ impl Gpu {
             host_frontier = frontier_bits;
         }
         Err("pruning distance exceeds the table's byte representation".into())
+    }
+}
+
+pub(crate) struct PruningCompute {
+    gpu: Arc<Gpu>,
+    pipeline: wgpu::ComputePipeline,
+    bind: wgpu::BindGroup,
+    params: wgpu::Buffer,
+    frontier: wgpu::Buffer,
+    next: wgpu::Buffer,
+    readback: wgpu::Buffer,
+    parameters: Vec<u32>,
+    output_bytes: u64,
+    batch: BatchSize,
+}
+impl PruningCompute {
+    pub fn new(
+        gpu: Arc<Gpu>,
+        dimensions: &[u32],
+        transitions: &[u32],
+        visited_bits: &[u32],
+        moves: usize,
+    ) -> Result<Option<Self>, String> {
+        let total = dimensions
+            .iter()
+            .try_fold(1_u64, |n, &v| n.checked_mul(u64::from(v)))
+            .ok_or("GPU coordinate size overflow")?;
+        let bit_bytes = visited_bits.len() as u64 * 4;
+        let transition_bytes = transitions.len() as u64 * 4;
+        if total > u64::from(u32::MAX)
+            || dimensions.len() > 13
+            || moves == 0
+            || bit_bytes > gpu.binding_limit
+            || transition_bytes > gpu.binding_limit
+            || bit_bytes + transition_bytes + 16 * 1024 * 1024 > gpu.budget
+        {
+            return Ok(None);
+        }
+        let mut parameters = vec![
+            total as u32,
+            moves as u32,
+            dimensions.len() as u32,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        let mut offset = 0;
+        for &size in dimensions {
+            parameters.extend([size, offset]);
+            offset += size * moves as u32;
+        }
+        if offset as usize != transitions.len() {
+            return Err("GPU transition length mismatch".into());
+        }
+        gpu.begin_errors();
+        let pipeline = gpu.pipeline("FTO resumable BFS", include_str!("pruning_batch.wgsl"));
+        let rw = wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC;
+        let transitions = gpu.buffer("BFS transitions", transitions, wgpu::BufferUsages::STORAGE);
+        let visited = gpu.buffer("BFS existing discoveries", visited_bits, rw);
+        let params = gpu.buffer("BFS parameters", &parameters, rw);
+        let capacity = gpu
+            .dispatch_limit
+            .min(16_384)
+            .min((gpu.binding_limit / 4) as u32);
+        let frontier = gpu.empty("BFS frontier", u64::from(capacity) * 4, rw);
+        let output_bytes = (1 + u64::from(capacity) * moves as u64) * 4;
+        let next = gpu.empty("BFS discoveries", output_bytes, rw);
+        let readback = gpu.empty(
+            "BFS discoveries readback",
+            output_bytes,
+            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        );
+        let bind = gpu.bind(
+            &pipeline,
+            &[&transitions, &params, &visited, &frontier, &next],
+        );
+        gpu.end_errors()?;
+        let mut batch = BatchSize::new(&gpu, capacity);
+        batch.items = 4096.min(capacity);
+        super::log(&format!(
+            "generation backend: GPU; {} (GPU BFS working set {:.1} MiB)",
+            gpu.name,
+            (bit_bytes + output_bytes * 2 + transition_bytes) as f64 / 1048576.
+        ));
+        Ok(Some(Self {
+            gpu,
+            pipeline,
+            bind,
+            params,
+            frontier,
+            next,
+            readback,
+            parameters,
+            output_bytes,
+            batch,
+        }))
+    }
+    pub fn capacity(&self) -> usize {
+        self.batch.items.max(256) as usize
+    }
+
+    /// One bounded batch. Read back only its new discoveries, never an entire depth.
+    pub fn expand(
+        &mut self,
+        input: &[u32],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<(Vec<u32>, Duration), String> {
+        active(cancel)?;
+        if !super::enabled() {
+            return Err("GPU disabled by user".into());
+        }
+        if input.is_empty() || input.len() > self.batch.max as usize {
+            return Err("invalid GPU pruning batch size".into());
+        }
+        let started = Instant::now();
+        self.parameters[4] = input.len() as u32;
+        self.gpu
+            .queue
+            .write_buffer(&self.frontier, 0, &bytes(input));
+        self.gpu
+            .queue
+            .write_buffer(&self.params, 0, &bytes(&self.parameters));
+        self.gpu
+            .queue
+            .write_buffer(&self.next, 0, &0u32.to_le_bytes());
+        self.gpu
+            .submit(&self.pipeline, &self.bind, input.len() as u32, None);
+        let size = ((1 + input.len() * self.parameters[1] as usize) * 4) as u64;
+        debug_assert!(size <= self.output_bytes);
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&self.next, 0, &self.readback, 0, size);
+        self.gpu.queue.submit(Some(encoder.finish()));
+        let words = self.gpu.read(&self.readback, size, cancel)?;
+        let count = words[0] as usize;
+        if count >= words.len() {
+            return Err("GPU discovery buffer overflow".into());
+        }
+        let discoveries = words[1..=count].to_vec();
+        self.batch.observe(started.elapsed());
+        Ok((discoveries, started.elapsed()))
     }
 }
 
@@ -912,5 +1058,80 @@ mod tests {
         let hashes = bloom.flush(None).unwrap();
         assert_eq!(hashes.len(), 15);
         assert!(hashes.iter().all(|h| h == &hashes[0]));
+    }
+}
+
+#[cfg(test)]
+mod bounded_pruning_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires GPU compute"]
+    fn bounded_gpu_batch_returns_discoveries_before_finishing_a_depth() {
+        use crate::acceleration::{self, Policy};
+        acceleration::with_policy(Policy::Gpu, None, || {
+            let gpu = acceleration::gpu().expect("GPU required");
+            let side = 4096usize;
+            let moves = 12;
+            let total = side * side;
+            let mut transitions = Vec::new();
+            for component in 0..2 {
+                for value in 0..side {
+                    for mv in 0..moves {
+                        transitions.push(
+                            ((value * (2 * mv + 1) + mv * 197 + component * 37) % side) as u32,
+                        );
+                    }
+                }
+            }
+            let input: Vec<_> = (0..16384u32).map(|i| (i * 997) % total as u32).collect();
+            let mut visited = vec![0u32; total.div_ceil(32)];
+            for &i in &input {
+                visited[i as usize / 32] |= 1 << (i % 32);
+            }
+            let mut cpu = visited.clone();
+            let sample = &input[..4096];
+            let started = Instant::now();
+            let mut expected = Vec::new();
+            for &index in sample {
+                let a = index as usize / side;
+                let b = index as usize % side;
+                for mv in 0..moves {
+                    let child = transitions[a * moves + mv] as usize * side
+                        + transitions[(side + b) * moves + mv] as usize;
+                    let flag = 1 << (child % 32);
+                    if cpu[child / 32] & flag == 0 {
+                        cpu[child / 32] |= flag;
+                        expected.push(child as u32);
+                    }
+                }
+            }
+            let cpu_time = started.elapsed();
+            let mut engine = PruningCompute::new(
+                gpu,
+                &[side as u32, side as u32],
+                &transitions,
+                &visited,
+                moves,
+            )
+            .unwrap()
+            .unwrap();
+            let (mut actual, elapsed) = engine.expand(sample, None).unwrap();
+            expected.sort_unstable();
+            actual.sort_unstable();
+            assert_eq!(actual, expected);
+            println!(
+                "Bounded pilot: CPU {:.0} vs GPU {:.0} newly visited nodes/s; GPU returned after {:.2}ms having expanded only {} of {} frontier nodes",
+                expected.len() as f64 / cpu_time.as_secs_f64(),
+                actual.len() as f64 / elapsed.as_secs_f64(),
+                elapsed.as_secs_f64() * 1000.,
+                sample.len(),
+                input.len()
+            );
+            // A later batch returns only new discoveries, and Stop interrupts before dispatch.
+            let (second, _) = engine.expand(&input[4096..8192], None).unwrap();
+            assert!(second.iter().all(|i| actual.binary_search(i).is_err()));
+            let cancel = AtomicBool::new(true);
+            assert!(engine.expand(&input[8192..12288], Some(&cancel)).is_err());
+        });
     }
 }

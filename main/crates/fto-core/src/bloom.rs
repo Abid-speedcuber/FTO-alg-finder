@@ -325,6 +325,10 @@ impl BloomTable {
         report: Option<&BloomReporter<'_>>,
     ) -> Result<Self, String> {
         #[cfg(feature = "gpu")]
+        if crate::acceleration::live() {
+            return Self::generate_inner(tables, moves, config, cancel, report, true);
+        }
+        #[cfg(feature = "gpu")]
         if crate::acceleration::enabled() {
             match Self::generate_inner(tables, moves, config, cancel, report, true) {
                 Ok(table) => return Ok(table),
@@ -349,6 +353,7 @@ impl BloomTable {
         report: Option<&BloomReporter<'_>>,
         _use_gpu: bool,
     ) -> Result<Self, String> {
+        let _stage = crate::acceleration::stage("Bloom table");
         if !(1..=20).contains(&config.depth) {
             return Err("Bloom depth must be between 1 and 20".into());
         }
@@ -435,24 +440,46 @@ impl BloomTable {
             paths: 0,
         };
         #[cfg(feature = "gpu")]
-        let gpu = if _use_gpu
+        let gpu_eligible = _use_gpu
             && total
-                >= (if crate::acceleration::forced() {
+                >= if crate::acceleration::forced() {
                     16_384
                 } else {
                     1_000_000
-                })
-            && reverse.len() >= 2
-        {
-            prepare_gpu(
+                }
+            && reverse.len() >= 2;
+        #[cfg(feature = "gpu")]
+        let gpu = if gpu_eligible && crate::acceleration::enabled() {
+            match prepare_gpu(
                 tables,
                 &reverse,
                 &successors,
                 config,
                 cancel,
-                table.words.len() as u64 * 8,
-            )
-            .map_err(|e| format!("GPU Bloom: {e}"))?
+                if crate::acceleration::live() {
+                    0
+                } else {
+                    table.words.len() as u64 * 8
+                },
+            ) {
+                Ok(Some(gpu)) => {
+                    crate::acceleration::log("generation backend: GPU; Bloom enumeration");
+                    Some(gpu)
+                }
+                Ok(None) => {
+                    if crate::acceleration::live() {
+                        crate::acceleration::fallback(
+                            "GPU unavailable or its memory budget is insufficient",
+                        );
+                    }
+                    None
+                }
+                Err(error) if crate::acceleration::live() => {
+                    crate::acceleration::fallback(&error);
+                    None
+                }
+                Err(error) => return Err(format!("GPU Bloom: {error}")),
+            }
         } else {
             None
         };
@@ -465,6 +492,12 @@ impl BloomTable {
             gpu_roots: Vec::new(),
             #[cfg(feature = "gpu")]
             gpu_calibrated: false,
+            #[cfg(feature = "gpu")]
+            gpu_eligible,
+            #[cfg(feature = "gpu")]
+            gpu_attempted: false,
+            #[cfg(feature = "gpu")]
+            config,
             #[cfg(feature = "gpu")]
             reverse: reverse.clone(),
             successors,
@@ -535,6 +568,12 @@ struct Builder<'a> {
     gpu_calibrated: bool,
     #[cfg(feature = "gpu")]
     reverse: Vec<Move>,
+    #[cfg(feature = "gpu")]
+    gpu_eligible: bool,
+    #[cfg(feature = "gpu")]
+    gpu_attempted: bool,
+    #[cfg(feature = "gpu")]
+    config: GenerateConfig,
     table: &'a mut BloomTable,
     tables: &'a TransitionTables,
     successors: Vec<Vec<Move>>,
@@ -547,6 +586,33 @@ struct Builder<'a> {
 impl Builder<'_> {
     #[cfg(feature = "gpu")]
     fn flush_gpu(&mut self) -> Result<(), String> {
+        let roots = self.gpu_roots.clone();
+        let tail = self.gpu.as_ref().map(|gpu| gpu.tail_depth);
+        match self.flush_gpu_inner() {
+            Ok(()) => Ok(()),
+            Err(error)
+                if crate::acceleration::live()
+                    && error.starts_with("GPU Bloom:")
+                    && !self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) =>
+            {
+                // Live jobs keep all completed hashes in host RAM. Only this
+                // uncommitted batch needs replaying after a device failure.
+                self.gpu = None;
+                self.gpu_attempted = false;
+                self.gpu_roots.clear();
+                crate::acceleration::fallback(&error);
+                if let Some(tail) = tail {
+                    for (state, last) in roots {
+                        self.visit(state, tail, last)?;
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(feature = "gpu")]
+    fn flush_gpu_inner(&mut self) -> Result<(), String> {
         let Some(gpu) = &mut self.gpu else {
             return Ok(());
         };
@@ -581,13 +647,14 @@ impl Builder<'_> {
                 return Err("GPU Bloom: pilot hash mismatch".into());
             }
             self.gpu_calibrated = true;
-            if gpu_rate > cpu_rate * 0.8 {
-                crate::acceleration::log(&format!(
-                    "GPU Bloom pilot is slower than CPU ({:.0} vs {:.0} ns/state); continuing on CPU",
+            if gpu_rate > cpu_rate {
+                crate::acceleration::fallback(&format!(
+                    "GPU is slower than CPU in the Bloom timing comparison ({:.0} vs {:.0} ns/state)",
                     gpu_rate * 1e9,
                     cpu_rate * 1e9
                 ));
                 self.gpu = None;
+                self.gpu_attempted = false;
             } else if let Some(gpu) = &mut self.gpu {
                 gpu.retain_gpu();
             }
@@ -657,6 +724,48 @@ impl Builder<'_> {
         Ok(())
     }
     fn visit(&mut self, state: BuildState, left: u8, last: usize) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        if self.gpu_eligible && (self.gpu.is_some() || self.table.paths & 1023 == 0) {
+            if !crate::acceleration::enabled() {
+                if self.gpu.is_some() {
+                    self.flush_gpu()?;
+                    self.finish_gpu()?;
+                    crate::acceleration::log(
+                        "generation backend: CPU; GPU disabled by user; completed batches retained",
+                    );
+                }
+                self.gpu_attempted = false;
+            } else if self.gpu.is_none() && !self.gpu_attempted && self.table.paths & 1023 == 0 {
+                self.gpu_attempted = true;
+                match prepare_gpu(
+                    self.tables,
+                    &self.reverse,
+                    &self.successors,
+                    self.config,
+                    self.cancel,
+                    if crate::acceleration::live() {
+                        0
+                    } else {
+                        self.table.words.len() as u64 * 8
+                    },
+                ) {
+                    Ok(Some(gpu)) => {
+                        self.gpu = Some(gpu);
+                        self.gpu_calibrated = false;
+                        crate::acceleration::log(
+                            "generation backend: GPU; continuing the current Bloom traversal",
+                        );
+                    }
+                    Ok(None) => crate::acceleration::fallback(
+                        "GPU unavailable or its memory budget is insufficient",
+                    ),
+                    Err(error) if self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                        return Err(error);
+                    }
+                    Err(error) => crate::acceleration::fallback(&error),
+                }
+            }
+        }
         #[cfg(feature = "gpu")]
         if self.gpu.as_ref().is_some_and(|gpu| left == gpu.tail_depth) {
             let mut job = [0_u32; 11];
@@ -1280,6 +1389,82 @@ mod tests {
         )
         .unwrap();
         assert!(huge_budget.info().bytes < 1024 * 1024);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "requires GPU compute"]
+    fn live_cpu_gpu_cpu_bloom_preserves_filter_and_progress() {
+        use crate::acceleration::{self, GenerationControl, GenerationLog, Policy};
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let moves = [Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp];
+        let mut tables = TransitionTables::solver_components_for_tests();
+        tables.add_search_transitions_for_tests(&moves);
+        let config = GenerateConfig {
+            mode: BloomMode::LastLayer,
+            depth: 9,
+            max_memory_mib: 16,
+        };
+        let expected = BloomTable::generate(&tables, &moves, config, None, None).unwrap();
+        let control = Arc::new(GenerationControl::new(false));
+        let gpu_seen = Arc::new(AtomicBool::new(false));
+        let fell_back = AtomicBool::new(false);
+        let seen = gpu_seen.clone();
+        let log: Arc<GenerationLog> = Arc::new(move |s| {
+            println!("{s}");
+            if s.starts_with("generation backend: GPU") {
+                seen.store(true, Ordering::Relaxed);
+            }
+        });
+        let progress = Mutex::new(Vec::new());
+        let report = |p: &BloomProgress| {
+            progress.lock().unwrap().push(p.visited);
+            if gpu_seen.load(Ordering::Relaxed) && !fell_back.swap(true, Ordering::Relaxed) {
+                acceleration::fallback(
+                    "GPU is slower than CPU (injected timing result for Bloom handoff parity)",
+                );
+            } else if !gpu_seen.load(Ordering::Relaxed) && p.visited > 0 {
+                control.set_enabled(true);
+            }
+        };
+        let actual = acceleration::with_control(Policy::Gpu, control.clone(), Some(log), || {
+            BloomTable::generate(&tables, &moves, config, None, Some(&report))
+        })
+        .unwrap();
+        assert!(gpu_seen.load(Ordering::Relaxed));
+        assert!(fell_back.load(Ordering::Relaxed));
+        assert_eq!(expected.words, actual.words);
+        assert_eq!(expected.paths, actual.paths);
+        assert!(progress.lock().unwrap().windows(2).all(|w| w[0] <= w[1]));
+        // Exercise the real timing decision as well as the injected fallback.
+        let automatic_control = Arc::new(GenerationControl::new(true));
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let output = messages.clone();
+        let timing_log: Arc<GenerationLog> = Arc::new(move |s| {
+            println!("AUTO: {s}");
+            output.lock().unwrap().push(s.to_owned());
+        });
+        let automatic = acceleration::with_control(
+            Policy::Auto,
+            automatic_control.clone(),
+            Some(timing_log),
+            || BloomTable::generate(&tables, &moves, config, None, None),
+        )
+        .unwrap();
+        assert_eq!(expected.words, automatic.words);
+        assert_eq!(expected.paths, automatic.paths);
+        if !automatic_control.enabled() {
+            assert!(
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.contains("slower than CPU"))
+            );
+        }
     }
 
     #[cfg(feature = "gpu")]
