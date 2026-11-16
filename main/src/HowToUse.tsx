@@ -3,10 +3,9 @@ import InputKeyboard from "./InputKeyboard";
 
 const topics = [
   ["search-guide", "How to search"],
-  ["solver-settings", "Modes & settings"],
-  ["input", "Input"],
-  ["search", "Moves & search"],
-  ["tables", "Tables & storage"],
+  ["solver-settings", "Solver settings"],
+  ["input", "Input Methods"],
+  ["tables", "Solver Performance"],
   ["batch", "Batch solving"],
   ["combiner", "Alg combiner"],
   ["settings", "Settings & shortcuts"],
@@ -64,6 +63,8 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
             <li><strong>A cleaner right sidebar.</strong> Keep the relevant moves easy to find.</li>
             <li><strong>Separate workflows.</strong> Give each use of the solver its own move set and tables.</li>
           </ol>
+          <p>Use the instance dropdown to switch or create instances. Expand <strong>More moves</strong> when creating one to include less-used moves. Right-click an instance name in the dropdown to delete it.</p>
+          <p>The allowed-move buttons select which of the instance’s moves to search with. <strong>All</strong> and <strong>None</strong> toggle the whole set; <strong>Invert</strong> reverses the selection. To use a move outside the instance’s set, create an instance that includes it. Restricting moves can require longer algorithms or make a case unreachable.</p>
           <h4>Choose your generators carefully</h4>
           <p>This app is designed to find algorithms quickly. Treating it as a general-purpose FTO solver can lead to very long searches. The moves you allow have a huge effect on how much work the solver has to do.</p>
           <p>For a practical algorithm, you usually want to stick to four or five move types rather than mixing seven different ones. Start with move sets you would actually be comfortable executing.</p>
@@ -85,6 +86,7 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <h4>Depth</h4>
           <p>Depth is the number of moves in the algorithm being searched for. A move and its inverse each count as one move. The depth field accepts a single number such as <code>12</code>, an inclusive range such as <code>12-15</code>, or a comma-separated mix such as <code>12-15, 17, 20</code>. Explicit depths are searched in ascending order; valid values are whole numbers from 0 to 255.</p>
           <p>The default, <strong>auto</strong>, searches progressively deeper until it finds a solution. Leaving the field blank also means auto. Use this when you want the shortest solution with your selected moves; enter specific depths when you want to explore particular algorithm lengths.</p>
+          <p>The information button beside Depth shows the accepted input format. <strong>Stop</strong> ends a solver search; batch solving has its own Pause and resume controls.</p>
           <h4>All solutions</h4>
           <p>With <strong>All solutions</strong> off, the search stops after finding one solution. Turn it on to collect alternatives so you can compare algorithms and choose one that feels good to execute.</p>
           <p>With auto depth, All solutions collects solutions at the first successful depth. With explicit depths, it searches every selected depth and collects solutions at each one. Finding all solutions can take much longer than finding just one.</p>
@@ -148,17 +150,10 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <p>Click another option in the same group to replace its pattern. Click the selected option again to clear that group back to solved relative to the current AUF. The other group is kept when compatible. The thumbnails update as you build the case.</p>
         </section>
 
-        <section id="how-to-search" tabIndex={-1}>
-          <h3>Moves, instances &amp; search</h3>
-          <p>An <strong>instance</strong> stores a move set and uses pruning tables built for it. Open the instance dropdown to switch or create instances; expand More moves when creating one to include less-used moves. Right-click an instance name in the dropdown to delete it.</p>
-          <p>The allowed-move buttons enable or disable moves within that instance. All and None toggle the whole set; Invert reverses which moves are enabled. If a move is outside the instance’s set, create an instance that includes it. A smaller move set can make pruning more effective, but it can also require longer solutions or make a case unreachable.</p>
-          <p>The small information button beside Depth explains the depth syntax. Stop ends a solver search; batch mode has a separate Pause and resume workflow.</p>
-        </section>
-
         <section id="how-to-tables" tabIndex={-1}>
           <h3>Pruning tables &amp; storage</h3>
           <p>Open <strong>⋮ → Pruning</strong> to generate pattern or Bloom tables. Match the table’s move set and goal mode to the searches you plan to run. Compatible saved tables are reused automatically; a table can cover a search using a subset of its moves.</p>
-          <p>Bloom tables store a neighborhood around the goal. Choose a depth and memory budget, and select Last-layer mode when that is the intended goal. Full-position and last-layer tables serve different goals. Partial-position searches use their partial pruning.</p>
+          <p>Bloom tables store a neighborhood around the goal. Choose a depth and memory budget, and select Last-layer mode when that is the intended goal.</p>
           <p>Both Pruning tabs show the full move pool. Opening Pruning copies the moves currently selected in the solver; you can then choose a different set for the table. Labels follow the execution hold.</p>
           <p><strong>Undefine pieces…</strong> opens a separate solved puzzle. Click whole pieces to ignore or restore them, and drag to orbit. Use these pieces saves the table goal without changing the main puzzle. Pattern tables use a joint coordinate projection with a default budget of 512 MiB. The actual size depends on the defined pieces and useful projections; a larger table does not guarantee a particular search speedup.</p>
           <p>Partial Bloom tables store a near-goal membership filter for the selected partial goal. Their memory cap controls the saved filter, while the projection workspace budget controls the temporary coordinate table. Compatible partial searches, including batch cases, load dedicated tables automatically and retain the ordinary piece heuristics. A search may use a subset of the table’s moves and may define additional pieces. Last-layer mode must match.</p>
@@ -168,7 +163,7 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
 
         <section id="how-to-batch" tabIndex={-1}>
           <h3>Batch solving</h3>
-          <p>Choose <strong>⋮ → Switch to batch solving</strong>. Enter one setup per numbered line. Pasting multiple lines creates multiple cases; all notation aliases and input orientation markers work here. Each case starts with its own default orientation.</p>
+          <p>Choose <strong>⋮ → Switch to batch solving</strong>. Enter one setup per numbered line. Pasting multiple lines creates multiple cases. Each case starts with its own default input orientation.</p>
           <ul>
             <li>Press <strong>Tab</strong> on a setup line to open its visual editor. Saved visual cases appear as <strong>Case N</strong> links. Click a link to reopen it.</li>
             <li>Select across lines and use Backspace or Delete to remove cases. Undo and redo restore text edits, including visual entries.</li>
