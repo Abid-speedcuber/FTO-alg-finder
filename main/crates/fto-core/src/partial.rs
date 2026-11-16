@@ -93,6 +93,18 @@ pub fn solve_partial_threads_with_cache(
     threads: usize,
     cache_dir: Option<&Path>,
 ) -> SearchResult {
+    solve_partial_threads_with_cache_reporting(problem, config, threads, cache_dir, |_| {})
+}
+
+/// Reports each automatic search depth before its search starts.
+#[must_use]
+pub fn solve_partial_threads_with_cache_reporting(
+    problem: &PartialProblem,
+    config: &SearchConfig,
+    threads: usize,
+    cache_dir: Option<&Path>,
+    mut report_depth: impl FnMut(u8),
+) -> SearchResult {
     let prepared = PreparedPartialSearch::new(problem, config, cache_dir);
     let pruning = &prepared.pruning;
     let mut total = SearchResult {
@@ -109,7 +121,15 @@ pub fn solve_partial_threads_with_cache(
         pruning.heuristic(&problem.cubie)
     });
     for depth in start_depth..=config.max_depth {
+        if config
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            break;
+        }
         eprintln!("searching depth {depth}...");
+        report_depth(depth);
         let depth_result = prepared.solve_depth(config, depth, threads);
         let depth_nodes = depth_result.nodes;
         total.nodes += depth_nodes;
@@ -1465,6 +1485,82 @@ pub fn format_partial_solutions(result: SearchResult) -> (u64, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automatic_partial_search_reports_each_depth_until_a_solution() {
+        for threads in [1, 4] {
+            let mut mask = PartialMask::all();
+            mask.corners = [true, true, false, false, false, false];
+            mask.edges.fill(false);
+            mask.uf_centers.fill(false);
+            mask.rl_centers.fill(false);
+            let problem = PartialProblem {
+                cubie: FtoCubie::solved()
+                    .apply(Move::R)
+                    .apply(Move::U)
+                    .apply(Move::F),
+                mask,
+            };
+            let config = SearchConfig {
+                max_depth: 4,
+                allowed_moves: vec![Move::R, Move::Rp, Move::U, Move::Up, Move::F, Move::Fp],
+                ..Default::default()
+            };
+            let mut depths = Vec::new();
+            let result = super::solve_partial_threads_with_cache_reporting(
+                &problem,
+                &config,
+                threads,
+                None,
+                |depth| depths.push(depth),
+            );
+            assert!(!result.solutions.is_empty());
+            let solution_depth = result.solutions[0].len() as u8;
+            assert_eq!(depths.last(), Some(&solution_depth));
+            assert_eq!(depths, (depths[0]..=solution_depth).collect::<Vec<_>>());
+            assert_eq!(
+                result.solutions,
+                super::solve_partial_threads(&problem, &config, threads).solutions
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_partial_search_does_not_report_depths_after_cancellation() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let mut mask = PartialMask::all();
+        mask.corners.fill(false);
+        mask.edges.fill(false);
+        mask.uf_centers.fill(false);
+        mask.rl_centers.fill(false);
+        let problem = PartialProblem {
+            cubie: FtoCubie::solved(),
+            mask,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let config = SearchConfig {
+            max_depth: 4,
+            cancel: Some(cancel.clone()),
+            ..Default::default()
+        };
+        let mut depths = Vec::new();
+        let result = super::solve_partial_threads_with_cache_reporting(
+            &problem,
+            &config,
+            1,
+            None,
+            |depth| {
+                depths.push(depth);
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            },
+        );
+        assert_eq!(depths, [0]);
+        assert!(result.solutions.is_empty());
+        let _ =
+            super::solve_partial_threads_with_cache_reporting(&problem, &config, 1, None, |_| {
+                panic!("cancelled searches must not report a new depth")
+            });
+    }
+
     #[test]
     fn empty_coordinate_pruning_skips_full_coordinate_ranking() {
         let pruning =

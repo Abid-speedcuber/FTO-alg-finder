@@ -784,12 +784,21 @@ fn run_in_process_solve(
                 Ok(result)
             })?
         } else {
-            partial::solve_partial_threads_with_cache(
+            let mut current_depth = None;
+            let result = partial::solve_partial_threads_with_cache_reporting(
                 &problem,
                 &config,
                 request.threads.max(1),
                 Some(&pruning_dir.join("partial-goal-v1")),
-            )
+                |depth| {
+                    current_depth = Some(depth);
+                    emit_line(app, "search", &format!("searching depth {depth}..."));
+                },
+            );
+            if let Some(depth) = current_depth.filter(|_| !result.solutions.is_empty()) {
+                emit_line(app, "info", &format!("found solution at depth {depth}"));
+            }
+            result
         };
         let result = output.finish(result);
         let solutions = format_solutions(&result.solutions);
