@@ -9,6 +9,7 @@
 import { cpPerm, epPerm, type CpOption, type EpOption } from "./llSetup";
 
 export const EP_OPTIONS: EpOption[] = [
+  { id: "solved", label: "Solved", perm: epPerm([]) },
   { id: "lunge", label: "lunge", perm: epPerm([["L1", "R1"]]) },
   { id: "left-arm", label: "left arm", perm: epPerm([["L1", "R2"]]) },
   { id: "right-arm", label: "right arm", perm: epPerm([["L2", "R1"]]) },
@@ -47,6 +48,7 @@ export const EP_OPTIONS: EpOption[] = [
 ];
 
 export const CP_OPTIONS: CpOption[] = [
+  { id: "solved", label: "Solved", row: 1, perm: cpPerm([]), twists: [] },
   { id: "cw", label: "CW", row: 1, perm: cpPerm([["TL", "TR", "BOT"]]), twists: [] },
   { id: "ccw", label: "CCW", row: 1, perm: cpPerm([["TL", "BOT", "TR"]]), twists: [] },
   { id: "twist", label: "Twist", row: 1, perm: cpPerm([]), twists: ["TR", "BOT"] },

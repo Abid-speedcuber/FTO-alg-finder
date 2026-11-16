@@ -4,7 +4,7 @@ import InputKeyboard from "./InputKeyboard";
 const topics = [
   ["search-guide", "How to search"],
   ["solver-settings", "Solver settings"],
-  ["input", "Input Methods"],
+  ["input", "Input & Output"],
   ["tables", "Solver Performance"],
   ["batch", "Batch solving"],
   ["combiner", "Alg combiner"],
@@ -141,7 +141,7 @@ export default function HowToUse({ onClose }: { onClose: () => void }) {
           <InputKeyboard />
 
           <h4 id="how-to-last-layer-input" tabIndex={-1}>4. Last-layer table input</h4>
-          <p>Expand <strong>Set up LL</strong> in the sidebar using its arrow. The table lets you build a last-layer case directly by combining L6X and L3C choices, with U adjustments between them.</p>
+          <p>Click <strong>Choose cases</strong> beside <strong>Set up LL</strong> in the sidebar. The floating picker lets you combine cases from the L6X and L3C tabs, with U adjustments using the fixed U and U' buttons. The case grid scrolls independently, and the picker stays open while you build the case.</p>
           <ol>
             <li><strong>Choose an L6X case.</strong></li>
             <li><strong>Adjust the alignment.</strong></li>

@@ -75,7 +75,7 @@ const defaultInstanceMoves = [
 const defaultMoveSet = new Set(defaultInstanceMoves);
 const moreInstanceMoves = moves.filter((move) => !defaultMoveSet.has(move));
 const moveChooserNote =
-  "Move labels follow the execution hold. Selections refer to the same physical moves when the hold changes. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
+  "All the moves here refers to the CIF state. You can use the B layer as U layer, or BR layer as R layer to generate algs, and then translate the outputs to human-readable notation using the execution angle feature. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
 
 const INSTANCES_KEY = "fto.instances.v1";
 const GPU_KEY = "fto.gpuAcceleration.v1";
