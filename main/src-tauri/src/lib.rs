@@ -1,7 +1,9 @@
 mod batch;
+mod batch_tables;
 mod bloom_cache;
 mod depths;
 mod generation;
+mod gpu_profile;
 use generation::with_gpu_generation;
 mod validation;
 
@@ -386,6 +388,7 @@ fn reset_app_data(
     app: AppHandle,
 ) -> Result<(), String> {
     unload_pruning_table(solver_state)?;
+    gpu_profile::reset(&app)?;
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")));
@@ -558,9 +561,16 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SolverState::default())
         .manage(batch::BatchState::default())
+        .manage(gpu_profile::GpuProfileState::default())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { let _ = gpu_profile::get_gpu_profile(handle).await; });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             solve_fto,
             generation::set_generation_gpu,
+            gpu_profile::get_gpu_profile,
             batch::start_batch,
             batch::pause_batch,
             batch::batch_status,
@@ -1076,7 +1086,7 @@ fn load_solver_pruning(
     app: &AppHandle,
 ) -> Result<Arc<SolverPruning>, String> {
     let target =
-        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
+        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning, false)?;
     {
         let cache = cache
             .lock()
@@ -1138,9 +1148,11 @@ fn load_ll_solver_pruning(
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
 ) -> Result<Arc<PatternDatabases>, String> {
-    let mut target =
-        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning)?;
-    ensure_ll_free_u_moves(&mut target);
+    let mut ll_allowed = allowed_moves.to_vec();
+    let mut ll_instance = instance_moves.to_vec();
+    ensure_ll_free_u_moves(&mut ll_allowed);
+    ensure_ll_free_u_moves(&mut ll_instance);
+    let target = select_pruning_move_set(out_dir, &ll_allowed, &ll_instance, restricted_pruning, true)?;
     {
         let cache = cache
             .lock()
@@ -1184,6 +1196,8 @@ fn load_ll_solver_pruning(
             Some(&progress),
         )?);
     }
+    // Older LL files did not embed move metadata. Record it for discovery too.
+    let _ = fs::write(ll_dir.join(format!("{move_code}.moves")), pruning::move_set_suffix(&target));
     let pruning = Arc::new(PatternDatabases::new(databases));
     emit_line(
         app,
@@ -1493,6 +1507,7 @@ fn select_pruning_move_set(
     allowed_moves: &[Move],
     instance_moves: &[Move],
     restricted_pruning: bool,
+    last_layer: bool,
 ) -> Result<Vec<Move>, String> {
     if allowed_moves.is_empty() {
         return Err("at least one move must be allowed".to_owned());
@@ -1505,7 +1520,7 @@ fn select_pruning_move_set(
     }
 
     let mut candidates = Vec::<Vec<Move>>::new();
-    candidates.extend(discover_cached_move_sets(out_dir)?);
+    candidates.extend(if last_layer { discover_cached_ll_move_sets(out_dir)? } else { discover_cached_move_sets(out_dir)? });
     if restricted_pruning {
         candidates.push(allowed_moves.to_vec());
     }
@@ -1539,6 +1554,31 @@ fn select_pruning_move_set(
 
     best.cloned()
         .ok_or_else(|| "no cached pruning table move set covers the solve move set".to_owned())
+}
+
+// Only complete tables for this goal count as saved candidates. Ordinary
+// tables must not trigger new LL builds for every restricted generator set.
+fn discover_cached_ll_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
+    let directory = out_dir.join("last-layer-v1");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(vec![]),
+    };
+    let edge = format!("{}_", file_safe_name(&CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name()));
+    let corner = format!("{}_", file_safe_name(&CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name()));
+    let mut sets = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(code) = name.strip_prefix(&edge).and_then(|s| s.strip_suffix(".prun")) else { continue };
+        if !directory.join(format!("{corner}{code}.prun")).is_file() { continue; }
+        let Some(suffix) = read_move_suffix(&directory, &name).or_else(|| fs::read_to_string(directory.join(format!("{code}.moves"))).ok()) else { continue };
+        if let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) {
+            moves.sort_unstable_by_key(|mv| mv.idx());
+            if !sets.contains(&moves) { sets.push(moves); }
+        }
+    }
+    Ok(sets)
 }
 
 fn discover_cached_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String> {
@@ -2301,6 +2341,41 @@ mod tests {
         CORNER_FACELETS, EDGE_FACELETS, F, U,
     };
     use fto_core::FtoCubie;
+
+    #[test]
+    fn pruning_selection_uses_saved_goal_tables_or_the_shared_instance() {
+        use super::*;
+        let directory = std::env::temp_dir().join(format!("fto-batch-pruning-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&directory).unwrap();
+        let allowed = vec![Move::R];
+        let mut instance = vec![Move::R, Move::F, Move::U, Move::Up];
+        instance.sort_unstable_by_key(|mv| mv.idx());
+        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), instance);
+        let suffix = pruning::move_set_suffix(&allowed);
+        fs::write(directory.join(format!("e3cf3_{suffix}.prun")), []).unwrap();
+        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), instance, "incomplete restricted pairs must not trigger another build");
+        fs::write(directory.join(format!("ccf3_{suffix}.prun")), []).unwrap();
+        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), allowed);
+        let mut ll_allowed = allowed.clone();
+        ensure_ll_free_u_moves(&mut ll_allowed);
+        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), instance, "ordinary tables must not cause new restricted LL builds");
+        let ll_dir = directory.join("last-layer-v1");
+        fs::create_dir_all(&ll_dir).unwrap();
+        let suffix = pruning::move_set_suffix(&ll_allowed);
+        let code = pruning::move_set_codename(&suffix);
+        let edge = file_safe_name(&CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name());
+        let corner = file_safe_name(&CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name());
+        let metadata = format!("moves={suffix}\n");
+        let mut header = b"FTO_PRUN_V1\0\0\0\0\0".to_vec();
+        header.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
+        header.extend_from_slice(metadata.as_bytes());
+        fs::write(ll_dir.join(format!("{edge}_{code}.prun")), header).unwrap();
+        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), instance);
+        fs::write(ll_dir.join(format!("{corner}_{code}.prun")), []).unwrap();
+        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), ll_allowed);
+        assert!(select_pruning_move_set(&directory, &[Move::B], &instance, false, false).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     fn solved_facelets() -> Vec<u8> {
         (0..72).map(|idx| (idx / 9) as u8).collect()

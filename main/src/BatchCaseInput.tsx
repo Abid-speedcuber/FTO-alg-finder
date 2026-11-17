@@ -83,7 +83,7 @@ const BatchCaseInput = forwardRef<BatchCaseInputApi,Props>(function BatchCaseInp
     target.push({ entries,selection:selection() });
     commit(previous.entries,previous.selection);
   }
-  return <div className="batch-case-editor" style={{ height:Math.min(360,Math.max(160,entries.length*ROW+12)) }}>
+  return <div className="batch-case-editor">
     <textarea ref={input} className="batch-case-text" aria-label="Case setups" disabled={disabled} value={text}
       wrap="off" spellCheck={false} autoComplete="off" autoCapitalize="off" placeholder="Setup moves"
       onSelect={() => setHighlight(selection())}

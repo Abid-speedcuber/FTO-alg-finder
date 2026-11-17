@@ -354,8 +354,8 @@ impl BloomTable {
         _use_gpu: bool,
     ) -> Result<Self, String> {
         let _stage = crate::acceleration::stage("Bloom table");
-        if !(1..=20).contains(&config.depth) {
-            return Err("Bloom depth must be between 1 and 20".into());
+        if config.depth == 0 {
+            return Err("Bloom depth must be between 1 and 255".into());
         }
         if moves.is_empty() {
             return Err("select at least one Bloom move".into());
@@ -406,20 +406,24 @@ impl BloomTable {
                     }
                 }
             }
+            let layer_total = next
+                .iter()
+                .try_fold(0_u128, |sum, &count| sum.checked_add(count))
+                .ok_or("Bloom traversal is too large")?;
             total = total
-                .checked_add(next.iter().sum())
+                .checked_add(layer_total)
                 .ok_or("Bloom traversal is too large")?;
             layer = next;
         }
-        let total = u64::try_from(
-            total
-                * if config.mode == BloomMode::LastLayer {
-                    3
-                } else {
-                    1
-                },
-        )
-        .map_err(|_| "Bloom traversal is too large; reduce the depth or move set")?;
+        let total = total
+            .checked_mul(if config.mode == BloomMode::LastLayer {
+                3
+            } else {
+                1
+            })
+            .ok_or("Bloom traversal is too large")?;
+        let total = u64::try_from(total)
+            .map_err(|_| "Bloom traversal is too large; reduce the depth or move set")?;
         // A traversal can insert at most `total` distinct states. Avoid reserving
         // a multi-GiB budget for a tiny job; this upper bound is deliberately
         // conservative and is not a cardinality estimate exposed to the user.
@@ -1076,7 +1080,7 @@ fn read_header(reader: &mut impl Read, path: &Path) -> Result<([u64; 6], u64), S
     }
     if header[1] == 0
         || header[1] >> MOVE_COUNT != 0
-        || !(1..=20).contains(&(header[2] & 255))
+        || header[2] & 255 == 0
         || header[3] == 0
         || header[3] > isize::MAX as u64 / 8
         || header[4] > header[3] * 64

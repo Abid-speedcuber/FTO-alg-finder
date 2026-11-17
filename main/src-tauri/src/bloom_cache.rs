@@ -83,8 +83,8 @@ fn generate(
         return Err("select at least one Bloom move".into());
     }
     // Validate before loading or generating the large shared transition tables.
-    if !(1..=20).contains(&request.depth) || request.max_memory_mib == 0 {
-        return Err("Bloom depth must be 1–20 and memory budget must be at least 1 MiB".into());
+    if request.depth == 0 || request.max_memory_mib == 0 {
+        return Err("Bloom depth must be 1–255 and memory budget must be at least 1 MiB".into());
     }
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let tables = load_transition_tables(

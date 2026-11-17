@@ -52,6 +52,13 @@ pub(super) struct Request {
     instance_moves: Vec<String>,
     depths: Option<Vec<u8>>,
     find_all: bool,
+    // Compatibility with earlier coordinators that scheduled one wave at a time.
+    #[serde(default)]
+    single_wave: bool,
+    #[serde(default = "default_temporary_tables")]
+    temporary_tables: bool,
+    #[serde(default)]
+    table_memory_mib: u32,
     last_layer_mode: bool,
     threads: usize,
     #[serde(default = "default_slow_case_seconds")]
@@ -93,8 +100,11 @@ fn event(
     );
 }
 
+fn default_temporary_tables() -> bool {
+    true
+}
 fn default_slow_case_seconds() -> f64 {
-    10.0
+    300.0
 }
 
 #[derive(Debug, PartialEq)]
@@ -128,6 +138,7 @@ fn plan_wave(cases: &[Case], depths: &[u8], expand: bool) -> Option<Wave> {
                 .enumerate()
                 .filter(|(_, c)| {
                     c.error.is_none()
+                        && (expand || c.first_depth.is_none())
                         && c.deferred_depth.is_none()
                         && !c.completed_depths.contains(&depth)
                 })
@@ -153,21 +164,13 @@ fn plan_wave(cases: &[Case], depths: &[u8], expand: bool) -> Option<Wave> {
             kind: WaveKind::Deferred,
         });
     }
-    let coverage = cases.iter().any(|c| {
-        c.error.is_none()
-            && c.first_depth.is_none()
-            && depths.iter().any(|d| !c.completed_depths.contains(d))
-    });
-    if !coverage && !expand {
-        return None;
-    }
     for &depth in depths {
         let indices: Vec<_> = cases
             .iter()
             .enumerate()
             .filter(|(_, c)| {
                 c.error.is_none()
-                    && (!coverage || c.first_depth.is_none())
+                    && (expand || c.first_depth.is_none())
                     && !c.completed_depths.contains(&depth)
             })
             .map(|(i, _)| i)
@@ -176,7 +179,7 @@ fn plan_wave(cases: &[Case], depths: &[u8], expand: bool) -> Option<Wave> {
             return Some(Wave {
                 depth,
                 indices,
-                kind: if coverage {
+                kind: if !expand {
                     WaveKind::Coverage
                 } else {
                     WaveKind::Expansion
@@ -431,6 +434,9 @@ pub(super) async fn start_batch(
     {
         return Err("Slow-case budget must be between 0 and 86400 seconds.".into());
     }
+    if request.table_memory_mib > 131072 {
+        return Err("Table budget must be at most 131072 MiB.".into());
+    }
     let ids: HashSet<_> = request.cases.iter().map(|c| &c.id).collect();
     if ids.len() != request.cases.len() {
         return Err("Case identifiers must be unique.".into());
@@ -571,43 +577,62 @@ fn run(
     let pruning_path = pruning_dir(app, root);
     // One shared set of pattern databases regardless of the number of cases.
     let needs_full = positions.iter().flatten().any(|(_, mask)| mask.is_none());
-    let pruning = if needs_full && !request.last_layer_mode {
-        Some(load_solver_pruning(
-            cache,
+    let mut temporary = batch_tables::TemporaryTables::new(cache);
+    let mut boosted = request.temporary_tables
+        && needs_full
+        && batch_tables::worthwhile(cases.len(), request.depths.as_deref());
+    let max_bloom_depth = request
+        .depths
+        .as_ref()
+        .and_then(|depths| depths.iter().copied().max());
+    let prepared = if needs_full {
+        temporary.prepare(
             &tables,
             &pruning_path,
-            pruning_progress_interval(allowed.len()),
             &allowed,
             &instance,
-            false,
+            request.last_layer_mode,
+            boosted,
+            request.table_memory_mib,
+            max_bloom_depth,
             request.threads,
             cancel,
             app,
-        )?)
+        )?
     } else {
-        None
+        batch_tables::Prepared {
+            pruning: None,
+            ll_pruning: None,
+        }
     };
-    let ll_pruning = if needs_full && request.last_layer_mode {
-        Some(load_ll_solver_pruning(
-            cache,
-            &tables,
-            &pruning_path,
-            pruning_progress_interval(allowed.len()),
-            &allowed,
-            &instance,
-            false,
-            request.threads,
-            cancel,
-            app,
-        )?)
-    } else {
-        None
-    };
+    let mut pruning = prepared.pruning;
+    let mut ll_pruning = prepared.ll_pruning;
     while !cancel.load(Ordering::SeqCst) {
         let Some(wave) = plan_wave(&cases, &depths, expand) else {
             break;
         };
         let depth = wave.depth;
+        if request.temporary_tables && needs_full && !boosted && depth >= batch_tables::DEEP_BATCH {
+            // Release the broad resident tables before allocating restricted replacements.
+            drop(pruning.take());
+            drop(ll_pruning.take());
+            let prepared = temporary.prepare(
+                &tables,
+                &pruning_path,
+                &allowed,
+                &instance,
+                request.last_layer_mode,
+                true,
+                request.table_memory_mib,
+                max_bloom_depth,
+                request.threads,
+                cancel,
+                app,
+            )?;
+            pruning = prepared.pruning;
+            ll_pruning = prepared.ll_pruning;
+            boosted = true;
+        }
         let indices = wave.indices;
         let phase = match wave.kind {
             WaveKind::Coverage => "First solutions",
@@ -615,10 +640,7 @@ fn run(
             WaveKind::Deferred => "Deferred cases",
             WaveKind::Expansion => "Remaining depths",
         };
-        let budget = if request.find_all
-            && request.slow_case_seconds > 0.0
-            && matches!(wave.kind, WaveKind::Coverage | WaveKind::CatchUp)
-        {
+        let budget = if request.slow_case_seconds > 0.0 && wave.kind != WaveKind::Deferred {
             Some(std::time::Duration::from_secs_f64(
                 request.slow_case_seconds,
             ))
@@ -634,15 +656,32 @@ fn run(
             Some(format!("{phase} · depth {depth}")),
         );
         let bloom = if needs_full {
-            bloom_cache::load(
-                cache,
-                &pruning_path,
-                &allowed,
-                Some(depth),
-                request.last_layer_mode,
-                cancel,
-                app,
-            )?
+            let temporary_bloom = if let Some(root) = &temporary.bloom_root {
+                bloom_cache::load(
+                    cache,
+                    root,
+                    &allowed,
+                    Some(depth),
+                    request.last_layer_mode,
+                    cancel,
+                    app,
+                )?
+            } else {
+                None
+            };
+            if temporary_bloom.is_some() {
+                temporary_bloom
+            } else {
+                bloom_cache::load(
+                    cache,
+                    &pruning_path,
+                    &allowed,
+                    Some(depth),
+                    request.last_layer_mode,
+                    cancel,
+                    app,
+                )?
+            }
         } else {
             None
         };
@@ -752,6 +791,9 @@ fn run(
         for (index, case) in results {
             cases[index] = case;
         }
+        if request.single_wave {
+            break;
+        }
     }
     Ok(())
 }
@@ -815,7 +857,7 @@ mod tests {
         }
     }
     #[test]
-    fn depth_major_coverage_then_expansion_and_resume() {
+    fn depth_major_cases_and_resume() {
         let mut cases = vec![case("a"), case("b")];
         let depths = [1, 2, 4];
         assert_eq!(next_wave(&cases, &depths, true), Some((1, vec![0, 1])));
@@ -823,13 +865,13 @@ mod tests {
             c.completed_depths.insert(1);
         }
         cases[0].first_depth = Some(1);
-        assert_eq!(next_wave(&cases, &depths, true), Some((2, vec![1])));
+        assert_eq!(next_wave(&cases, &depths, true), Some((2, vec![0, 1])));
         cases[1].solutions.push(Solution {
             depth: 2,
             algorithm: "U".into(),
         });
         // Streaming a solution does not skip its unfinished depth on resume.
-        assert_eq!(next_wave(&cases, &depths, true), Some((2, vec![1])));
+        assert_eq!(next_wave(&cases, &depths, true), Some((2, vec![0, 1])));
         cases[1].completed_depths.insert(2);
         cases[1].first_depth = Some(2);
         assert_eq!(next_wave(&cases, &depths, false), None);
@@ -917,9 +959,9 @@ mod tests {
         }
         assert_eq!(
             &waves[..3],
-            &[(0, vec![0, 1, 2]), (1, vec![0, 1]), (2, vec![1])]
+            &[(0, vec![0, 1, 2]), (1, vec![0, 1, 2]), (2, vec![0, 1, 2])]
         );
-        assert_eq!(waves[3], (1, vec![2])); // expansion starts only after coverage
+        assert_eq!(waves[3], (3, vec![0, 1, 2]));
         assert_eq!(
             cases.iter().map(|c| c.first_depth).collect::<Vec<_>>(),
             vec![Some(1), Some(2), Some(0)]
@@ -1024,7 +1066,7 @@ mod tests {
         let wave = plan_wave(&cases, &depths, true).unwrap();
         assert_eq!(
             (wave.depth, wave.indices, wave.kind),
-            (4, vec![2], WaveKind::Coverage)
+            (4, vec![0, 1, 2], WaveKind::Expansion)
         );
     }
     #[test]

@@ -13,6 +13,7 @@ import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
 import HowToUse from "./HowToUse";
 import useAppZoom from "./useAppZoom";
+import useGpuAcceleration, { GPU_KEY } from "./useGpuAcceleration";
 import { parseDepthSelection } from "./depthSelection";
 import { DEFAULT_HOLD, parseExecutionHold, rotateAlgorithm, normalizeMoveSelection } from "./rotation";
 
@@ -78,7 +79,6 @@ const moveChooserNote =
   "All the moves here refers to the CIF state. You can use the B layer as U layer, or BR layer as R layer to generate algs, and then translate the outputs to human-readable notation using the execution angle feature. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
 
 const INSTANCES_KEY = "fto.instances.v1";
-const GPU_KEY = "fto.gpuAcceleration.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
 const defaultFaceColors = ["#ffff00", "#0000ff", "#ff0000", "#800080", "#ffffff", "#00a050", "#808080", "#ff8800"];
 const faceColorSlots = [
@@ -691,42 +691,10 @@ function App() {
   const [bloomMoves, setBloomMoves] = useState<string[]>([]);
   const [bloomLastLayer, setBloomLastLayer] = useState(true);
   const [bloomDepth, setBloomDepth] = useState("8");
-  const [useGpu, setUseGpu] = useState(() => {
-    try { return localStorage.getItem(GPU_KEY) === "true"; } catch { return false; }
-  });
-  const [generationStatus, setGenerationStatus] = useState({ active: false, gpuEnabled: false, backend: "cpu", message: "" });
-  const [gpuNotice, setGpuNotice] = useState("");
-  const [gpuSwitchPending, setGpuSwitchPending] = useState(false);
-  useEffect(() => {
-    try { localStorage.setItem(GPU_KEY, String(useGpu)); } catch { /* Optional persistence. */ }
-  }, [useGpu]);
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    listen<typeof generationStatus>("generation-status", ({ payload }) => {
-      if (disposed) return;
-      setGenerationStatus(payload);
-      if (!payload.gpuEnabled && payload.message.includes("without losing progress")) {
-        setUseGpu(false);
-        setGpuNotice(previous => previous.includes("slower than CPU") ? previous : payload.message);
-      }
-    }).then(remove => {
-      if (disposed) remove(); else unlisten = remove;
-    }).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
-  }, []);
-  async function changeGpu(enabled: boolean, remember = true) {
-    if (remember) setUseGpu(enabled);
-    setGpuNotice(previous => previous.includes("slower than CPU") ? previous : "");
-    setGpuSwitchPending(true);
-    try { await invoke("set_generation_gpu", { enabled }); }
-    catch (error) {
-      setGpuNotice(previous => previous.includes("slower than CPU") ? previous : `${remember ? "Preference saved. " : ""}Could not change the running generation: ${String(error)}`);
-    } finally { setGpuSwitchPending(false); }
-  }
+  const { useGpu, profile: gpuProfile, generationStatus, setGenerationStatus, switchPending: gpuSwitchPending, explanation: gpuExplanation, changeGpu, resetGpu } = useGpuAcceleration();
   const [bloomMemory, setBloomMemory] = useState("200");
   const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
-    Number(bloomDepth) >= 1 && Number(bloomDepth) <= 20 && Number.isInteger(Number(bloomMemory)) &&
+    Number(bloomDepth) >= 1 && Number(bloomDepth) <= 255 && Number.isInteger(Number(bloomMemory)) &&
     Number(bloomMemory) >= 1 && Number(bloomMemory) <= 4294967295;
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
@@ -1367,8 +1335,7 @@ function App() {
     setInstances([instance]);
     setActiveId(instance.id);
     setFaceColors(defaultFaceColors);
-    setUseGpu(false);
-    setGpuNotice("");
+    resetGpu();
     setSetup("");
     setInputMode("setup");
     setApplySignal((current) => current + 1);
@@ -1410,19 +1377,14 @@ function App() {
     <div className="modal-move-grid">{moves.map(move => <button key={move} type="button" className={`move-toggle${selected.includes(move) ? "" : " banned"}`} aria-pressed={selected.includes(move)} onClick={() => setSelected(selected.includes(move) ? selected.filter(m => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}</div>
   </>;
   const partialGoalControls = (kind: "pattern" | "bloom", goal: PruningGoal | null) => <div className="partial-goal-controls">
-    <div className="bloom-move-actions"><button className="secondary" onClick={() => setPieceEditor(kind)}>{goal ? "Edit defined pieces…" : "Undefine pieces…"}</button>{goal && <button className="secondary" onClick={() => kind === "pattern" ? setPatternGoal(null) : setBloomGoal(null)}>Use all pieces</button>}</div>
+    <div className="bloom-move-actions"><button className="secondary" onClick={() => setPieceEditor(kind)}>{goal ? "Edit defined pieces" : "Undefine pieces"}</button>{goal && <button className="secondary" onClick={() => kind === "pattern" ? setPatternGoal(null) : setBloomGoal(null)}>Use all pieces</button>}</div>
     {goal && <><p className="hint">Dedicated partial goal: {goal.facelets.filter(c => c === 8).length} stickers undefined. Compatible partial searches load this table automatically.</p>
       <label className="field">{kind === "pattern" ? "Pattern table budget (MiB)" : "Projection workspace budget (MiB)"}<input type="number" min="1" max="4096" step="1" value={partialMemory} onChange={e => setPartialMemory(e.target.value)} /></label>
       <p className="hint">Builds a joint table for the remaining pieces, using up to this budget. The default is 512 MiB; the actual size depends on the useful projections available. More defined pieces generally give stronger pruning.</p></>}
   </div>;
 
-  const gpuIsSlower = gpuNotice.includes("slower than CPU");
-  const accelerationControl = (generationStatus.active || gpuNotice) && <aside className="generation-acceleration" aria-label="Table generation acceleration">
-        {gpuNotice && <p className="generation-notice" role="status">{gpuNotice}</p>}
-        {!gpuIsSlower && generationStatus.active && generationStatus.backend === "cpu" && !generationStatus.gpuEnabled && <button type="button" className="gpu-enable-link" disabled={gpuSwitchPending} title="Use GPU for this build; change the default in Settings" onClick={()=>void changeGpu(true, false)}>{gpuSwitchPending ? "Requesting GPU…" : "Enable GPU acceleration"}</button>}
-        {!gpuIsSlower && generationStatus.active && generationStatus.gpuEnabled && generationStatus.backend === "cpu" && <p role="status">Testing GPU speed against CPU…</p>}
-        {!gpuIsSlower && generationStatus.active && generationStatus.backend === "gpu" && <p role="status">Generating on GPU</p>}
-      </aside>;
+  const accelerationControl = gpuProfile?.eligible && generationStatus.active && generationStatus.backend === "gpu"
+    ? <aside className="generation-acceleration" aria-label="Table generation acceleration"><p role="status">Generating on GPU</p></aside> : null;
 
   return (
     <main>
@@ -1515,7 +1477,7 @@ function App() {
         </div>
       ) : null}
 
-      {howToOpen && <HowToUse onClose={() => {
+      {howToOpen && <HowToUse initialTopic={mode === "batch" ? "batch" : mode === "combiner" ? "combiner" : "search-guide"} onClose={() => {
         setHowToOpen(false);
         requestAnimationFrame(() => appMenuButton.current?.focus());
       }} />}
@@ -1578,9 +1540,9 @@ function App() {
             </label>
             <label className="settings-toggle modal-toggle">
               <span>Use GPU acceleration by default for table generation</span>
-              <input type="checkbox" checked={useGpu} disabled={gpuSwitchPending} onChange={(event) => void changeGpu(event.target.checked)} />
+              <input type="checkbox" checked={useGpu} disabled={gpuSwitchPending || !gpuProfile?.eligible} onChange={(event) => void changeGpu(event.target.checked)} />
             </label>
-            <div className="hint">CPU is the default. GPU generation is timed against the CPU and switches back if slower. Changing this setting during a build keeps completed work.</div>
+            <div className="hint">{gpuExplanation}</div>
             <div className="settings-group">
               <div className="settings-group-title">
                 <h3>Face colors</h3>
@@ -1654,7 +1616,7 @@ function App() {
               </label>
               <div className="bloom-controls">
                 <label className="field">Depth
-                  <input type="number" min="1" max="20" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
+                  <input type="number" min="1" max="255" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
                 </label>
                 <label className="field">Memory cap (MiB)
                   <input type="number" min="1" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
@@ -1913,7 +1875,7 @@ function App() {
             stateInvalid={stateErrors.length > 0}
             onInvalidStateClick={() => setStateErrorsOpen(true)}
             footer={
-              <div className={`solver-output${generationStatus.active || gpuNotice ? " has-acceleration" : ""}`}>
+              <div className={`solver-output${accelerationControl ? " has-acceleration" : ""}`}>
                 {accelerationControl}
                 <div className="output-toolbar">
                   <input
@@ -2097,7 +2059,7 @@ function App() {
         <AlgCombiner active={mode === "combiner" && !howToOpen} />
       </div>
       <div hidden={mode !== "batch"}>
-        <BatchSolver accelerationControl={accelerationControl} executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
+        <BatchSolver instances={instances} activeInstanceId={activeId} onSelectInstance={setActiveId} accelerationControl={accelerationControl} executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

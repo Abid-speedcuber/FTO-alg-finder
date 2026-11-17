@@ -11,6 +11,64 @@ mod backend;
 #[cfg(feature = "gpu")]
 pub(crate) use backend::{BloomCompute, Gpu, PruningCompute};
 
+/// Small, bounded calibration using the production pruning compute kernel.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuBenchmark {
+    pub eligible: bool,
+    pub adapter: String,
+    pub cpu_nodes_per_second: f64,
+    pub gpu_nodes_per_second: f64,
+    pub cpu_workers: usize,
+    pub message: String,
+}
+impl GpuBenchmark {
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            eligible: false,
+            adapter: String::new(),
+            cpu_nodes_per_second: 0.,
+            gpu_nodes_per_second: 0.,
+            cpu_workers: 0,
+            message: message.into(),
+        }
+    }
+}
+/// Fingerprint changes when the processor, compute adapters, or drivers change.
+pub fn gpu_hardware_fingerprint() -> String {
+    let mut system = sysinfo::System::new();
+    system.refresh_cpu_all();
+    let cpu = system.cpus().first().map_or("unknown", |cpu| cpu.brand());
+    let mut identity = format!(
+        "{}:{}:{cpu}:{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        system.cpus().len()
+    );
+    #[cfg(feature = "gpu")]
+    {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let mut adapters: Vec<_> = instance
+            .enumerate_adapters(wgpu::Backends::all())
+            .into_iter()
+            .map(|adapter| format!("{:?}", adapter.get_info()))
+            .collect();
+        adapters.sort();
+        identity.push_str(&adapters.join("|"));
+    }
+    identity
+}
+pub fn benchmark_gpu() -> GpuBenchmark {
+    #[cfg(feature = "gpu")]
+    {
+        with_policy(Policy::Gpu, None, backend::benchmark_pruning)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        GpuBenchmark::unavailable("This build does not include GPU acceleration.")
+    }
+}
+
 pub type GenerationLog = dyn Fn(&str) + Send + Sync;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Policy {
@@ -199,6 +257,18 @@ pub(crate) fn check_host_allocation(bytes: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "runs the first-launch hardware probe on this machine"]
+    fn startup_benchmark_reports_valid_results_or_disables_gpu() {
+        let result = benchmark_gpu();
+        println!("startup GPU comparison: {result:?}");
+        assert!(!result.message.is_empty());
+        assert!(result.cpu_nodes_per_second.is_finite());
+        assert!(result.gpu_nodes_per_second.is_finite());
+        if result.eligible {
+            assert!(result.gpu_nodes_per_second > result.cpu_nodes_per_second * 1.1);
+        }
+    }
     #[test]
     #[cfg(feature = "gpu")]
     fn live_cpu_policy_can_be_changed_from_another_thread_and_reject_gpu() {

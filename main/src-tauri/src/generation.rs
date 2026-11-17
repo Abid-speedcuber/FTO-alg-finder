@@ -41,6 +41,7 @@ pub(super) fn with_gpu_generation<T>(
     slot: &GenerationSlot,
     action: impl FnOnce() -> T,
 ) -> T {
+    let enabled = enabled && gpu_profile::allowed(app);
     let control = Arc::new(GenerationControl::new(enabled));
     let session = Arc::new(ActiveGeneration {
         control: control.clone(),
@@ -123,6 +124,9 @@ pub(super) fn set_generation_gpu(
     state: tauri::State<'_, SolverState>,
     app: AppHandle,
 ) -> Result<bool, String> {
+    if enabled && !gpu_profile::allowed(&app) {
+        return Err("GPU acceleration is disabled by the hardware comparison.".into());
+    }
     let session = state
         .generation
         .lock()

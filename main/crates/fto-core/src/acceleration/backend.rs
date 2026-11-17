@@ -8,6 +8,140 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+/// Compare the real bounded GPU expansion/readback path with parallel CPU expansion.
+/// No puzzle tables, disk caches, or application searches are needed.
+pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
+    let measured = || -> Result<super::GpuBenchmark, String> {
+        let gpu = Arc::new(Gpu::new()?);
+        let side = 4096_usize;
+        let moves = 12;
+        let total = side * side;
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(16);
+        let mut transitions = Vec::with_capacity(side * moves * 2);
+        for component in 0..2 {
+            for value in 0..side {
+                for mv in 0..moves {
+                    transitions
+                        .push(((value * (2 * mv + 1) + mv * 197 + component * 37) % side) as u32);
+                }
+            }
+        }
+        let input: Vec<_> = (0..65_536_u32).map(|i| (i * 997) % total as u32).collect();
+        let mut visited = vec![0_u32; total.div_ceil(32)];
+        for &index in &input {
+            visited[index as usize / 32] |= 1 << (index % 32);
+        }
+        super::check_host_allocation((total * 2 + 4 * 1024 * 1024) as u64)?;
+        // Match the CPU table representation, not the GPU's compact visited bitset.
+        let cpu: Vec<_> = (0..total)
+            .map(|_| std::sync::atomic::AtomicU8::new(255))
+            .collect();
+        let mut sequential = vec![255_u8; total];
+        for &index in &input {
+            cpu[index as usize].store(0, Ordering::Relaxed);
+            sequential[index as usize] = 0;
+        }
+        let mut engine = PruningCompute::new(
+            gpu.clone(),
+            &[side as u32, side as u32],
+            &transitions,
+            &visited,
+            moves,
+        )?
+        .ok_or("GPU cannot fit the calibration workspace")?;
+        let mut cpu_rates = Vec::new();
+        let mut gpu_rates = Vec::new();
+        // First batch warms shader/driver and CPU caches; three batches determine the result.
+        for (round, sample) in input.chunks(16_384).enumerate() {
+            let started = Instant::now();
+            let mut expected = std::thread::scope(|scope| {
+                let handles: Vec<_> = sample
+                    .chunks(sample.len().div_ceil(workers))
+                    .map(|chunk| {
+                        let cpu = &cpu;
+                        let transitions = &transitions;
+                        scope.spawn(move || {
+                            let mut discoveries = Vec::new();
+                            for &index in chunk {
+                                let a = index as usize / side;
+                                let b = index as usize % side;
+                                for mv in 0..moves {
+                                    let child = transitions[a * moves + mv] as usize * side
+                                        + transitions[(side + b) * moves + mv] as usize;
+                                    if cpu[child]
+                                        .compare_exchange(
+                                            255,
+                                            0,
+                                            Ordering::Relaxed,
+                                            Ordering::Relaxed,
+                                        )
+                                        .is_ok()
+                                    {
+                                        discoveries.push(child as u32);
+                                    }
+                                }
+                            }
+                            discoveries
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            let parallel_time = started.elapsed();
+            let started = Instant::now();
+            let mut serial_expected = Vec::new();
+            for &index in sample {
+                let a = index as usize / side;
+                let b = index as usize % side;
+                for mv in 0..moves {
+                    let child = transitions[a * moves + mv] as usize * side
+                        + transitions[(side + b) * moves + mv] as usize;
+                    if sequential[child] == 255 {
+                        sequential[child] = 0;
+                        serial_expected.push(child as u32);
+                    }
+                }
+            }
+            let cpu_time = parallel_time.min(started.elapsed());
+            let (mut actual, gpu_time) = engine.expand(sample, None)?;
+            expected.sort_unstable();
+            actual.sort_unstable();
+            serial_expected.sort_unstable();
+            if actual != expected || actual != serial_expected {
+                return Err("GPU calibration produced different results from the CPU".into());
+            }
+            if round > 0 {
+                cpu_rates.push(expected.len() as f64 / cpu_time.as_secs_f64().max(1e-9));
+                gpu_rates.push(actual.len() as f64 / gpu_time.as_secs_f64().max(1e-9));
+            }
+        }
+        cpu_rates.sort_by(f64::total_cmp);
+        gpu_rates.sort_by(f64::total_cmp);
+        let cpu_rate = cpu_rates[1];
+        let gpu_rate = gpu_rates[1];
+        let eligible = gpu_rate > cpu_rate * 1.1;
+        Ok(super::GpuBenchmark {
+            eligible,
+            adapter: gpu.name.clone(),
+            cpu_nodes_per_second: cpu_rate,
+            gpu_nodes_per_second: gpu_rate,
+            cpu_workers: workers,
+            message: if eligible {
+                "GPU acceleration was faster in the startup comparison."
+            } else {
+                "CPU generation was faster in the startup comparison. GPU acceleration is disabled."
+            }
+            .into(),
+        })
+    };
+    measured().unwrap_or_else(super::GpuBenchmark::unavailable)
+}
+
 pub(crate) struct Gpu {
     pub name: String,
     pub kind: wgpu::DeviceType,

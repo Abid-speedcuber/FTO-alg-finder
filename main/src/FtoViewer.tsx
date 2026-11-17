@@ -195,7 +195,7 @@ function FtoViewer({
 
   return (
     <div className="fto-viewer-panel">
-      <div className="fto-stage">
+      <div className={`fto-stage${stateText ? " has-state" : ""}`}>
         <div ref={hostRef} className="fto-canvas-host" />
         {stateText && stateInvalid && onInvalidStateClick ? (
           <button type="button" className="viewer-state invalid" onClick={onInvalidStateClick}

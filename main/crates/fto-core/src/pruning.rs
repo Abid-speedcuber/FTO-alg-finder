@@ -106,7 +106,7 @@ impl PatternDatabase {
                 write_table_with_metadata_reporting(
                     path,
                     &table,
-                    "",
+                    &format!("spec={}\nmoves={}\n", spec.name(), move_set_suffix(moves)),
                     report,
                     &format!("saving {}", spec.name()),
                     cancel,
