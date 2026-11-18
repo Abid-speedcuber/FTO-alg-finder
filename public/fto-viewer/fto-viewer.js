@@ -1107,8 +1107,10 @@
           return;
         }
         if (!didDrag && x != null && y != null) {
-          if (shiftKey) {
+          if (shiftKey || options.leftClickEntitle) {
             toggleCenterSlotAt(x, y);
+          } else if (options.leftClickUndefine) {
+            toggleIgnoredPieceAt(x, y);
           } else if (activeDragMode === "paint") {
             paintAt(x, y, shiftKey, ctrlKey);
           } else if (mode === "swap") {
@@ -1390,6 +1392,10 @@
       setKeyboardEnabled: setKeyboardEnabled,
       getFaceletTransition: getFaceletTransition,
       getCenterTargets: getCenterTargets,
+      setPieceSelectionMode: function(mode) {
+        options.leftClickUndefine = mode === "undefine";
+        options.leftClickEntitle = mode === "entitle";
+      },
       setMode: function(nextMode) {
         mode = nextMode;
         if (mode !== "swap") clearSwapSelection();

@@ -5,12 +5,14 @@ import { listen } from "@tauri-apps/api/event";
 import FtoViewer, { type CenterTargets, type FtoViewerApi, type IgnoredStickerState } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
+import PruningPieces, { type PruningGoal } from "./PruningPieces";
+import BatchSelect from "./BatchSelect";
 import BatchCaseInput, { type BatchCaseInputApi } from "./BatchCaseInput";
 import { parseDepthSelection } from "./depthSelection";
-import { clearCase, createProject, downloadFile, hasCase, newCase, parseProject, projectCsv, savedProjects, saveProject, type BatchCase, type BatchProject, type BatchMoveSet, type BatchProgress, moveSetsOf, effectiveMoveSets, coveringMoveSet, changeMoveSets, progressForSet, mergeSetProgress, nextBatchAttempt, constrainBatchInstance, deleteProject } from "./batchProject";
+import { clearCase, createProject, downloadFile, hasCase, parseProject, projectCsv, savedProjects, saveProject, type BatchCase, type BatchProject, type BatchMoveSet, type BatchProgress, moveSetsOf, effectiveMoveSets, coveringMoveSet, changeMoveSets, progressForSet, mergeSetProgress, nextBatchAttempt, constrainBatchInstance, changePartialBase, changeInputMode, deleteProject } from "./batchProject";
 
 type BatchInstance = { id: string; name: string; moves: string[]; banned: string[] };
-type Props = { instances: BatchInstance[]; activeInstanceId: string; onSelectInstance: (id: string) => void; accelerationControl?: React.ReactNode; executionHold: ExecutionHold; active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
+type Props = { operationBusy?: boolean; operationMessage?: string; onStopOperation?: () => void; onConfigureTables?: (goal: PruningGoal, moves: string[], lastLayer: boolean) => void; instances: BatchInstance[]; activeInstanceId: string; onSelectInstance: (id: string) => void; accelerationControl?: React.ReactNode; executionHold: ExecutionHold; active: boolean; moves: string[]; instanceMoves: string[]; faceColors: string[]; useGpu: boolean; onRunning: (running: boolean) => void };
 function normalizeProject(project: BatchProject): BatchProject {
   const pool = [...new Set(normalizeMoveSelection(project.settings.instanceMoves))];
   const sets = moveSetsOf(project.settings).map(set => ({ ...set, moves: [...new Set(normalizeMoveSelection(set.moves))] }));
@@ -51,8 +53,8 @@ function DeleteBatchDialog({ name, deleting, onDelete, onClose }: { name: string
   </dialog>;
 }
 
-function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
-  entry: BatchCase; number: number; lastLayer: boolean; faceColors: string[];
+function CaseEditor({ entry, number, lastLayer, faceColors, partialBase, inputMode = "setup", onSave, onClose }: {
+  entry: BatchCase; number: number; lastLayer: boolean; faceColors: string[]; partialBase?: PruningGoal | null; inputMode?: "setup" | "alg";
   onSave: (facelets: number[], targets: CenterTargets, ignoredStickerState: IgnoredStickerState) => void; onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -78,12 +80,12 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   return <dialog ref={dialog} className="batch-visual-dialog" aria-labelledby="batch-case-title" onCancel={onClose}>
     <div className="batch-dialog-header"><h2 id="batch-case-title">Case {number}</h2><button type="button" aria-label="Close visual editor" onClick={onClose}>×</button></div>
     <div className="batch-visual-layout">
-      <FtoViewer setup={setup} inputMode="setup" applySignal={apply} applyFromSolved lastLayerMode={lastLayer}
+      <FtoViewer setup={setup} inputMode={inputMode} applySignal={apply} applyFromSolved applyBase={partialBase ?? undefined} lastLayerMode={lastLayer}
         onFacelets={faceletChange} onCenterTargets={targetChange} faceColors={faceColors} viewerApiRef={viewer}
-        initialState={entry.facelets ? { facelets: entry.facelets, centerTargets: entry.centerTargets ?? undefined, ignoredStickerState: entry.ignoredStickerState } : undefined} />
+        initialState={entry.facelets ? { facelets: entry.facelets, centerTargets: entry.centerTargets ?? undefined, ignoredStickerState: entry.ignoredStickerState } : partialBase ?? undefined} />
       <div className="batch-visual-tools">
-        <label>Setup moves<input value={setup} onChange={e => setSetup(e.target.value)} /></label>
-        <button type="button" onClick={() => setApply(v => v + 1)}>Apply setup</button>
+        <label>{inputMode === "alg" ? "Algorithm" : "Setup moves"}<input value={setup} onChange={e => setSetup(e.target.value)} /></label>
+        <button type="button" onClick={() => setApply(v => v + 1)}>Apply {inputMode === "alg" ? "algorithm" : "setup"}</button>
         <LlSetupSection facelets={facelets} viewerApiRef={viewer} />
       </div>
     </div>
@@ -92,7 +94,7 @@ function CaseEditor({ entry, number, lastLayer, faceColors, onSave, onClose }: {
   </dialog>;
 }
 
-export default function BatchSolver({ instances, activeInstanceId, onSelectInstance, accelerationControl, executionHold, active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
+export default function BatchSolver({ operationBusy = false, operationMessage, onStopOperation, onConfigureTables, instances, activeInstanceId, onSelectInstance, accelerationControl, executionHold, active, moves, instanceMoves, faceColors, useGpu, onRunning }: Props) {
   function newProject() {
     const p = createProject(moves, instanceMoves);
     return { ...constrainBatchInstance(p, instanceMoves, activeInstanceId), status: "idle" as const };
@@ -108,6 +110,7 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
   const [saved, setSaved] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [tab, setTab] = useState<"input" | "output">("input");
+  const [editingPartial, setEditingPartial] = useState(false);
   const [editingMoveSet, setEditingMoveSet] = useState<BatchMoveSet | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -123,6 +126,7 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
   const latest = useRef(project); latest.current = project;
   const caseInput = useRef<BatchCaseInputApi>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const projectMenu = useRef<HTMLDetailsElement>(null);
   const running = project.status === "running" || project.status === "pausing";
   const selection = parseDepthSelection(project.settings.depth);
   const moveSets = moveSetsOf(project.settings);
@@ -131,7 +135,20 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
   const solved = project.cases.filter(c => c.solutions.length > 0).length;
   const solutionCount = project.cases.reduce((sum,c) => sum + c.solutions.length, 0);
 
+  useEffect(() => {
+    function dismiss(event: Event) {
+      const menu = projectMenu.current;
+      if (menu?.open && !menu.contains(event.target as Node)) menu.open = false;
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("focusin", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("focusin", dismiss);
+    };
+  }, []);
   useEffect(() => { onRunning(running); }, [running, onRunning]);
+  useEffect(() => { if (operationBusy) setTab("output"); }, [operationBusy]);
   useEffect(() => {
     let disposed = false;
     void (async () => {
@@ -254,7 +271,7 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
     } catch (e) { setError(String(e)); }
   }
   function start() {
-    if (running || !ready || !listenersReady || deleting) return;
+    if (running || operationBusy || !ready || !listenersReady || deleting) return;
     if (selection.error) { setError(selection.error); return; }
     if (!retainedSets.length) { setError("Add a nonempty allowed move set."); return; }
     setError(""); setMessage("Starting…"); setTab("output");
@@ -287,6 +304,7 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
           runId: id, cases: snapshot.cases.filter(hasCase).map(c => ({ ...c, ...progressForSet(c, set.id, sets[0].id), moveSetResults: undefined })),
           allowedMoves: set.moves, instanceMoves: snapshot.settings.instanceMoves,
           depths: parseDepthSelection(snapshot.settings.depth).depths,
+          partialBase: snapshot.settings.partialBase ?? null, inputMode: snapshot.settings.inputMode ?? "setup",
           temporaryTables: snapshot.settings.temporaryTables ?? true, tableMemoryMiB: snapshot.settings.tableMemoryMiB ?? 0,
           findAll: snapshot.settings.all, lastLayerMode: snapshot.settings.lastLayer,
           threads: snapshot.settings.threads, slowCaseSeconds: snapshot.settings.slowCaseSeconds, useGpu,
@@ -338,15 +356,18 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
   const editNumber = project.cases.findIndex(c => c.id === editing) + 1;
   return <section className="batch-workspace" aria-label="Batch solving">
     <div className="batch-project-bar">
-      <label className="batch-project-name"><span className="sr-only">Project name</span><input aria-label="Project name" value={project.name} disabled={!ready || running} onChange={e => setProject(p => ({ ...p, name: e.target.value, updatedAt: Date.now() }))} /></label>
-      <select aria-label="Saved batch projects" value={project.id} disabled={!ready || running} onChange={e => { const p = projects.find(p => p.id === e.target.value); if (p) void switchProject(p); }}>
-        {!projects.some(p => p.id === project.id) && <option value={project.id}>{project.name}</option>}
-        {projects.map(p => <option key={p.id} value={p.id}>{p.name || "Untitled batch"}</option>)}
-      </select>
+      <label className="batch-project-name"><span className="batch-eyebrow">Batch solving</span><input aria-label="Project name" value={project.name} disabled={!ready || running} onChange={e => setProject(p => ({ ...p, name: e.target.value, updatedAt: Date.now() }))} /></label>
+      <BatchSelect label="Saved batch projects" displayLabel="Saved batches" value={project.id} disabled={!ready || running}
+        options={[...(!projects.some(p => p.id === project.id) ? [project] : []), ...projects].map(p => ({ value: p.id, label: p.name || "Untitled batch" }))}
+        onChange={id => { const p = projects.find(p => p.id === id); if (p) void switchProject(p); }} />
       <button disabled={!ready || running || deleting} onClick={() => void switchProject(newProject())}>New batch</button>
-      <button className="danger" disabled={!ready || running || deleting} onClick={() => setConfirmDelete(true)}>Delete batch</button>
-      <button disabled={!ready || running} onClick={() => fileInput.current?.click()}>Open project</button>
-      <button disabled={!ready} onClick={() => void exportFile("project")}>Download project</button>
+      <details ref={projectMenu} className="batch-file-menu" onClick={event => {
+        if ((event.target as HTMLElement).closest("button")) { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
+      }} onKeyDown={event => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}><summary aria-label="Project actions" title="Project actions"><span aria-hidden="true">•••</span></summary><div>
+        <button disabled={!ready || running} onClick={() => fileInput.current?.click()}>Open project…</button>
+        <button disabled={!ready} onClick={() => void exportFile("project")}>Download project</button>
+        <button className="danger" disabled={!ready || running || deleting} onClick={() => setConfirmDelete(true)}>Delete batch…</button>
+      </div></details>
       <input hidden ref={fileInput} type="file" accept=".json,.ftobatch.json" onChange={async e => {
         const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
         try { await switchProject(parseProject(await file.text())); } catch (e) { setError(String(e)); }
@@ -363,18 +384,29 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
           const next = event.key === "Home" ? "input" : event.key === "End" ? "output" : tab === "input" ? "output" : "input";
           setTab(next); document.getElementById(`batch-${next}-tab`)?.focus();
         }}>
-          <button id="batch-input-tab" role="tab" tabIndex={tab === "input" ? 0 : -1} aria-selected={tab === "input"} aria-controls="batch-input-panel" onClick={() => setTab("input")}>Input <span>{count} cases</span></button>
-          <button id="batch-output-tab" role="tab" tabIndex={tab === "output" ? 0 : -1} aria-selected={tab === "output"} aria-controls="batch-output-panel" onClick={() => setTab("output")}>Output <span>{solutionCount} solutions</span></button>
+          <button id="batch-input-tab" role="tab" tabIndex={tab === "input" ? 0 : -1} aria-selected={tab === "input"} aria-controls="batch-input-panel" onClick={() => setTab("input")}>Input <span>{count} {count === 1 ? "case" : "cases"}</span></button>
+          <button id="batch-output-tab" role="tab" tabIndex={tab === "output" ? 0 : -1} aria-selected={tab === "output"} aria-controls="batch-output-panel" onClick={() => setTab("output")}>Output <span>{solutionCount} {solutionCount === 1 ? "solution" : "solutions"}</span></button>
         </div>
         <section id="batch-input-panel" role="tabpanel" aria-labelledby="batch-input-tab" className="batch-cases-panel" hidden={tab !== "input"}>
-          <div className="batch-section-header"><h2>Cases <span>{count}</span></h2><button disabled={running || !ready} onClick={() => { const c = newCase(); updateCases(entries => [...entries,c]); focus(c.id); }}>+ Add case</button></div>
-          <BatchCaseInput key={project.id} ref={caseInput} entries={project.cases} disabled={running || !ready}
+          <div className="batch-input-tools"><div className="batch-input-mode" role="group" aria-label="Text input mode">
+            {(["setup", "alg"] as const).map(mode => <button key={mode} type="button" aria-pressed={(project.settings.inputMode ?? "setup") === mode} disabled={running || !ready}
+              onClick={() => { setProject(p => changeInputMode(p, mode)); setMessage(""); }}>{mode === "setup" ? "Setup moves" : "Algorithms"}</button>)}
+          </div><div className="batch-partial-base">
+            <button type="button" disabled={running || !ready} onClick={() => setEditingPartial(true)}>{project.settings.partialBase ? "Edit partial position" : "Undefine pieces"}</button>
+            {project.settings.partialBase && <>
+              <button type="button" disabled={running || !ready} onClick={() => setProject(p => changePartialBase(p, null))}>Use full position</button>
+              {onConfigureTables && <button type="button" disabled={running || !ready} onClick={() => onConfigureTables(project.settings.partialBase!, project.settings.instanceMoves, project.settings.lastLayer)}>Pruning &amp; Bloom tables</button>}
+              <span>Text input uses the partial base. Visual cases keep their own state.</span>
+            </>}
+          </div></div>
+          <BatchCaseInput key={project.id} ref={caseInput} entries={project.cases} inputMode={project.settings.inputMode} disabled={running || !ready}
             activeCases={activeCases} onChange={entries => updateCases(() => entries)} onEdit={setEditing} />
+          <div className="batch-editor-footer"><span>One {project.settings.inputMode === "alg" ? "algorithm" : "setup"} per line</span><span><kbd>Tab</kbd> Visual editor</span></div>
         </section>
         <section id="batch-output-panel" role="tabpanel" aria-labelledby="batch-output-tab" className="batch-output-panel" hidden={tab !== "output"}>
-          <div className="batch-section-header"><h2>Output <span>{solutionCount} solutions</span></h2><button disabled={!count} onClick={() => void exportFile("csv")}>Export CSV</button></div>
-          <div className={`batch-output-status${accelerationControl ? " has-acceleration" : ""}`}>{accelerationControl}<div className="batch-progress" role="status"><span>{solved}/{count} cases solved</span><span>{(activeSetId && running ? `Move set ${moveSets.findIndex(set => set.id === activeSetId) + 1} · ` : "") + (message || (project.status === "done" ? "Batch complete" : project.status === "paused" ? "Paused" : "Ready"))}</span></div></div>
-          <input className="batch-output-filter" aria-label="Filter output" placeholder="Filter by case number or setup" value={filter} onChange={e => setFilter(e.target.value)} />
+          <div className="batch-section-header"><h2>Output <span>{solutionCount} {solutionCount === 1 ? "solution" : "solutions"}</span></h2><button disabled={!count} onClick={() => void exportFile("csv")}>Export CSV</button></div>
+          <div className={`batch-output-status${accelerationControl ? " has-acceleration" : ""}`}>{accelerationControl}<div className="batch-progress" role="status"><span>{solved}/{count} cases solved</span><span>{operationBusy ? operationMessage || "Generating tables…" : (activeSetId && running ? `Move set ${moveSets.findIndex(set => set.id === activeSetId) + 1} · ` : "") + (message || (project.status === "done" ? "Batch complete" : project.status === "paused" ? "Paused" : "Ready"))}</span>{operationBusy && onStopOperation && <button type="button" onClick={onStopOperation}>Stop table generation</button>}</div></div>
+          <input className="batch-output-filter" aria-label="Filter output" placeholder="Filter by case number or input" value={filter} onChange={e => setFilter(e.target.value)} />
           <div className="batch-output" tabIndex={0} aria-label="Batch results">
             {!count && <div className="batch-output-empty"><h3>No results yet</h3><p>Add your cases in Input, choose the allowed move sets, and start the batch.</p><button type="button" onClick={() => setTab("input")}>Go to Input</button></div>}
             {project.cases.map((entry,index) => hasCase(entry) && (!filter || String(index+1) === filter.trim() || entry.setup.toLowerCase().includes(filter.toLowerCase())) &&
@@ -389,26 +421,24 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
           </div>
         </section>
       </div>
-      <aside className="batch-sidebar">
+      <aside className="batch-sidebar"><div className="batch-sidebar-content">
         <section className="tool-section">
-          <label className="field">Instance<select aria-label="Batch instance" disabled={running || !ready} value={project.settings.instanceId ?? instances.find(instance => instance.moves.length === project.settings.instanceMoves.length && instance.moves.every(move => project.settings.instanceMoves.includes(move)))?.id ?? ""} onChange={e => {
-            const instance = instances.find(instance => instance.id === e.target.value);
-            if (!instance) return;
-            onSelectInstance(instance.id);
-            setProject(p => constrainBatchInstance(p, normalizeMoveSelection(instance.moves), instance.id)); setMessage("");
-          }}>
-            <option value="" disabled>Saved instance</option>
-            {instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}
-          </select></label>
+          <div className="section-heading"><h2>Move sets</h2></div>
+          <div className="field"><span>Instance</span><BatchSelect label="Batch instance" disabled={running || !ready}
+            value={project.settings.instanceId ?? instances.find(instance => instance.moves.length === project.settings.instanceMoves.length && instance.moves.every(move => project.settings.instanceMoves.includes(move)))?.id ?? ""}
+            options={instances.map(instance => ({ value: instance.id, label: instance.name }))} onChange={id => {
+              const instance = instances.find(instance => instance.id === id); if (!instance) return;
+              onSelectInstance(instance.id); setProject(p => constrainBatchInstance(p, normalizeMoveSelection(instance.moves), instance.id)); setMessage("");
+            }} /></div>
           <fieldset disabled={running || !ready}>
             <div className="batch-moveset-list">{moveSets.map((set,index) => {
               const covered = coveringMoveSet(moveSets, index);
               return <section key={set.id} className={`batch-moveset-card${covered ? " is-covered" : ""}`}>
                 <h2>Allowed move set {index+1}</h2>
-                <div className="batch-selected-moves">{set.moves.map(move => <code key={move}>{rotateAlgorithm(move, executionHold)}</code>)}{!set.moves.length && <span>No moves selected</span>}</div>
+                <div className="batch-selected-moves"><code>{set.moves.map(move => rotateAlgorithm(move, executionHold)).join(" ") || "No moves selected"}</code></div>
                 {covered && <p className="batch-control-hint">Covered by move set {moveSets.indexOf(covered)+1}; skipped.</p>}
                 <div className="batch-move-actions"><button type="button" onClick={() => setEditingMoveSet(set)}>Edit</button>
-                  <button type="button" onClick={() => updateMoveSets(moveSets.filter(other => other.id !== set.id))}>Delete</button>
+                  <button type="button" className="batch-set-delete" aria-label={`Delete move set ${index+1}`} title="Delete move set" onClick={() => updateMoveSets(moveSets.filter(other => other.id !== set.id))}>×</button>
                   <button type="button" aria-label={`Increase priority of move set ${index+1}`} disabled={index === 0} onClick={() => reorderMoveSet(index,-1)}>↑</button>
                   <button type="button" aria-label={`Decrease priority of move set ${index+1}`} disabled={index === moveSets.length-1} onClick={() => reorderMoveSet(index,1)}>↓</button></div>
               </section>;
@@ -421,22 +451,28 @@ export default function BatchSolver({ instances, activeInstanceId, onSelectInsta
           <fieldset disabled={running || !ready}>
             <div className="search-grid"><div className="depth-field"><div className="depth-label-row"><label htmlFor="batch-depth">Depth</label><DepthHelp /></div><input id="batch-depth" placeholder="auto" value={project.settings.depth} aria-invalid={Boolean(selection.error)} onChange={e => changeSettings({ depth: e.target.value })} /></div>
               <label>Threads<input type="number" min="1" max="1024" value={project.settings.threads} onChange={e => changeSettings({ threads: Math.max(1, Math.min(1024, Number(e.target.value) || 1)) })} /></label></div>
+            <label className="check"><input type="checkbox" checked={project.settings.all} onChange={e => changeSettings({ all: e.target.checked })} />All solutions</label>
+            <label className="check"><input type="checkbox" checked={project.settings.lastLayer} onChange={e => changeSettings({ lastLayer: e.target.checked })} />Last layer mode</label>
+            <details className="batch-advanced"><summary>Performance &amp; limits <span aria-hidden="true">⌄</span></summary><div>
             <label className="batch-defer-label" title="Defer slow first-pass searches until other cases catch up to that depth. 0 disables deferral. Deferred searches resume to completion.">Defer after (minutes)
               <input aria-label="Defer slow cases after minutes" type="number" min="0" max="1440" step="0.5" value={project.settings.slowCaseSeconds / 60} onChange={e => changeSettings({ slowCaseSeconds: Math.max(0, Math.min(86400, (Number(e.target.value) || 0) * 60)) })} />
             </label>
             <label className="check"><input type="checkbox" checked={project.settings.temporaryTables ?? true} onChange={e => changeSettings({ temporaryTables: e.target.checked })} />Temporary tables for large or deep batches</label>
             {(project.settings.temporaryTables ?? true) && <label className="batch-defer-label">Table memory budget (MiB)<input aria-label="Temporary table memory budget in MiB" type="number" min="0" max="131072" placeholder="Auto" value={project.settings.tableMemoryMiB || ""} onChange={e => changeSettings({ tableMemoryMiB: Math.max(0,Math.min(131072,Math.floor(Number(e.target.value)||0))) })} /></label>}
-            <label className="check"><input type="checkbox" checked={project.settings.all} onChange={e => changeSettings({ all: e.target.checked })} />All solutions</label>
-            <label className="check"><input type="checkbox" checked={project.settings.lastLayer} onChange={e => changeSettings({ lastLayer: e.target.checked })} />Last layer mode</label>
+            </div></details>
           </fieldset>
           {selection.error && <p className="batch-error">{selection.error}</p>}
-          <div className="batch-search-actions"><button className={running ? "primary stop" : "primary"} disabled={!ready || !listenersReady || starting || project.status === "pausing" || (!running && (!count || !retainedSets.length || !!selection.error))} onClick={() => void (running ? pause() : start())}>{project.status === "pausing" ? "Pausing…" : running ? "Pause" : project.status === "idle" ? "Solve batch" : "Resume batch"}</button>
-          <button disabled={running || !ready} onClick={() => { updateCases(entries => entries.map(clearCase)); setMessage(""); }}>Reset results</button></div>
         </section>
+        </div>
+        <div className="batch-run-bar"><div className="batch-run-summary"><span>{retainedSets.length} {retainedSets.length === 1 ? "move set" : "move sets"}</span><span>{count} {count === 1 ? "case" : "cases"}</span></div>
+          <div className="batch-search-actions"><button className={running ? "primary stop" : "primary"} disabled={!ready || !listenersReady || starting || (operationBusy && !running) || project.status === "pausing" || (!running && (!count || !retainedSets.length || !!selection.error))} onClick={() => void (running ? pause() : start())}>{project.status === "pausing" ? "Pausing…" : running ? "Pause" : project.status === "idle" ? "Solve batch" : "Resume batch"}</button>
+          <button disabled={running || !ready} onClick={() => { updateCases(entries => entries.map(clearCase)); setMessage(""); }}>Reset results</button></div>
+        </div>
       </aside>
     </div>
+    {active && editingPartial && <PruningPieces title="Partial position for text input" initial={project.settings.partialBase ?? null} lastLayer={project.settings.lastLayer} faceColors={faceColors} onClose={() => setEditingPartial(false)} onSave={base => { setProject(p => changePartialBase(p, base)); setEditingPartial(false); setMessage(""); }} />}
     {active && editingMoveSet && <MoveSetEditor initial={editingMoveSet} executionHold={executionHold} onClose={() => setEditingMoveSet(null)} onSave={set => { updateMoveSets(moveSets.some(old => old.id === set.id) ? moveSets.map(old => old.id === set.id ? set : old) : [...moveSets,set]); setEditingMoveSet(null); }} />}
     {active && confirmDelete && <DeleteBatchDialog name={project.name} deleting={deleting} onClose={() => setConfirmDelete(false)} onDelete={() => void removeProject()} />}
-    {active && editEntry && !running && <CaseEditor key={editEntry.id} entry={editEntry} number={editNumber} lastLayer={project.settings.lastLayer} faceColors={faceColors} onClose={() => { setEditing(null); focus(editEntry.id); }} onSave={(facelets, centerTargets, ignoredStickerState) => { updateCases(entries => entries.map(c => c.id === editEntry.id ? clearCase({ ...c, facelets, centerTargets, ignoredStickerState }) : c)); setEditing(null); }} />}
+    {active && editEntry && !running && <CaseEditor key={editEntry.id} entry={editEntry} number={editNumber} lastLayer={project.settings.lastLayer} faceColors={faceColors} partialBase={project.settings.partialBase} inputMode={project.settings.inputMode} onClose={() => { setEditing(null); focus(editEntry.id); }} onSave={(facelets, centerTargets, ignoredStickerState) => { updateCases(entries => entries.map(c => c.id === editEntry.id ? clearCase({ ...c, facelets, centerTargets, ignoredStickerState }) : c)); setEditing(null); }} />}
   </section>;
 }

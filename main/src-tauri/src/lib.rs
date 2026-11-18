@@ -205,6 +205,7 @@ struct SolverState {
 #[derive(Default)]
 struct SolverCache {
     bloom: Option<bloom_cache::CachedBloom>,
+    secondary_bloom: Option<bloom_cache::CachedBloom>,
     tables: Option<Arc<TransitionTables>>,
     pruning: Option<CachedPruning>,
     ll_pruning: Option<CachedLlPruning>,
@@ -330,6 +331,7 @@ fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(
     cache.pruning = None;
     cache.ll_pruning = None;
     cache.bloom = None;
+    cache.secondary_bloom = None;
     fto_core::partial_goal::clear_cache();
     Ok(())
 }
@@ -343,7 +345,7 @@ fn pruning_cache_status(
         .lock()
         .map_err(|_| "solver cache lock poisoned".to_owned())?;
     Ok(PruningCacheStatus {
-        has_bloom: cache.bloom.is_some(),
+        has_bloom: cache.bloom.is_some() || cache.secondary_bloom.is_some(),
         has_tables: cache.tables.is_some(),
         has_pruning: cache.pruning.is_some() || fto_core::partial_goal::has_cache(),
     })
@@ -564,7 +566,9 @@ pub fn run() {
         .manage(gpu_profile::GpuProfileState::default())
         .setup(|app| {
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move { let _ = gpu_profile::get_gpu_profile(handle).await; });
+            tauri::async_runtime::spawn(async move {
+                let _ = gpu_profile::get_gpu_profile(handle).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1085,8 +1089,13 @@ fn load_solver_pruning(
     cancel: &Arc<AtomicBool>,
     app: &AppHandle,
 ) -> Result<Arc<SolverPruning>, String> {
-    let target =
-        select_pruning_move_set(out_dir, allowed_moves, instance_moves, restricted_pruning, false)?;
+    let target = select_pruning_move_set(
+        out_dir,
+        allowed_moves,
+        instance_moves,
+        restricted_pruning,
+        false,
+    )?;
     {
         let cache = cache
             .lock()
@@ -1152,7 +1161,8 @@ fn load_ll_solver_pruning(
     let mut ll_instance = instance_moves.to_vec();
     ensure_ll_free_u_moves(&mut ll_allowed);
     ensure_ll_free_u_moves(&mut ll_instance);
-    let target = select_pruning_move_set(out_dir, &ll_allowed, &ll_instance, restricted_pruning, true)?;
+    let target =
+        select_pruning_move_set(out_dir, &ll_allowed, &ll_instance, restricted_pruning, true)?;
     {
         let cache = cache
             .lock()
@@ -1197,7 +1207,10 @@ fn load_ll_solver_pruning(
         )?);
     }
     // Older LL files did not embed move metadata. Record it for discovery too.
-    let _ = fs::write(ll_dir.join(format!("{move_code}.moves")), pruning::move_set_suffix(&target));
+    let _ = fs::write(
+        ll_dir.join(format!("{move_code}.moves")),
+        pruning::move_set_suffix(&target),
+    );
     let pruning = Arc::new(PatternDatabases::new(databases));
     emit_line(
         app,
@@ -1520,7 +1533,11 @@ fn select_pruning_move_set(
     }
 
     let mut candidates = Vec::<Vec<Move>>::new();
-    candidates.extend(if last_layer { discover_cached_ll_move_sets(out_dir)? } else { discover_cached_move_sets(out_dir)? });
+    candidates.extend(if last_layer {
+        discover_cached_ll_move_sets(out_dir)?
+    } else {
+        discover_cached_move_sets(out_dir)?
+    });
     if restricted_pruning {
         candidates.push(allowed_moves.to_vec());
     }
@@ -1564,18 +1581,37 @@ fn discover_cached_ll_move_sets(out_dir: &Path) -> Result<Vec<Vec<Move>>, String
         Ok(entries) => entries,
         Err(_) => return Ok(vec![]),
     };
-    let edge = format!("{}_", file_safe_name(&CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name()));
-    let corner = format!("{}_", file_safe_name(&CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name()));
+    let edge = format!(
+        "{}_",
+        file_safe_name(&CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name())
+    );
+    let corner = format!(
+        "{}_",
+        file_safe_name(&CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name())
+    );
     let mut sets = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(code) = name.strip_prefix(&edge).and_then(|s| s.strip_suffix(".prun")) else { continue };
-        if !directory.join(format!("{corner}{code}.prun")).is_file() { continue; }
-        let Some(suffix) = read_move_suffix(&directory, &name).or_else(|| fs::read_to_string(directory.join(format!("{code}.moves"))).ok()) else { continue };
+        let Some(code) = name
+            .strip_prefix(&edge)
+            .and_then(|s| s.strip_suffix(".prun"))
+        else {
+            continue;
+        };
+        if !directory.join(format!("{corner}{code}.prun")).is_file() {
+            continue;
+        }
+        let Some(suffix) = read_move_suffix(&directory, &name)
+            .or_else(|| fs::read_to_string(directory.join(format!("{code}.moves"))).ok())
+        else {
+            continue;
+        };
         if let Some(mut moves) = pruning::parse_move_set_suffix(&suffix) {
             moves.sort_unstable_by_key(|mv| mv.idx());
-            if !sets.contains(&moves) { sets.push(moves); }
+            if !sets.contains(&moves) {
+                sets.push(moves);
+            }
         }
     }
     Ok(sets)
@@ -1635,7 +1671,14 @@ fn cubie_and_partial_mask_from_facelets(
     center_targets: Option<&CenterTargets>,
     last_layer_mode: bool,
 ) -> Result<(FtoCubie, Option<PartialMask>), String> {
-    if facelets.iter().any(|&color| color == 8) {
+    if facelets.iter().any(|&color| color == 8)
+        || center_targets.is_some_and(|t| {
+            t.uf_slots
+                .iter()
+                .chain(&t.rl_slots)
+                .any(|slots| !slots.is_empty())
+        })
+    {
         cubie_from_partial_facelets(facelets, center_targets, last_layer_mode)
             .map(|(cubie, mask)| (cubie, Some(mask)))
     } else if last_layer_mode {
@@ -2345,34 +2388,65 @@ mod tests {
     #[test]
     fn pruning_selection_uses_saved_goal_tables_or_the_shared_instance() {
         use super::*;
-        let directory = std::env::temp_dir().join(format!("fto-batch-pruning-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "fto-batch-pruning-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::create_dir_all(&directory).unwrap();
         let allowed = vec![Move::R];
         let mut instance = vec![Move::R, Move::F, Move::U, Move::Up];
         instance.sort_unstable_by_key(|mv| mv.idx());
-        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), instance);
+        assert_eq!(
+            select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(),
+            instance
+        );
         let suffix = pruning::move_set_suffix(&allowed);
         fs::write(directory.join(format!("e3cf3_{suffix}.prun")), []).unwrap();
-        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), instance, "incomplete restricted pairs must not trigger another build");
+        assert_eq!(
+            select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(),
+            instance,
+            "incomplete restricted pairs must not trigger another build"
+        );
         fs::write(directory.join(format!("ccf3_{suffix}.prun")), []).unwrap();
-        assert_eq!(select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(), allowed);
+        assert_eq!(
+            select_pruning_move_set(&directory, &allowed, &instance, false, false).unwrap(),
+            allowed
+        );
         let mut ll_allowed = allowed.clone();
         ensure_ll_free_u_moves(&mut ll_allowed);
-        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), instance, "ordinary tables must not cause new restricted LL builds");
+        assert_eq!(
+            select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(),
+            instance,
+            "ordinary tables must not cause new restricted LL builds"
+        );
         let ll_dir = directory.join("last-layer-v1");
         fs::create_dir_all(&ll_dir).unwrap();
         let suffix = pruning::move_set_suffix(&ll_allowed);
         let code = pruning::move_set_codename(&suffix);
-        let edge = file_safe_name(&CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name());
-        let corner = file_safe_name(&CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name());
+        let edge = file_safe_name(
+            &CandidateSpec::new(vec![Component::Edge3, Component::LlUfCenterA]).name(),
+        );
+        let corner = file_safe_name(
+            &CandidateSpec::new(vec![Component::Corner, Component::LlUfCenterB]).name(),
+        );
         let metadata = format!("moves={suffix}\n");
         let mut header = b"FTO_PRUN_V1\0\0\0\0\0".to_vec();
         header.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
         header.extend_from_slice(metadata.as_bytes());
         fs::write(ll_dir.join(format!("{edge}_{code}.prun")), header).unwrap();
-        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), instance);
+        assert_eq!(
+            select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(),
+            instance
+        );
         fs::write(ll_dir.join(format!("{corner}_{code}.prun")), []).unwrap();
-        assert_eq!(select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(), ll_allowed);
+        assert_eq!(
+            select_pruning_move_set(&directory, &ll_allowed, &instance, false, true).unwrap(),
+            ll_allowed
+        );
         assert!(select_pruning_move_set(&directory, &[Move::B], &instance, false, false).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -2471,6 +2545,23 @@ mod tests {
         assert_eq!(mask.uf_center_targets, [None; 4]);
         targets.uf_slots[2] = vec![0];
         assert!(cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).is_err());
+    }
+
+    #[test]
+    fn slot_only_table_goals_are_not_discarded_as_full_positions() {
+        let targets = CenterTargets {
+            uf: [None; 4],
+            rl: [None; 4],
+            uf_sources: [None; 4],
+            rl_sources: [None; 4],
+            rl_top_sources: empty_center_source_groups(),
+            uf_slots: [vec![0], vec![], vec![], vec![]],
+            rl_slots: empty_center_source_groups(),
+        };
+        let (_, mask) =
+            cubie_and_partial_mask_from_facelets(&solved_facelets(), Some(&targets), false)
+                .unwrap();
+        assert_eq!(mask.unwrap().uf_entitled_slots[0], 1);
     }
 
     #[test]

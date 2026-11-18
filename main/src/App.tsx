@@ -684,6 +684,7 @@ function App() {
   const [pruningOpen, setPruningOpen] = useState(false);
   const [pruningKind, setPruningKind] = useState<"pattern" | "bloom">("pattern");
   const [pruningMoves, setPruningMoves] = useState<string[]>([]);
+  const [pruningPoolOverride, setPruningPoolOverride] = useState<string[] | null>(null);
   const [patternGoal, setPatternGoal] = useState<PruningGoal | null>(null);
   const [bloomGoal, setBloomGoal] = useState<PruningGoal | null>(null);
   const [pieceEditor, setPieceEditor] = useState<"pattern" | "bloom" | null>(null);
@@ -694,7 +695,7 @@ function App() {
   const { useGpu, profile: gpuProfile, generationStatus, setGenerationStatus, switchPending: gpuSwitchPending, explanation: gpuExplanation, changeGpu, resetGpu } = useGpuAcceleration();
   const [bloomMemory, setBloomMemory] = useState("200");
   const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
-    Number(bloomDepth) >= 1 && Number(bloomDepth) <= 255 && Number.isInteger(Number(bloomMemory)) &&
+    Number(bloomDepth) >= 1 && Number(bloomDepth) <= 16 && Number.isInteger(Number(bloomMemory)) &&
     Number(bloomMemory) >= 1 && Number(bloomMemory) <= 4294967295;
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
@@ -1260,7 +1261,7 @@ function App() {
           facelets: patternGoal?.facelets ?? facelets,
           centerTargets: patternGoal?.centerTargets ?? centerTargets,
           allowedMoves: pruningMoves,
-          instanceMoves: activeInstance.moves,
+          instanceMoves: pruningPoolOverride ?? activeInstance.moves,
           selectedMovesOnly: true,
           lastLayerMode: pruningLastLayerMode,
           definedPiecesOnly: patternGoal !== null,
@@ -1336,6 +1337,7 @@ function App() {
     setActiveId(instance.id);
     setFaceColors(defaultFaceColors);
     resetGpu();
+    setPruningPoolOverride(null);
     setSetup("");
     setInputMode("setup");
     setApplySignal((current) => current + 1);
@@ -1367,15 +1369,18 @@ function App() {
     setStateErrorsOpen(false);
   }
 
-  const pruningMovePool = (selected: string[], setSelected: (value: string[]) => void) => <>
-    <h3>Choose moves for this table ({selected.length})</h3>
-    <div className="bloom-move-actions">
-      <button className="secondary" onClick={() => setSelected([...allowedMoves])}>Use current selection</button>
-      <button className="secondary" onClick={() => setSelected([...moves])}>Select all</button>
-      <button className="secondary" onClick={() => setSelected([])}>Clear</button>
-    </div>
-    <div className="modal-move-grid">{moves.map(move => <button key={move} type="button" className={`move-toggle${selected.includes(move) ? "" : " banned"}`} aria-pressed={selected.includes(move)} onClick={() => setSelected(selected.includes(move) ? selected.filter(m => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}</div>
-  </>;
+  const pruningMovePool = (selected: string[], setSelected: (value: string[]) => void) => {
+    const pool = pruningPoolOverride ?? moves;
+    return <>
+      <h3>Choose moves for this table ({selected.length})</h3>
+      <div className="bloom-move-actions">
+        <button className="secondary" onClick={() => setSelected(allowedMoves.filter(move => pool.includes(move)))}>Use current selection</button>
+        <button className="secondary" onClick={() => setSelected([...pool])}>Select all</button>
+        <button className="secondary" onClick={() => setSelected([])}>Clear</button>
+      </div>
+      <div className="modal-move-grid">{pool.map(move => <button key={move} type="button" className={`move-toggle${selected.includes(move) ? "" : " banned"}`} aria-pressed={selected.includes(move)} onClick={() => setSelected(selected.includes(move) ? selected.filter(m => m !== move) : [...selected, move])}>{rotateAlgorithm(move, executionHold)}</button>)}</div>
+    </>;
+  };
   const partialGoalControls = (kind: "pattern" | "bloom", goal: PruningGoal | null) => <div className="partial-goal-controls">
     <div className="bloom-move-actions"><button className="secondary" onClick={() => setPieceEditor(kind)}>{goal ? "Edit defined pieces" : "Undefine pieces"}</button>{goal && <button className="secondary" onClick={() => kind === "pattern" ? setPatternGoal(null) : setBloomGoal(null)}>Use all pieces</button>}</div>
     {goal && <><p className="hint">Dedicated partial goal: {goal.facelets.filter(c => c === 8).length} stickers undefined. Compatible partial searches load this table automatically.</p>
@@ -1427,6 +1432,7 @@ function App() {
                   <button
                     className="menu-command"
                     onClick={() => {
+                      setPruningPoolOverride(null);
                       setPruningMoves([...allowedMoves]);
                       setBloomMoves([...allowedMoves]);
                       setPruningOpen(true);
@@ -1616,7 +1622,7 @@ function App() {
               </label>
               <div className="bloom-controls">
                 <label className="field">Depth
-                  <input type="number" min="1" max="255" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
+                  <input type="number" min="1" max="16" step="1" value={bloomDepth} onChange={(event) => setBloomDepth(event.target.value)} />
                 </label>
                 <label className="field">Memory cap (MiB)
                   <input type="number" min="1" step="1" value={bloomMemory} onChange={(event) => setBloomMemory(event.target.value)} />
@@ -2059,7 +2065,10 @@ function App() {
         <AlgCombiner active={mode === "combiner" && !howToOpen} />
       </div>
       <div hidden={mode !== "batch"}>
-        <BatchSolver instances={instances} activeInstanceId={activeId} onSelectInstance={setActiveId} accelerationControl={accelerationControl} executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
+        <BatchSolver operationBusy={running} operationMessage={displayTerminal[displayTerminal.length-1]?.text || status} onStopOperation={() => void stopSolve()} onConfigureTables={(goal, moves, lastLayer) => {
+          setPruningPoolOverride([...moves]); setPatternGoal(goal); setBloomGoal(goal); setPruningMoves([...moves]); setBloomMoves([...moves]);
+          setPruningLastLayerMode(lastLayer); setBloomLastLayer(lastLayer); setPruningKind("pattern"); setPruningOpen(true);
+        }} instances={instances} activeInstanceId={activeId} onSelectInstance={setActiveId} accelerationControl={accelerationControl} executionHold={executionHold} active={mode === "batch" && !howToOpen} moves={allowedMoves} instanceMoves={activeInstance.moves} faceColors={faceColors} useGpu={useGpu} onRunning={setBatchRunning} />
       </div>
     </main>
   );

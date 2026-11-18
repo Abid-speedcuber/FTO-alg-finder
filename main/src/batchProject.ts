@@ -1,4 +1,5 @@
 import type { CenterTargets, IgnoredStickerState } from "./FtoViewer";
+import type { PruningGoal } from "./PruningPieces";
 
 export type SearchCheckpoint = {
   version: 1; depth: number; input: number[];
@@ -20,8 +21,8 @@ export type BatchCase = {
   moveSetResults?: Record<string, BatchProgress>;
 };
 export type BatchProject = {
-  version: 1 | 2; id: string; name: string; updatedAt: number; cases: BatchCase[];
-  settings: { moves: string[]; instanceMoves: string[]; instanceId?: string; moveSets?: BatchMoveSet[]; depth: string; threads: number; slowCaseSeconds: number; all: boolean; lastLayer: boolean; temporaryTables?: boolean; tableMemoryMiB?: number };
+  version: 1 | 2 | 3; id: string; name: string; updatedAt: number; cases: BatchCase[];
+  settings: { inputMode?: "setup" | "alg"; moves: string[]; instanceMoves: string[]; instanceId?: string; moveSets?: BatchMoveSet[]; depth: string; threads: number; slowCaseSeconds: number; all: boolean; lastLayer: boolean; temporaryTables?: boolean; tableMemoryMiB?: number; partialBase?: PruningGoal | null };
   status: "idle" | "running" | "pausing" | "paused" | "done";
 };
 export const newCase = (setup = ""): BatchCase => ({ id: crypto.randomUUID(), setup, deferredDepth: null, checkpoint: null, completedDepths: [], firstDepth: null, solutions: [], nodes: 0, error: null });
@@ -105,7 +106,7 @@ export function mergeSetProgress(entry: BatchCase, setId: string, incoming: Batc
 export function changeMoveSets(project: BatchProject, sets: BatchMoveSet[]): BatchProject {
   const prior = moveSetsOf(project.settings);
   const key = (moves: string[]) => [...new Set(moves)].sort().join(" ");
-  return { ...project, version: 2, status: "paused", updatedAt: Date.now(), settings: { ...project.settings, moveSets: sets,
+  return { ...project, version: project.version === 3 || project.settings.partialBase ? 3 : 2, status: "paused", updatedAt: Date.now(), settings: { ...project.settings, moveSets: sets,
     moves: sets[0]?.moves ?? [], instanceMoves: sets[0]?.instanceMoves ?? project.settings.instanceMoves },
     cases: project.cases.map(entry => {
       const results: Record<string, BatchProgress> = {};
@@ -126,6 +127,18 @@ export function constrainBatchInstance(project: BatchProject, pool: string[], in
   return { ...result, settings: { ...result.settings, instanceMoves: [...pool], instanceId } };
 }
 
+export function changePartialBase(project: BatchProject, partialBase: PruningGoal | null): BatchProject {
+  if (JSON.stringify(project.settings.partialBase ?? null) === JSON.stringify(partialBase)) return project;
+  return { ...project, version: partialBase || project.version === 3 ? 3 : project.version, settings: { ...project.settings, partialBase }, status: "paused", updatedAt: Date.now(),
+    cases: project.cases.map(entry => entry.facelets ? entry : clearCase(entry)) };
+}
+
+export function changeInputMode(project: BatchProject, inputMode: "setup" | "alg"): BatchProject {
+  if ((project.settings.inputMode ?? "setup") === inputMode) return project;
+  return { ...project, settings: { ...project.settings, inputMode }, status: "paused", updatedAt: Date.now(),
+    cases: project.cases.map(entry => entry.facelets ? entry : clearCase(entry)) };
+}
+
 // Text cells are escaped and formula-prefixed input is neutralized for spreadsheet apps.
 function csvCell(value: unknown) {
   let text = String(value ?? "");
@@ -133,13 +146,13 @@ function csvCell(value: unknown) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 export function projectCsv(project: BatchProject): string {
-  const rows: unknown[][] = [["Case", "Setup / state", "Depth", "Solution", "First solution depth", "Completed depths", "Status", "Nodes", "Allowed moves", "Selected depths", "Last layer", "Deferred depth", "Move sets"]];
+  const rows: unknown[][] = [["Case", "Setup / state", "Depth", "Solution", "First solution depth", "Completed depths", "Status", "Nodes", "Allowed moves", "Selected depths", "Last layer", "Deferred depth", "Move sets", "Text partial base", "Text input mode"]];
   project.cases.forEach((entry, index) => {
     if (!hasCase(entry)) return;
     const state = entry.facelets ? JSON.stringify({ facelets: entry.facelets, centerTargets: entry.centerTargets, ignoredStickerState: entry.ignoredStickerState }) : entry.setup;
     const status = entry.error || (entry.solutions.length ? "Solved" : project.status === "done" ? "No solution in selected depths" : entry.deferredDepth != null ? `Deferred at depth ${entry.deferredDepth}` : "Pending");
     for (const solution of entry.solutions.length ? entry.solutions : [null]) {
-      rows.push([index + 1, state, solution?.depth, solution?.algorithm, entry.firstDepth, entry.completedDepths.join(", "), status, entry.nodes, effectiveMoveSets(moveSetsOf(project.settings)).filter(set => !solution?.moveSetIds || solution.moveSetIds.includes(set.id)).map(set => set.moves.join(" ")).join(" | "), project.settings.depth || "auto", project.settings.lastLayer ? "Yes" : "No", entry.deferredDepth, solution?.moveSetIds?.map(id => moveSetsOf(project.settings).findIndex(set => set.id === id) + 1).join(" | ") ?? ""]);
+      rows.push([index + 1, state, solution?.depth, solution?.algorithm, entry.firstDepth, entry.completedDepths.join(", "), status, entry.nodes, effectiveMoveSets(moveSetsOf(project.settings)).filter(set => !solution?.moveSetIds || solution.moveSetIds.includes(set.id)).map(set => set.moves.join(" ")).join(" | "), project.settings.depth || "auto", project.settings.lastLayer ? "Yes" : "No", entry.deferredDepth, solution?.moveSetIds?.map(id => moveSetsOf(project.settings).findIndex(set => set.id === id) + 1).join(" | ") ?? "", !entry.facelets && project.settings.partialBase ? JSON.stringify(project.settings.partialBase) : "", entry.facelets ? "Visual" : project.settings.inputMode ?? "setup"]);
     }
   });
   return "\uFEFF" + rows.map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
@@ -165,14 +178,35 @@ function validateProgress(c: BatchProgress) {
     }
 }
 
+function validatePosition(c: Pick<BatchCase, "facelets" | "centerTargets" | "ignoredStickerState">) {
+  if (c.facelets != null && (!Array.isArray(c.facelets) || c.facelets.length !== 72 || !c.facelets.every(v => Number.isInteger(v) && v >= 0 && v <= 8))) throw Error("Invalid partial position.");
+  if (c.ignoredStickerState !== undefined && (!Array.isArray(c.ignoredStickerState) || c.ignoredStickerState.length !== 72 ||
+      c.ignoredStickerState.some(saved => saved !== null && (!saved || !Number.isInteger(saved.color) || saved.color < 0 || saved.color > 7 ||
+        ![null, "fixed", "top"].includes(saved.mark))))) throw Error("Invalid remembered sticker colors.");
+  if (c.centerTargets != null) {
+    const t = c.centerTargets;
+    for (const groups of [t.ufSlots, t.rlSlots]) {
+      if (groups !== undefined && (!Array.isArray(groups) || groups.length !== 4 ||
+          groups.some((slots, color) => !Array.isArray(slots) || new Set(slots).size !== slots.length ||
+            slots.some(slot => !Number.isInteger(slot) || slot < color * 3 || slot >= color * 3 + 3)))) {
+        throw Error("Invalid entitled center slots.");
+      }
+    }
+    if (![t.uf,t.rl,t.ufSources,t.rlSources].every(a => Array.isArray(a) && a.length === 4 && a.every(v => v === null || (Number.isInteger(v) && Number(v) >= 0 && Number(v) < 12))) ||
+        !Array.isArray(t.rlTopSources) || t.rlTopSources.length !== 4 || !t.rlTopSources.every(a => Array.isArray(a) && a.every(v => Number.isInteger(v) && v >= 0 && v < 12))) throw Error("Invalid center targets.");
+  }
+}
+
+
 export function parseProject(text: string): BatchProject {
   const p = JSON.parse(text) as BatchProject;
   if (p?.settings && p.settings.slowCaseSeconds === undefined) p.settings.slowCaseSeconds = 300;
   const integer = (v: unknown) => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 255;
-  if (![1, 2].includes(p.version) || typeof p.name !== "string" || !p.settings || !Array.isArray(p.cases) ||
+  if (![1, 2, 3].includes(p.version) || typeof p.name !== "string" || !p.settings || !Array.isArray(p.cases) ||
       !Array.isArray(p.settings.moves) || !p.settings.moves.every(m => typeof m === "string") ||
       !Array.isArray(p.settings.instanceMoves) || !p.settings.instanceMoves.every(m => typeof m === "string") ||
       (p.settings.instanceId !== undefined && typeof p.settings.instanceId !== "string") ||
+      (p.settings.inputMode !== undefined && !["setup", "alg"].includes(p.settings.inputMode)) ||
       typeof p.settings.depth !== "string" || !Number.isInteger(p.settings.threads) || p.settings.threads < 1 || p.settings.threads > 1024 ||
       (!Number.isFinite(p.settings.slowCaseSeconds) || p.settings.slowCaseSeconds < 0 || p.settings.slowCaseSeconds > 86400) ||
       (p.settings.temporaryTables !== undefined && typeof p.settings.temporaryTables !== "boolean") ||
@@ -186,6 +220,11 @@ export function parseProject(text: string): BatchProject {
       !Array.isArray(set.instanceMoves) || !set.instanceMoves.every(m => typeof m === "string") ||
       set.moves.some(move => !set.instanceMoves.includes(move)))) throw Error("Invalid allowed move sets.");
   }
+  if (p.settings.partialBase != null) {
+    const base = p.settings.partialBase;
+    if (!base || typeof base !== "object" || !Array.isArray(base.facelets) || base.centerTargets == null) throw Error("Invalid batch partial base.");
+    validatePosition(base);
+  }
   const ids = new Set<string>();
   for (const c of p.cases) {
     if (typeof c.id !== "string" || ids.has(c.id) || typeof c.setup !== "string" ||
@@ -195,9 +234,7 @@ export function parseProject(text: string): BatchProject {
         !Array.isArray(c.solutions) || !c.solutions.every(s => integer(s.depth) && typeof s.algorithm === "string") ||
         !Number.isFinite(c.nodes) || c.nodes < 0 || !(c.error === null || typeof c.error === "string") ||
         (c.facelets != null && (!Array.isArray(c.facelets) || c.facelets.length !== 72 || !c.facelets.every(v => Number.isInteger(v) && v >= 0 && v <= 8)))) throw Error("Invalid case in batch project.");
-    if (c.ignoredStickerState !== undefined && (!Array.isArray(c.ignoredStickerState) || c.ignoredStickerState.length !== 72 ||
-        c.ignoredStickerState.some(saved => saved !== null && (!saved || !Number.isInteger(saved.color) || saved.color < 0 || saved.color > 7 ||
-          ![null, "fixed", "top"].includes(saved.mark))))) throw Error("Invalid remembered sticker colors.");
+    validatePosition(c);
     validateProgress(c);
     const setIds = new Set(moveSetsOf(p.settings).map(set => set.id));
     if (c.solutions.some(solution => solution.moveSetIds?.some(id => !setIds.has(id)))) throw Error("Unknown solution move set.");
@@ -208,21 +245,9 @@ export function parseProject(text: string): BatchProject {
         validateProgress(progress);
       }
     }
-    if (c.centerTargets != null) {
-      const t = c.centerTargets;
-      for (const groups of [t.ufSlots, t.rlSlots]) {
-        if (groups !== undefined && (!Array.isArray(groups) || groups.length !== 4 ||
-            groups.some((slots, color) => !Array.isArray(slots) || new Set(slots).size !== slots.length ||
-              slots.some(slot => !Number.isInteger(slot) || slot < color * 3 || slot >= color * 3 + 3)))) {
-          throw Error("Invalid entitled center slots.");
-        }
-      }
-      if (![t.uf,t.rl,t.ufSources,t.rlSources].every(a => Array.isArray(a) && a.length === 4 && a.every(v => v === null || (Number.isInteger(v) && Number(v) >= 0 && Number(v) < 12))) ||
-          !Array.isArray(t.rlTopSources) || t.rlTopSources.length !== 4 || !t.rlTopSources.every(a => Array.isArray(a) && a.every(v => Number.isInteger(v) && v >= 0 && v < 12))) throw Error("Invalid center targets.");
-    }
     ids.add(c.id);
   }
-  return { ...p, id: crypto.randomUUID(), status: "paused", updatedAt: Date.now() };
+  return { ...p, version: p.settings.partialBase ? 3 : p.version, id: crypto.randomUUID(), status: "paused", updatedAt: Date.now() };
 }
 
 let dbPromise: Promise<IDBDatabase> | undefined;

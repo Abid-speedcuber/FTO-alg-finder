@@ -38,7 +38,16 @@ impl Metadata {
         }
     }
     pub fn compatible(&self, mask: &PartialMask, moves: &[Move]) -> bool {
-        self.version == 1
+        (self.version == 1 || self.version == 2)
+            && (self.version == 1
+                || ((self.mask.uf_entitled_slots == [0; 4]
+                    || self.mask.uf_entitled_slots == mask.uf_entitled_slots)
+                    && (self.mask.rl_entitled_slots == [0; 4]
+                        || self.mask.rl_entitled_slots == mask.rl_entitled_slots)
+                    && (self.mask.uf_center_targets == [None; 4]
+                        || self.mask.uf_center_targets == mask.uf_center_targets)
+                    && (self.mask.rl_center_targets == [None; 4]
+                        || self.mask.rl_center_targets == mask.rl_center_targets)))
             && self.model == crate::bloom::model_signature()
             && self.mask.last_layer_centers == mask.last_layer_centers
             && self
@@ -118,20 +127,39 @@ fn accepts(component: Component, value: u32, mask: &PartialMask) -> bool {
     if !center {
         return (0..12).all(|p| !cared[p] || colors[p] == map_label(p, counts));
     }
-    // Same-color center pieces can occupy home slots in any order. Additional
-    // slot/last-layer identity restrictions are safely relaxed by this projection.
+    let (entitled, targets) = match component {
+        Component::UfCenter | Component::UfCenter2 | Component::UfCenter3 => {
+            (&mask.uf_entitled_slots, &mask.uf_center_targets)
+        }
+        _ => (&mask.rl_entitled_slots, &mask.rl_center_targets),
+    };
+    // Identity information is relaxed by the color projection, but every true
+    // goal must still put enough of this color into its entitled home slots.
     (0..4).all(|color| {
         let required = cared[color * 3..color * 3 + 3]
             .iter()
             .filter(|&&v| v)
             .count();
-        colors[color * 3..color * 3 + 3]
+        let label = map_label(color * 3, counts);
+        if colors[color * 3..color * 3 + 3]
             .iter()
-            .filter(|&&v| v == map_label(color * 3, counts))
+            .filter(|&&v| v == label)
             .count()
-            >= required
+            < required
+        {
+            return false;
+        }
+        let slots = entitled[color];
+        let matched = (0..12)
+            .filter(|&slot| slots & (1 << slot) != 0 && colors[slot] == label)
+            .count();
+        if matched < required.min(slots.count_ones() as usize) {
+            return false;
+        }
+        required == 0 || targets[color].is_none_or(|slot| colors[slot as usize] == label)
     })
 }
+
 pub fn plan(
     mask: &PartialMask,
     tables: &TransitionTables,
@@ -208,7 +236,7 @@ pub fn plan(
 }
 pub fn metadata(plan: &Plan, mask: &PartialMask, moves: &[Move], depth: Option<u8>) -> Metadata {
     Metadata {
-        version: 1,
+        version: 2,
         model: crate::bloom::model_signature(),
         mask: mask.clone(),
         components: plan
@@ -238,6 +266,22 @@ pub fn generate(
     report: Option<&PruningReporter<'_>>,
     bloom_mib: u32,
 ) -> Result<(), String> {
+    generate_with_reached_depth(plan, meta, tables, out, threads, cancel, report, bloom_mib)
+        .map(|_| ())
+}
+
+/// Returns the largest newly reached distance, or None for a cached file.
+/// A result below the requested radius means the projection is fully covered.
+pub fn generate_with_reached_depth(
+    plan: &Plan,
+    meta: &Metadata,
+    tables: &TransitionTables,
+    out: &Path,
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    report: Option<&PruningReporter<'_>>,
+    bloom_mib: u32,
+) -> Result<Option<u8>, String> {
     active(cancel)?;
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let id = key(meta);
@@ -251,10 +295,10 @@ pub fn generate(
     );
     let path = out.join(&filename);
     if out.join(format!("{id}.json")).exists() && path.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let moves = pruning::parse_move_set_suffix(&meta.moves).ok_or("invalid partial moves")?;
-    let (_, distances) = pruning::build_pruning_table_from_goals(
+    let (stats, distances) = pruning::build_pruning_table_from_goals(
         &plan.spec,
         tables,
         plan.entries,
@@ -264,9 +308,12 @@ pub fn generate(
         threads,
         cancel,
         report,
-        meta.depth,
+        meta.depth.map(|depth| depth.min(254)),
         true,
     )?;
+    if meta.depth == Some(255) && stats.max_depth >= 254 {
+        return Err("Partial Bloom traversal exceeds the byte-distance generator limit".into());
+    }
     if meta.depth.is_some() {
         let bytes = (bloom_mib as usize)
             .checked_mul(1024 * 1024)
@@ -332,7 +379,8 @@ pub fn generate(
         serde_json::to_vec(meta).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    pending.commit().map_err(|e| e.to_string())
+    pending.commit().map_err(|e| e.to_string())?;
+    Ok(Some(stats.max_depth))
 }
 fn hashes(index: usize) -> (u64, u64) {
     let mut x = index as u64 ^ 0x7061727469616c31;
@@ -353,8 +401,15 @@ pub struct GoalBloom {
     spec: CandidateSpec,
     depth: u8,
     words: Vec<u64>,
+    secondary: Option<std::sync::Arc<GoalBloom>>,
 }
 impl GoalBloom {
+    pub fn depth(&self) -> u8 {
+        self.depth
+    }
+    pub fn secondary_depth(&self) -> Option<u8> {
+        self.secondary.as_ref().map(|table| table.depth)
+    }
     pub(crate) fn index_of_cubie(&self, cubie: &crate::FtoCubie) -> usize {
         self.spec.index_of_cubie(cubie)
     }
@@ -370,14 +425,20 @@ impl GoalBloom {
     pub(crate) fn heuristic_index(&self, index: usize) -> u8 {
         let (a, b) = hashes(index);
         let bits = (self.words.len() * 64) as u64;
-        if (0u64..7).all(|i| {
+        let value = if (0u64..7).all(|i| {
             let bit = a.wrapping_add(i.wrapping_mul(b)) % bits;
             self.words[bit as usize / 64] & (1 << (bit % 64)) != 0
         }) {
             0
         } else {
-            self.depth + 1
+            self.depth.saturating_add(1)
+        };
+        if value != 0 {
+            return value;
         }
+        self.secondary
+            .as_ref()
+            .map_or(0, |table| table.heuristic_index(index))
     }
 }
 pub fn discover(out: &Path) -> Vec<(String, Metadata)> {
@@ -393,7 +454,7 @@ pub fn discover(out: &Path) -> Vec<(String, Metadata)> {
             }
             let meta: Metadata = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
             let id = path.file_stem()?.to_str()?.to_owned();
-            if id != key(&meta) || meta.version != 1 {
+            if id != key(&meta) || !(1..=2).contains(&meta.version) {
                 return None;
             }
             Some((id, meta))
@@ -447,7 +508,15 @@ pub fn load(
 ) -> Result<Loaded, String> {
     let mut candidates = discover(out);
     candidates.retain(|(_, m)| m.compatible(mask, moves));
-    candidates.sort_by_key(|(_, m)| std::cmp::Reverse((m.entries, m.depth)));
+    candidates.sort_by_key(|(_, m)| {
+        std::cmp::Reverse((
+            m.mask == *mask,
+            m.version,
+            m.entries,
+            m.depth,
+            m.moves == pruning::move_set_suffix(moves),
+        ))
+    });
     let cache_key = format!(
         "{}:{}",
         out.display(),
@@ -468,7 +537,7 @@ pub fn load(
     }
     *cache = None;
     let mut patterns = Vec::new();
-    let mut bloom = None;
+    let mut bloom: Option<GoalBloom> = None;
     for (id, meta) in candidates {
         active(cancel)?;
         let Some(spec) = meta.spec() else { continue };
@@ -476,8 +545,14 @@ pub fn load(
             continue;
         }
         if let Some(depth) = meta.depth {
-            if bloom.is_some() {
-                continue;
+            if let Some(primary) = &bloom {
+                if primary.secondary.is_some()
+                    || depth > 12
+                    || depth >= primary.depth
+                    || spec != primary.spec
+                {
+                    continue;
+                }
             }
             let path = out.join(format!("{id}.gbloom"));
             let Ok(size) = fs::metadata(&path).map(|m| m.len() as usize) else {
@@ -513,7 +588,17 @@ pub fn load(
             {
                 continue;
             }
-            bloom = Some(std::sync::Arc::new(GoalBloom { spec, depth, words }));
+            let table = GoalBloom {
+                spec,
+                depth,
+                words,
+                secondary: None,
+            };
+            if let Some(primary) = bloom.as_mut() {
+                primary.secondary = Some(std::sync::Arc::new(table));
+            } else {
+                bloom = Some(table);
+            }
         } else if patterns.len() < 2 {
             if let Ok(table) =
                 PatternDatabase::load_cancellable(spec, out.join(format!("{id}.prun")), cancel)
@@ -522,7 +607,10 @@ pub fn load(
             }
         }
     }
-    let loaded = (std::sync::Arc::new(PatternDatabases::new(patterns)), bloom);
+    let loaded = (
+        std::sync::Arc::new(PatternDatabases::new(patterns)),
+        bloom.map(std::sync::Arc::new),
+    );
     if loaded.0.len() > 0 || loaded.1.is_some() {
         *cache = Some((cache_key, loaded.clone()));
     }
@@ -541,6 +629,119 @@ mod tests {
         m.rl_centers.fill(false);
         m
     }
+    #[test]
+    fn entitled_slots_and_pins_tighten_center_goal_projections() {
+        let mut mask = empty_mask();
+        mask.uf_centers[0] = true;
+        let mut colors = [1, 0, 2, 0, 1, 1, 0, 2, 2, 3, 3, 3];
+        let value = coord::rank_center_colors(&colors);
+        assert!(accepts(Component::UfCenter, value, &mask));
+        mask.uf_entitled_slots[0] = 1;
+        assert!(!accepts(Component::UfCenter, value, &mask));
+        colors.swap(0, 1);
+        assert!(accepts(
+            Component::UfCenter,
+            coord::rank_center_colors(&colors),
+            &mask
+        ));
+        mask.uf_entitled_slots[0] = 0;
+        mask.uf_center_targets[0] = Some(2);
+        assert!(!accepts(
+            Component::UfCenter,
+            coord::rank_center_colors(&colors),
+            &mask
+        ));
+        let plan = Plan {
+            spec: CandidateSpec::new(vec![Component::UfCenter]),
+            goals: vec![vec![0]],
+            entries: coord::CENTER_COUNT,
+            roots: 1,
+        };
+        let mut meta = metadata(&plan, &mask, &[Move::R], None);
+        assert!(meta.compatible(&mask, &[Move::R]));
+        let mut other = mask.clone();
+        other.uf_center_targets[0] = Some(0);
+        assert!(!meta.compatible(&other, &[Move::R]));
+        meta.version = 1;
+        assert!(
+            meta.compatible(&other, &[Move::R]),
+            "legacy tables relaxed these constraints and remain safe fallback tables"
+        );
+        mask.uf_center_targets[0] = None;
+        mask.uf_entitled_slots[0] = 1;
+        meta = metadata(&plan, &mask, &[Move::R], None);
+        other = mask.clone();
+        other.uf_entitled_slots[0] = 2;
+        assert!(!meta.compatible(&other, &[Move::R]));
+        other.uf_entitled_slots[0] = 0;
+        assert!(!meta.compatible(&other, &[Move::R]));
+    }
+
+    #[test]
+    fn center_projections_never_reject_a_true_entitled_identity_goal() {
+        let mut checked = 0;
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let head = [a, b, c, d];
+                        if (0..4).any(|i| (0..i).any(|j| head[i] == head[j])) {
+                            continue;
+                        }
+                        let mut centers = std::array::from_fn(|i| i as u8);
+                        centers[..4].copy_from_slice(&head);
+                        for defined in 0..8 {
+                            for entitled in 0..8_u16 {
+                                let mut mask = empty_mask();
+                                for p in 0..3 {
+                                    mask.uf_centers[p] = defined & (1 << p) != 0;
+                                }
+                                mask.uf_entitled_slots[0] = entitled;
+                                let count = (0..3).filter(|&p| mask.uf_centers[p]).count();
+                                let home = (0..3).all(|p| {
+                                    !mask.uf_centers[p] || centers[..3].contains(&(p as u8))
+                                });
+                                let overlap = (0..3)
+                                    .filter(|&slot| {
+                                        entitled & (1 << slot) != 0
+                                            && centers[slot] < 3
+                                            && mask.uf_centers[centers[slot] as usize]
+                                    })
+                                    .count();
+                                let goal = home
+                                    && (count == 0
+                                        || count == 3
+                                        || entitled == 0
+                                        || entitled == 7
+                                        || overlap == count.min(entitled.count_ones() as usize));
+                                if !goal {
+                                    continue;
+                                }
+                                checked += 1;
+                                for component in [
+                                    Component::UfCenter,
+                                    Component::UfCenter2,
+                                    Component::UfCenter3,
+                                ] {
+                                    let mut cubie = FtoCubie::solved();
+                                    cubie.uf = centers;
+                                    assert!(accepts(
+                                        component,
+                                        CandidateSpec::new(vec![component])
+                                            .index_of_coord(cubie.coord())
+                                            as u32,
+                                        &mask
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100);
+    }
+
     #[test]
     fn partial_goal_relaxes_unknown_pieces_and_fast_indexes_match_full_coordinates() {
         let mut mask = PartialMask::all();

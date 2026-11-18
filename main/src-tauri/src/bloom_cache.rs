@@ -83,8 +83,8 @@ fn generate(
         return Err("select at least one Bloom move".into());
     }
     // Validate before loading or generating the large shared transition tables.
-    if request.depth == 0 || request.max_memory_mib == 0 {
-        return Err("Bloom depth must be 1–255 and memory budget must be at least 1 MiB".into());
+    if !(1..=16).contains(&request.depth) || request.max_memory_mib == 0 {
+        return Err("Bloom depth must be 1–16 and memory budget must be at least 1 MiB".into());
     }
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let tables = load_transition_tables(
@@ -165,6 +165,11 @@ fn generate(
     } else {
         BloomMode::FullPosition
     };
+    {
+        let mut locked = cache.lock().map_err(|_| "solver cache lock poisoned")?;
+        locked.bloom = None;
+        locked.secondary_bloom = None;
+    }
     let table = BloomTable::generate(
         &tables,
         &moves,
@@ -254,76 +259,128 @@ pub(super) fn load(
     cancel: &AtomicBool,
     app: &AppHandle,
 ) -> Result<Option<Arc<BloomTable>>, String> {
-    let mut candidates = discover(root)?;
-    candidates.retain(|info| {
-        info.last_layer_mode == last_layer_mode
-            && info
-                .depth
-                .is_some_and(|d| max_depth.is_none_or(|max| d <= max))
-            && moves
-                .iter()
-                .all(|m| info.moves.iter().any(|name| name == m.name()))
-    });
+    load_from_roots(
+        cache,
+        &[root],
+        moves,
+        max_depth,
+        last_layer_mode,
+        cancel,
+        app,
+    )
+}
+
+pub(super) fn load_from_roots(
+    cache: &Mutex<SolverCache>,
+    roots: &[&Path],
+    moves: &[Move],
+    max_depth: Option<u8>,
+    last_layer_mode: bool,
+    cancel: &AtomicBool,
+    app: &AppHandle,
+) -> Result<Option<Arc<BloomTable>>, String> {
+    let mut candidates = Vec::new();
+    for root in roots {
+        for info in discover(root)? {
+            if info.last_layer_mode == last_layer_mode
+                && info
+                    .depth
+                    .is_some_and(|d| max_depth.is_none_or(|max| d <= max))
+                && moves
+                    .iter()
+                    .all(|m| info.moves.iter().any(|name| name == m.name()))
+            {
+                candidates.push((root.join(&info.files[0]), info));
+            }
+        }
+    }
     candidates.sort_by(|a, b| {
-        b.depth
-            .cmp(&a.depth)
-            .then(a.moves.len().cmp(&b.moves.len()))
+        b.1.depth
+            .cmp(&a.1.depth)
+            .then(a.1.moves.len().cmp(&b.1.moves.len()))
     });
-    for candidate in candidates {
+    let mut chosen: Vec<CachedBloom> = Vec::new();
+    for (path, info) in candidates {
+        if let Some(primary) = chosen.first() {
+            if info.depth.unwrap() > 12 || info.depth.unwrap() >= primary.table.depth() {
+                continue;
+            }
+        }
         if cancel.load(Ordering::Relaxed) {
             return Err("solve cancelled".into());
         }
-        let path = root.join(&candidate.files[0]);
-        {
+        let resident = {
             let locked = cache.lock().map_err(|_| "solver cache lock poisoned")?;
-            if let Some(existing) = &locked.bloom {
-                if existing.path == path {
+            locked
+                .bloom
+                .as_ref()
+                .into_iter()
+                .chain(locked.secondary_bloom.as_ref())
+                .find(|cached| cached.path == path)
+                .map(|cached| cached.table.clone())
+        };
+        let table = if let Some(table) = resident {
+            table
+        } else {
+            emit_line(
+                app,
+                "info",
+                &format!(
+                    "loading {}depth-{} Bloom pruning...",
+                    if last_layer_mode { "last-layer " } else { "" },
+                    info.depth.unwrap()
+                ),
+            );
+            match BloomTable::load(&path, Some(cancel)) {
+                Ok(table) => Arc::new(table),
+                Err(error) if cancel.load(Ordering::Relaxed) => return Err(error),
+                Err(error) => {
                     emit_line(
                         app,
                         "info",
-                        &format!(
-                            "using cached {}depth-{} Bloom pruning",
-                            if last_layer_mode { "last-layer " } else { "" },
-                            existing.table.depth()
-                        ),
+                        &format!("skipping invalid Bloom table: {error}"),
                     );
-                    return Ok(Some(existing.table.clone()));
+                    continue;
                 }
             }
-        }
-        emit_line(
-            app,
-            "info",
-            &format!(
-                "loading {}depth-{} Bloom pruning...",
-                if last_layer_mode { "last-layer " } else { "" },
-                candidate.depth.unwrap()
-            ),
-        );
-        match BloomTable::load(&path, Some(cancel)) {
-            Ok(table) => {
-                let table = Arc::new(table);
-                cache
-                    .lock()
-                    .map_err(|_| "solver cache lock poisoned")?
-                    .bloom = Some(CachedBloom {
-                    path,
-                    table: table.clone(),
-                });
-                return Ok(Some(table));
-            }
-            Err(error) if cancel.load(Ordering::Relaxed) => return Err(error),
-            Err(error) => emit_line(
-                app,
-                "info",
-                &format!("skipping invalid Bloom table: {error}"),
-            ),
+        };
+        chosen.push(CachedBloom { path, table });
+        if chosen.len() == 2 {
+            break;
         }
     }
-    // Do not retain an unrelated instance's large table indefinitely.
-    cache
-        .lock()
-        .map_err(|_| "solver cache lock poisoned")?
-        .bloom = None;
-    Ok(None)
+    let result = match chosen.as_slice() {
+        [primary, secondary] => {
+            emit_line(
+                app,
+                "info",
+                &format!(
+                    "using Bloom pruning at depths {} and {}",
+                    primary.table.depth(),
+                    secondary.table.depth()
+                ),
+            );
+            Some(BloomTable::paired(
+                primary.table.clone(),
+                secondary.table.clone(),
+            )?)
+        }
+        [primary] => {
+            emit_line(
+                app,
+                "info",
+                &format!("using cached depth-{} Bloom pruning", primary.table.depth()),
+            );
+            Some(primary.table.clone())
+        }
+        _ => None,
+    };
+    let mut locked = cache.lock().map_err(|_| "solver cache lock poisoned")?;
+    locked.bloom = if chosen.is_empty() {
+        None
+    } else {
+        Some(chosen.remove(0))
+    };
+    locked.secondary_bloom = chosen.pop();
+    Ok(result)
 }

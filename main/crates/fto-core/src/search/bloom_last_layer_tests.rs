@@ -131,6 +131,13 @@ fn last_layer_bloom_radius_auf_threading_and_cache() {
             .unwrap(),
         ));
     }
+    tables_by_depth.push(
+        BloomTable::paired(
+            tables_by_depth.last().unwrap().clone(),
+            tables_by_depth.first().unwrap().clone(),
+        )
+        .unwrap(),
+    );
     let mut before = 0;
     let mut after = 0;
     for case in 0..4 {

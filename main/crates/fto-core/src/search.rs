@@ -1460,7 +1460,7 @@ impl<'a> LastLayerSearchContext<'a> {
             return;
         }
         if self.tail_bloom.is_some_and(|table| {
-            depth_left == table.depth() && !table.contains_hashes(state.bloom_hashes())
+            table.checks_depth(depth_left) && table.rejects_hashes(state.bloom_hashes(), depth_left)
         }) {
             return;
         }
@@ -1602,7 +1602,7 @@ impl SearchContext<'_> {
             return;
         }
         if self.tail_bloom.is_some_and(|table| {
-            depth_left == table.depth() && !table.contains(state.bloom_state())
+            table.checks_depth(depth_left) && table.rejects_state(state.bloom_state(), depth_left)
         }) {
             return;
         }
@@ -1896,7 +1896,7 @@ impl SearchRootCollector<'_> {
             return;
         }
         if self.tail_bloom.is_some_and(|table| {
-            depth_left == table.depth() && !table.contains(state.bloom_state())
+            table.checks_depth(depth_left) && table.rejects_state(state.bloom_state(), depth_left)
         }) {
             return;
         }
@@ -2052,7 +2052,7 @@ impl LastLayerRootCollector<'_> {
             return;
         }
         if self.tail_bloom.is_some_and(|table| {
-            depth_left == table.depth() && !table.contains_hashes(state.bloom_hashes())
+            table.checks_depth(depth_left) && table.rejects_hashes(state.bloom_hashes(), depth_left)
         }) {
             return;
         }

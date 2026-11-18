@@ -1930,3 +1930,157 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 .batch-project-bar select:hover, .batch-sidebar select:hover { border-color: #7b8794; }
 .batch-project-bar select:focus-visible, .batch-sidebar select:focus-visible { outline: 2px solid #80b4df; outline-offset: 2px; }
 .batch-project-bar select:disabled, .batch-sidebar select:disabled { cursor: default; opacity: .55; }
+
+.batch-partial-base { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #dfe4e9; flex-shrink: 0; }
+.batch-partial-base button { min-height: 30px; padding: 5px 9px; font-size: 12px; }
+.batch-partial-base span { flex: 1 1 240px; color: #687582; font-size: 12px; line-height: 1.5; }
+
+/* Batch workspace: an editor and a flat configuration rail. */
+.batch-workspace { padding: 0; gap: 0; background: #fff; }
+.batch-project-bar { gap: 10px; margin: 0; padding: 16px 24px; border: 0; border-bottom: 1px solid #dde3e9; border-radius: 0; background: #fff; }
+.batch-project-name { display: grid; flex: 1 1 180px; max-width: none; gap: 2px; }
+.batch-eyebrow { color: #73808d; font-size: 10px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; }
+.batch-project-name input { min-height: 30px; height: 30px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #23313e; font-size: 18px; font-weight: 650; }
+.batch-project-name input:hover { background: #f6f8fa; }
+.batch-project-name input:focus { background: #f6f8fa; outline: 2px solid #bad4e7; }
+.batch-project-bar > .batch-select { width: 148px; }
+.batch-project-bar > button { border: 0; color: #245c82; background: #edf5fa; }
+.batch-save-status { order: 0; flex: 0 0 100px; width: 100px; white-space: nowrap; margin: 0 8px; font-size: 11px; color: #7a8793; }
+.batch-save-status::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: #78a78d; vertical-align: 1px; }
+.batch-select { position: relative; min-width: 0; }
+.batch-select .batch-select-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 36px; border: 1px solid #d6dfe6; border-radius: 5px; padding: 7px 10px; background: #fff; color: #354858; font: inherit; font-size: 12px; font-weight: 500; text-align: left; }
+.batch-select-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-select-trigger[aria-expanded="true"] { border-color: #7ba7c5; }
+.batch-select .batch-select-options { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 30; min-width: 180px; max-height: 220px; overflow-y: auto; margin: 0; padding: 4px; border: 1px solid #d5dfe7; border-radius: 6px; list-style: none; background: #fff; color: #304555; box-shadow: 0 8px 24px #20324620; }
+.batch-project-bar .batch-select-options { left: auto; min-width: 240px; }
+.batch-select-options li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border-radius: 3px; cursor: pointer; font-size: 12px; overflow-wrap: anywhere; }
+.batch-select-options li.is-active { background: #f0f5f8; }
+.batch-select-options li[aria-selected="true"] { color: #20618b; font-weight: 600; }
+.batch-file-menu { position: relative; }
+.batch-file-menu summary { display: grid; place-items: center; width: 34px; min-height: 34px; border: 0; border-radius: 5px; background: transparent; color: #657582; font-size: 15px; cursor: pointer; list-style: none; }
+.batch-file-menu summary:hover { background: #f1f4f6; }
+.batch-file-menu summary::-webkit-details-marker { display: none; }
+.batch-file-menu > div { position: absolute; top: calc(100% + 5px); right: 0; z-index: 30; width: 185px; padding: 4px; border: 1px solid #d5dfe7; border-radius: 6px; background: #fff; box-shadow: 0 8px 24px #20324620; }
+.batch-file-menu button { display: block; width: 100%; padding: 9px 10px; border: 0; background: transparent; font-size: 12px; text-align: left; }
+.batch-file-menu button:hover { background: #f0f5f8; }
+.batch-file-menu button.danger { color: #b23b49; font-weight: 500; }
+.batch-file-menu button.danger:hover:not(:disabled) { color: #982d39; background: #fbeef0; }
+.batch-grid { gap: 0; grid-template-columns: minmax(0, 1fr) 304px; }
+.batch-main { background: #fff; }
+.batch-workspace-tabs { display: flex; align-items: stretch; align-self: stretch; height: 52px; gap: 24px; padding: 0 24px; margin: 0; border: 0; border-bottom: 1px solid #dde3e9; border-radius: 0; background: #fff; }
+.batch-workspace-tabs button { position: relative; min-height: 52px; padding: 0 2px; border: 0; border-radius: 0; background: transparent; color: #7c8995; font-size: 13px; font-weight: 500; }
+.batch-workspace-tabs button[aria-selected="true"] { background: transparent; color: #23658e; box-shadow: inset 0 -2px #357da9; }
+.batch-workspace-tabs span { display: inline-block; margin-left: 7px; padding: 2px 6px; border-radius: 4px; background: #f1f4f6; color: #738493; font-size: 10px; }
+.batch-cases-panel, .batch-output-panel { border: 0; border-radius: 0; background: #fff; }
+.batch-input-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 24px; border-bottom: 1px solid #e5e9ed; background: #fafbfc; }
+.batch-input-mode { display: inline-flex; align-items: center; gap: 2px; padding: 0 12px 0 0; border: 0; border-right: 1px solid #dfe5ea; border-radius: 0; background: transparent; }
+.batch-input-mode button { min-height: 28px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: #81909d; font-size: 11px; font-weight: 500; }
+.batch-input-mode button[aria-pressed="true"] { background: #e9f1f7; color: #2b6084; box-shadow: none; }
+.batch-partial-base { display: contents; }
+.batch-partial-base button { min-height: 28px; padding: 4px 7px; border: 0; background: transparent; color: #5c7385; font-size: 11px; }
+.batch-partial-base button:hover { background: #edf2f6; }
+.batch-partial-base span { flex-basis: 100%; font-size: 11px; color: #7c8b96; }
+.batch-case-editor { background: #fff; }
+.batch-case-text { background: repeating-linear-gradient(to bottom, transparent 0, transparent 37px, #f4f6f8 37px, #f4f6f8 38px) 0 6px; color: #273d50; }
+.batch-case-text::placeholder { color: #a0aab3; font-size: 12px; }
+.batch-case-editor:focus-within { box-shadow: none; }
+.batch-editor-numbers { border-right: 1px solid #eff2f5; background: #fafbfc; }
+.batch-editor-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 24px; border-top: 1px solid #e5e9ed; color: #8a97a3; font-size: 10px; }
+.batch-editor-footer kbd { padding: 2px 4px; margin-right: 4px; border: 1px solid #dce3e9; border-radius: 3px; background: #f9fafb; font: inherit; }
+.batch-sidebar { display: flex; flex-direction: column; overflow: hidden; border: 0; border-left: 1px solid #dde3e9; border-radius: 0; background: #f8fafb; }
+.batch-sidebar-content { flex: 1; min-height: 0; overflow-y: auto; }
+.batch-sidebar .tool-section { padding: 20px; }
+.batch-sidebar .tool-section + .tool-section { border-top: 1px solid #e1e7ec; }
+.batch-sidebar .section-heading { margin-bottom: 16px; }
+.batch-sidebar .section-heading h2 { color: #394d5e; font-size: 13px; font-weight: 650; }
+.batch-sidebar .field { display: grid; gap: 6px; margin-bottom: 18px; font-size: 11px; color: #718392; }
+.batch-moveset-card { position: relative; margin: 0; padding: 13px 0; border: 0; border-top: 1px solid #e3e9ee; border-radius: 0; background: transparent; }
+.batch-moveset-card.is-covered { background: transparent; opacity: .6; }
+.batch-moveset-card h2 { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; color: #6d7f8d; font-size: 11px; font-weight: 500; }
+.batch-set-number { display: inline-grid; place-items: center; width: 20px; height: 19px; border-radius: 3px; background: #e9eff4; color: #5e788b; font-size: 10px; }
+.batch-selected-moves { padding-left: 0; }
+.batch-selected-moves code { padding: 0; border: 0; border-radius: 0; background: transparent; color: #293f51; font: 500 13px/1.8 ui-monospace, monospace; overflow-wrap: anywhere; word-spacing: 3px; }
+.batch-move-actions { gap: 3px; padding: 0; margin: 7px 0 0; border: 0; }
+.batch-move-actions button { min-height: 24px; padding: 2px 6px; border: 0; background: transparent; color: #7e909e; font-size: 11px; }
+.batch-move-actions button:first-child { margin-right: auto; color: #35749c; }
+.batch-move-actions button:hover { background: #e9eff4; }
+.batch-move-actions .batch-set-delete { order: 4; font-size: 16px; line-height: 1; }
+.batch-add-moveset { min-height: 32px; padding: 6px 0; border: 0; background: transparent; color: #35749c; justify-content: flex-start; text-align: left; font-size: 11px; }
+.batch-sidebar .search-grid { gap: 10px; }
+.batch-sidebar .search-grid label, .batch-sidebar .depth-label-row label { font-size: 12px; color: #718493; }
+.batch-sidebar input:not([type="checkbox"]) { min-height: 35px; height: 35px; border-color: #d8e1e8; border-radius: 5px; background: #fff; font-size: 12px; }
+.batch-workspace .check { align-items: center; gap: 9px; margin-top: 13px; color: #536b7e; font-size: 12px; font-weight: 400; line-height: 1.5; }
+.batch-workspace .check input { width: 13px; height: 13px; margin: 0; }
+.batch-advanced { margin-top: 20px; border-top: 1px solid #e1e7ec; padding-top: 13px; }
+.batch-advanced summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; color: #6c8192; font-size: 12px; }
+.batch-advanced summary::-webkit-details-marker { display: none; }
+.batch-advanced[open] summary > span { transform: rotate(180deg); }
+.batch-defer-label { margin-top: 14px; gap: 6px; color: #718493; font-size: 11px; }
+.batch-run-bar { flex: none; padding: 14px 20px 16px; border-top: 1px solid #dde3e9; background: #f8fafb; }
+.batch-run-summary { display: flex; justify-content: space-between; margin-bottom: 10px; color: #8b99a5; font-size: 10px; }
+.batch-search-actions { display: grid; grid-template-columns: 1fr; gap: 5px; margin: 0; }
+.batch-search-actions > button { width: 100%; min-height: 36px; border-radius: 5px; font-size: 12px; }
+.batch-search-actions > button + button { min-height: 24px; border-color: transparent; background: transparent; color: #8a9aa7; font-size: 10px; }
+.batch-section-header { min-height: 48px; padding: 8px 24px; border-bottom: 1px solid #e5e9ed; background: #fafbfc; }
+.batch-section-header h2 { color: #5b7285; font-size: 11px; font-weight: 500; }
+.batch-section-header h2 span { font-size: 10px; }
+.batch-section-header button { font-size: 11px; }
+
+.batch-moveset-dialog { padding: 24px; border-radius: 8px; background: #fff; }
+.batch-moveset-dialog .modal-title-row { margin-bottom: 20px; }
+.batch-moveset-dialog .modal-title-row h2 { font-size: 16px; }
+.batch-moveset-dialog .batch-move-actions { gap: 8px; margin-top: 14px; }
+.batch-moveset-dialog .batch-move-actions button:first-child { margin-right: 0; }
+.batch-moveset-dialog .modal-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8ed; }
+/* Help destinations remain focusable for assistive technology without a page-sized ring. */
+.how-to-content section[tabindex="-1"]:focus-visible { outline: none; }
+
+/* Piece selection: tools beside an uninterrupted puzzle viewport. */
+.pruning-pieces-modal { width: min(900px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid #cbd5df; border-radius: 9px; background: #fff; color: #293e4f; box-shadow: 0 24px 80px #10263840; }
+.pruning-pieces-modal::backdrop { background: #18273680; }
+.piece-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px; border-bottom: 1px solid #e2e8ed; }
+.piece-dialog-header h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; }
+.piece-dialog-header p { margin: 5px 0 0; font-size: 12px; color: #8796a2; line-height: 1.5; }
+.piece-dialog-close { flex-shrink: 0; width: 28px; min-height: 28px; padding: 0; border: 0; background: transparent; color: #7c8e9c; font-size: 21px; }
+.piece-dialog-body { display: grid; grid-template-columns: 190px minmax(0,1fr); padding: 0; }
+.piece-selection-tools { padding: 24px 14px; border-right: 1px solid #e2e8ed; background: #f8fafb; }
+.piece-tools-label { margin: 0 10px 16px; color: #93a0aa; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.pruning-pieces-modal .pruning-tabs { display: grid; gap: 4px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.pruning-pieces-modal .pruning-tabs button { justify-content: flex-start; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 4px; background: transparent; color: #718797; font-size: 12px; font-weight: 500; text-align: left; }
+.pruning-pieces-modal .pruning-tabs button[aria-pressed="true"] { background: #e6eff6; color: #28668e; box-shadow: none; }
+.piece-selection-hint { margin: 20px 10px 0; color: #7b8f9e; font-size: 11px; line-height: 1.8; }
+.pruning-pieces-modal .fto-viewer-panel { margin: 0; padding: 16px; background: #fff; }
+.pruning-pieces-modal .fto-stage { flex: none; min-height: 280px; height: clamp(280px, 47dvh, 460px); margin: 0; border-radius: 5px; }
+.piece-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-top: 1px solid #e2e8ed; background: #fff; }
+.piece-dialog-footer > span { color: #8b9aa6; font-size: 11px; }
+.piece-dialog-footer .modal-footer button { min-height: 34px; border-radius: 5px; font-size: 12px; }
+.piece-dialog-footer .modal-footer .primary { min-width: 90px; }
+@media (max-width: 800px) {
+  .batch-workspace { padding: 0; }
+  .batch-project-bar { padding: 14px 16px; gap: 8px; }
+  .batch-project-name { flex-basis: 100%; }
+  .batch-project-bar > .batch-select { flex: 1 1 130px; width: auto; max-width: 200px; }
+  .batch-save-status { margin-left: auto; font-size: 10px; }
+  .batch-grid { grid-template-columns: minmax(0,1fr); }
+  .batch-sidebar { grid-row: 2; border-left: 0; border-top: 1px solid #dde3e9; }
+  .batch-sidebar-content { overflow: visible; }
+  .batch-main { height: max(450px, calc(100dvh - 210px)); }
+  .batch-workspace-tabs, .batch-input-tools, .batch-editor-footer { padding-left: 16px; padding-right: 16px; }
+  .batch-input-tools { gap: 4px; }
+  .batch-input-mode { padding-right: 6px; }
+  .batch-sidebar .tool-section { padding: 18px 20px; }
+  .batch-sidebar .search-grid { grid-template-columns: 1fr 1fr; }
+  .batch-run-bar { padding: 14px 20px; }
+}
+@media (max-width: 600px) {
+  .piece-dialog-header { padding: 16px; }
+  .piece-dialog-body { grid-template-columns: minmax(0,1fr); }
+  .piece-selection-tools { padding: 12px 16px; border-right: 0; border-bottom: 1px solid #e2e8ed; }
+  .piece-tools-label { display: none; }
+  .pruning-pieces-modal .pruning-tabs { display: flex; }
+  .piece-selection-hint { margin: 10px 0 0; }
+  .pruning-pieces-modal .fto-viewer-panel { padding: 12px; }
+  .pruning-pieces-modal .fto-stage { min-height: 220px; height: clamp(220px, 36dvh, 320px); }
+  .piece-dialog-footer { padding: 12px 16px; flex-wrap: wrap; }
+  .piece-dialog-footer .modal-footer { margin-left: auto; }
+}

@@ -4,13 +4,13 @@ import { casesText, editCases, pointOffset, textEdit, textPoint, type TextSelect
 
 export type BatchCaseInputApi = { focusCase(id: string): void };
 type Props = {
-  entries: BatchCase[]; disabled: boolean; activeCases: Record<string,number>;
+  entries: BatchCase[]; disabled: boolean; inputMode?: "setup" | "alg"; activeCases: Record<string,number>;
   onChange: (entries: BatchCase[]) => void; onEdit: (id: string) => void;
 };
 type Snapshot = { entries: BatchCase[]; selection: TextSelection };
 const ROW = 38;
 
-const BatchCaseInput = forwardRef<BatchCaseInputApi,Props>(function BatchCaseInput({ entries, disabled, activeCases, onChange, onEdit }, ref) {
+const BatchCaseInput = forwardRef<BatchCaseInputApi,Props>(function BatchCaseInput({ entries, disabled, inputMode = "setup", activeCases, onChange, onEdit }, ref) {
   const input = useRef<HTMLTextAreaElement>(null);
   const before = useRef<TextSelection>();
   const pending = useRef<TextSelection>();
@@ -84,8 +84,8 @@ const BatchCaseInput = forwardRef<BatchCaseInputApi,Props>(function BatchCaseInp
     commit(previous.entries,previous.selection);
   }
   return <div className="batch-case-editor">
-    <textarea ref={input} className="batch-case-text" aria-label="Case setups" disabled={disabled} value={text}
-      wrap="off" spellCheck={false} autoComplete="off" autoCapitalize="off" placeholder="Setup moves"
+    <textarea ref={input} className="batch-case-text" aria-label={inputMode === "alg" ? "Case algorithms" : "Case setups"} disabled={disabled} value={text}
+      wrap="off" spellCheck={false} autoComplete="off" autoCapitalize="off" placeholder={inputMode === "alg" ? "One algorithm per line · Tab to edit visually" : "One setup per line · Tab to edit visually"}
       onSelect={() => setHighlight(selection())}
       onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={() => { composing.current = false; pending.current = undefined; }}

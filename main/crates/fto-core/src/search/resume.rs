@@ -422,9 +422,9 @@ impl<const EARLY: bool> Kernel for ExactKernel<'_, EARLY> {
             .map(|v| adjusted_pruning_value(v, ctx.config.free_u_ends))
             .unwrap_or(0)
             > remaining
-            || ctx
-                .tail_bloom
-                .is_some_and(|t| remaining == t.depth() && !t.contains(state.bloom_state()))
+            || ctx.tail_bloom.is_some_and(|t| {
+                t.checks_depth(remaining) && t.rejects_state(state.bloom_state(), remaining)
+            })
         {
             return Visit::Pruned;
         }
@@ -504,9 +504,9 @@ impl Kernel for LlKernel<'_> {
     ) -> Visit {
         let ctx = &self.ctx;
         if (!checked && ctx.pruning_value(state) > remaining)
-            || ctx
-                .tail_bloom
-                .is_some_and(|t| remaining == t.depth() && !t.contains_hashes(state.bloom_hashes()))
+            || ctx.tail_bloom.is_some_and(|t| {
+                t.checks_depth(remaining) && t.rejects_hashes(state.bloom_hashes(), remaining)
+            })
         {
             return Visit::Pruned;
         }

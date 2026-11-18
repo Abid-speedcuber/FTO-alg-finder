@@ -14,6 +14,7 @@ export type FtoViewerApi = {
   getFaceletTransition(algorithm: string): number[] | null;
   getCenterTargets(): CenterTargets;
   setCenterTargets(targets: CenterTargets): void;
+  setPieceSelectionMode(mode: "undefine" | "entitle" | null): void;
   setMode(mode: "pan" | "paint" | "swap"): void;
   setColor(color: number): void;
   setFaceColors(colors: string[]): void;
@@ -64,7 +65,8 @@ type Props = {
   viewerApiRef?: MutableRefObject<FtoViewerApi | null>;
   footer?: ReactNode;
   active?: boolean;
-  pieceSelection?: boolean;
+  pieceSelection?: boolean | "undefine" | "entitle";
+  applyBase?: Props["initialState"];
   initialState?: { facelets: number[]; centerTargets?: CenterTargets; ignoredStickerState?: IgnoredStickerState };
 };
 
@@ -84,6 +86,7 @@ function FtoViewer({
   footer,
   active = true,
   initialState,
+  applyBase,
   pieceSelection = false,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -101,7 +104,7 @@ function FtoViewer({
 
     const viewer = window.createFtoViewer(hostRef.current, {
       faceColors,
-      leftClickUndefine: pieceSelection,
+      leftClickUndefine: Boolean(pieceSelection),
       resolveAlgorithm: resolveInputAlgorithm,
       onFacelets,
       onCenterTargets,
@@ -137,6 +140,10 @@ function FtoViewer({
     viewerRef.current?.setLastLayerMode(lastLayerMode);
   }, [lastLayerMode]);
 
+  useEffect(() => {
+    viewerRef.current?.setPieceSelectionMode(pieceSelection ? pieceSelection === "entitle" ? "entitle" : "undefine" : null);
+  }, [pieceSelection]);
+
   // Only the visible tab's viewer listens to the keyboard; refit on show.
   useEffect(() => {
     viewerRef.current?.setKeyboardEnabled(active && !pieceSelection);
@@ -144,24 +151,6 @@ function FtoViewer({
       window.dispatchEvent(new Event("resize"));
     }
   }, [active]);
-
-  const applyStateRef = useRef({ setup, inputMode, applyFromSolved });
-  applyStateRef.current = { setup, inputMode, applyFromSolved };
-
-  useEffect(() => {
-    if (applySignal > 0) {
-      const { setup: currentSetup, inputMode: currentMode, applyFromSolved: fromSolved } = applyStateRef.current;
-      try {
-        const algorithm = currentMode === "alg" ? invertInputAlgorithm(currentSetup) : resolveInputAlgorithm(currentSetup);
-        if (fromSolved) viewerRef.current?.resetPuzzle();
-        viewerRef.current?.applyAlgorithmInstant(algorithm);
-        setInputError("");
-      } catch (error) {
-        setInputError(String(error instanceof Error ? error.message : error));
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applySignal]);
 
   const initialStateRef = useRef(initialState);
   useEffect(() => {
@@ -171,6 +160,30 @@ function FtoViewer({
       if (initial.centerTargets) viewerRef.current?.setCenterTargets(initial.centerTargets);
     }
   }, []);
+
+  const applyStateRef = useRef({ setup, inputMode, applyFromSolved, applyBase });
+  applyStateRef.current = { setup, inputMode, applyFromSolved, applyBase };
+
+  useEffect(() => {
+    if (applySignal > 0) {
+      const { setup: currentSetup, inputMode: currentMode, applyFromSolved: fromSolved, applyBase: base } = applyStateRef.current;
+      try {
+        const algorithm = currentMode === "alg" ? invertInputAlgorithm(currentSetup) : resolveInputAlgorithm(currentSetup);
+        if (fromSolved) {
+          viewerRef.current?.resetPuzzle();
+          if (base) {
+            viewerRef.current?.setFacelets(base.facelets, base.ignoredStickerState);
+            if (base.centerTargets) viewerRef.current?.setCenterTargets(base.centerTargets);
+          }
+        }
+        viewerRef.current?.applyAlgorithmInstant(algorithm);
+        setInputError("");
+      } catch (error) {
+        setInputError(String(error instanceof Error ? error.message : error));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applySignal]);
 
   function setPanMode() {
     setModeState("pan");

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
 const compiled = ts.transpileModule(readFileSync(new URL('../src/batchProject.ts', import.meta.url),'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { createProject, newCase, clearCase, projectCsv, parseProject, moveSetsOf, effectiveMoveSets, coveringMoveSet, progressForSet, mergeSetProgress, changeMoveSets, nextBatchAttempt, emptyProgress, constrainBatchInstance } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+const { createProject, newCase, clearCase, projectCsv, parseProject, moveSetsOf, effectiveMoveSets, coveringMoveSet, progressForSet, mergeSetProgress, changeMoveSets, nextBatchAttempt, emptyProgress, constrainBatchInstance, changePartialBase, changeInputMode } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 function csv(text) {
   // Parse quoted fields, including embedded commas, newlines and escaped quotes.
   const rows=[]; let row=[], field='', quoted=false;
@@ -19,7 +19,7 @@ test('CSV has one row per solution and retains unsolved cases and visual states'
   const p=createProject(['R','U'],['R','U']);
   p.cases=[{...newCase('R, "U"\nF'),firstDepth:2,completedDepths:[1,2],solutions:[{depth:2,algorithm:"R' U'"},{depth:3,algorithm:"U R U"}]},newCase('=DANGEROUS()'),{...newCase(),facelets:Array.from({length:72},(_,i)=>Math.floor(i/9))},newCase()];
   const rows=csv(projectCsv(p));
-  assert.equal(rows.length,5); assert.ok(rows.every(r=>r.length===13));
+  assert.equal(rows.length,5); assert.ok(rows.every(r=>r.length===15));
   assert.equal(rows[1][1],'R, "U"\nF'); assert.equal(rows[1][3],"R' U'");
   assert.equal(rows[2][2],'3'); assert.equal(rows[3][1],"'=DANGEROUS()");
   assert.deepEqual(JSON.parse(rows[4][1]).facelets,p.cases[2].facelets);
@@ -231,4 +231,36 @@ test('single mode reports just the shortest algorithm from each set, merging ide
  let c=mergeSetProgress(newCase('R'),'one',{...emptyProgress(),firstDepth:2,solutions:[{depth:4,algorithm:'longer'},{depth:2,algorithm:'short'},{depth:2,algorithm:'other'}]},sets,false);
  c=mergeSetProgress(c,'two',{...emptyProgress(),firstDepth:2,solutions:[{depth:2,algorithm:'short'}]},sets,false);
  assert.deepEqual(c.solutions,[{depth:2,algorithm:'short',moveSetIds:['one','two']}]);
+});
+
+test('shared partial bases round trip slots and colors, reset only text progress, and export reproducible CSV',()=>{
+ const p=scheduledProject();
+ const targets={uf:[null,null,null,null],rl:[null,null,null,null],ufSources:[null,null,null,null],rlSources:[null,null,null,null],rlTopSources:[[],[],[],[]],ufSlots:[[0],[],[],[]],rlSlots:[[],[],[],[]]};
+ const base={facelets:Array.from({length:72},(_,i)=>i===2?8:Math.floor(i/9)),centerTargets:targets,ignoredStickerState:Array.from({length:72},(_,i)=>i===2?{color:0,mark:null}:null)};
+ p.cases=[{...newCase('R'),...progress(1,"R'")},{...newCase(),facelets:Array.from({length:72},(_,i)=>Math.floor(i/9)),...progress(0,'')}];
+ const partial=changePartialBase(p,base);assert.equal(partial.version,3);assert.deepEqual(partial.cases[0].solutions,[]);assert.deepEqual(partial.cases[1],p.cases[1]);
+ assert.deepEqual(parseProject(JSON.stringify(partial)).settings.partialBase,base);
+ assert.equal(changeMoveSets(partial,partial.settings.moveSets).version,3);
+ const rows=csv(projectCsv(partial));assert.deepEqual(JSON.parse(rows[1][13]),base);assert.equal(rows[2][13],'');
+ assert.equal(changePartialBase(partial,base),partial,'unchanged goals keep progress');
+ for(const change of [b=>b.facelets.pop(),b=>b.centerTargets.ufSlots[0]=[3],b=>b.ignoredStickerState[2].color=8]) {
+  const bad=structuredClone(partial);change(bad.settings.partialBase);assert.throws(()=>parseProject(JSON.stringify(bad)));
+ }
+ assert.equal(changePartialBase(partial,null).settings.partialBase,null);
+});
+
+test('algorithm input mode persists and resets text progress while preserving visual overrides', () => {
+  const p = createProject(['R'], ['R', 'U']);
+  const text = {...newCase('R U'), completedDepths:[1], firstDepth:1, solutions:[{depth:1, algorithm:"R'"}]};
+  const visual = {...text, id:'visual', facelets:Array.from({length:72},(_,i)=>Math.floor(i/9))};
+  p.cases = [text, visual];
+  assert.equal(changeInputMode(p, 'setup'), p);
+  const changed = changeInputMode(p, 'alg');
+  assert.equal(changed.settings.inputMode, 'alg');
+  assert.deepEqual(changed.cases[0].solutions, []);
+  assert.equal(changed.cases[1], visual);
+  assert.equal(parseProject(JSON.stringify(changed)).settings.inputMode, 'alg');
+  const rows = csv(projectCsv(changed));
+  assert.equal(rows[1][14], 'alg'); assert.equal(rows[2][14], 'Visual');
+  assert.throws(() => parseProject(JSON.stringify({...p, settings:{...p.settings,inputMode:'bad'}})));
 });

@@ -51,6 +51,14 @@ function viewer(path) {
 }
 
 for (const path of ['../public/fto-viewer/fto-viewer.js', '../../public/fto-viewer/fto-viewer.js']) {
+  test(`${path}: piece-selection editors can entitle slots without restoring ignored pieces`,()=>{
+    const {api,click,borders}=viewer(path);
+    api.setPieceSelectionMode('undefine');click(20,false);assert.equal(api.getFacelets()[20],8);
+    click(20,true);assert.equal(api.getFacelets()[20],8);assert.deepEqual(Array.from(api.getCenterTargets().ufSlots[2]),[6]);
+    api.setPieceSelectionMode('entitle');click(23,false);assert.deepEqual(Array.from(api.getCenterTargets().ufSlots[2]),[6,7]);assert.equal(api.getFacelets()[20],8);assert.equal(borders[23],0xffd700);
+    api.setPieceSelectionMode('undefine');click(20,false);assert.equal(api.getFacelets()[20],2);
+    const slots=JSON.stringify(api.getCenterTargets().ufSlots);api.applyAlgorithmInstant('R U');assert.equal(JSON.stringify(api.getCenterTargets().ufSlots),slots);
+  });
   test(`${path}: Shift-click toggles home slots in every mode without painting`, () => {
     for (const mode of ['pan', 'paint', 'swap']) {
       const { api, click, borders } = viewer(path);

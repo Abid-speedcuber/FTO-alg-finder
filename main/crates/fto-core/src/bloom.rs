@@ -9,7 +9,7 @@ use std::{
     io::{BufReader, BufWriter, Read, Write},
     path::Path,
     sync::{
-        OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -229,6 +229,7 @@ pub struct BloomTable {
     depth: u8,
     moves: u64,
     words: Vec<u64>,
+    pair: Option<(Arc<BloomTable>, Arc<BloomTable>)>,
     occupied: u64,
     paths: u64,
 }
@@ -240,6 +241,47 @@ impl std::fmt::Debug for BloomTable {
     }
 }
 impl BloomTable {
+    /// Runtime-only pair. Both filters stay shared; no large buffers are copied.
+    pub fn paired(primary: Arc<Self>, secondary: Arc<Self>) -> Result<Arc<Self>, String> {
+        if primary.mode != secondary.mode || secondary.depth >= primary.depth {
+            return Err(
+                "secondary Bloom table must have the same goal mode and a smaller depth".into(),
+            );
+        }
+        Ok(Arc::new(Self {
+            mode: primary.mode,
+            depth: primary.depth,
+            moves: primary.moves,
+            occupied: primary.occupied,
+            paths: primary.paths,
+            words: Vec::new(),
+            pair: Some((primary, secondary)),
+        }))
+    }
+    pub fn secondary_depth(&self) -> Option<u8> {
+        self.pair.as_ref().map(|(_, secondary)| secondary.depth())
+    }
+    pub(crate) fn checks_depth(&self, remaining: u8) -> bool {
+        if let Some((primary, secondary)) = &self.pair {
+            primary.checks_depth(remaining) || secondary.checks_depth(remaining)
+        } else {
+            remaining == self.depth
+        }
+    }
+    pub(crate) fn rejects_state(&self, state: BloomState, remaining: u8) -> bool {
+        if let Some((primary, secondary)) = &self.pair {
+            primary.rejects_state(state, remaining) || secondary.rejects_state(state, remaining)
+        } else {
+            remaining == self.depth && !self.contains(state)
+        }
+    }
+    pub(crate) fn rejects_hashes(&self, hashes: (u64, u64), remaining: u8) -> bool {
+        if let Some((primary, secondary)) = &self.pair {
+            primary.rejects_hashes(hashes, remaining) || secondary.rejects_hashes(hashes, remaining)
+        } else {
+            remaining == self.depth && !self.contains_hashes(hashes)
+        }
+    }
     pub fn mode(&self) -> BloomMode {
         self.mode
     }
@@ -247,9 +289,15 @@ impl BloomTable {
         self.depth
     }
     pub fn covers(&self, moves: &[Move]) -> bool {
+        if let Some((primary, secondary)) = &self.pair {
+            return primary.covers(moves) && secondary.covers(moves);
+        }
         !moves.is_empty() && mask(moves) & !self.moves == 0
     }
     pub fn info(&self) -> BloomInfo {
+        if let Some((primary, _)) = &self.pair {
+            return primary.info();
+        }
         BloomInfo {
             mode: self.mode,
             depth: self.depth,
@@ -263,12 +311,18 @@ impl BloomTable {
         }
     }
     pub fn false_positive_rate(&self) -> f64 {
+        if let Some((primary, _)) = &self.pair {
+            return primary.false_positive_rate();
+        }
         (self.occupied as f64 / (self.words.len() as f64 * 64.)).powi(HASHES as i32)
     }
     pub(crate) fn contains(&self, state: BloomState) -> bool {
         self.contains_hashes(state.hashes())
     }
     pub(crate) fn contains_hashes(&self, (a, b): (u64, u64)) -> bool {
+        if let Some((primary, _)) = &self.pair {
+            return primary.contains_hashes((a, b));
+        }
         let bits = self.words.len() as u64 * 64;
         (0..HASHES).all(|i| {
             let bit = probe_bit(a.wrapping_add(u64::from(i).wrapping_mul(b)), bits);
@@ -440,6 +494,7 @@ impl BloomTable {
             depth: config.depth,
             moves: mask(moves),
             words,
+            pair: None,
             occupied: 0,
             paths: 0,
         };
@@ -945,6 +1000,9 @@ impl BloomTable {
         ]
     }
     pub fn save(&self, path: &Path, cancel: Option<&AtomicBool>) -> Result<(), String> {
+        if self.pair.is_some() {
+            return Err("Runtime Bloom pairs are stored as separate depth tables.".into());
+        }
         active(cancel)?;
         let parent = path.parent().ok_or("Bloom path has no parent")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1052,6 +1110,7 @@ impl BloomTable {
             depth: header[2] as u8,
             moves: header[1],
             words,
+            pair: None,
             occupied: header[4],
             paths: header[5],
         };
@@ -1119,6 +1178,7 @@ mod tests {
             depth: 3,
             moves: mask(&[Move::R, Move::Rp]),
             words: vec![0; 4096],
+            pair: None,
             occupied: 0,
             paths: 200,
         };
@@ -1137,6 +1197,30 @@ mod tests {
             table.insert(state);
         }
         (table, states)
+    }
+
+    #[test]
+    fn paired_filters_share_buffers_and_check_both_boundaries() {
+        let (mut primary, states) = sample();
+        primary.depth = 16;
+        let (mut secondary, _) = sample();
+        secondary.depth = 12;
+        secondary.words.fill(0);
+        let primary = Arc::new(primary);
+        let secondary = Arc::new(secondary);
+        let pair = BloomTable::paired(primary.clone(), secondary.clone()).unwrap();
+        let (a, b) = pair.pair.as_ref().unwrap();
+        assert!(Arc::ptr_eq(a, &primary) && Arc::ptr_eq(b, &secondary));
+        assert_eq!(pair.secondary_depth(), Some(12));
+        assert!(!pair.rejects_state(states[0], 16));
+        assert!(pair.rejects_state(states[0], 12));
+        for remaining in [0, 11, 13, 15, 17] {
+            assert!(!pair.checks_depth(remaining));
+            assert!(!pair.rejects_state(states[0], remaining));
+        }
+        assert!(pair.covers(&[Move::R]));
+        assert!(!pair.covers(&[Move::U]));
+        assert!(BloomTable::paired(secondary, primary).is_err());
     }
 
     #[test]
@@ -1275,6 +1359,7 @@ mod tests {
                     depth: 2,
                     moves: mask(&[Move::R, Move::Rp]),
                     words: vec![0; word_count],
+                    pair: None,
                     occupied: 0,
                     paths: 1,
                 };
@@ -1579,6 +1664,21 @@ mod tests {
                 )
                 .unwrap(),
             );
+            let secondary = Arc::new(
+                BloomTable::generate(
+                    &tables,
+                    &moves,
+                    GenerateConfig {
+                        mode: BloomMode::FullPosition,
+                        depth: 1,
+                        max_memory_mib: 1,
+                    },
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
+            let table = BloomTable::paired(table, secondary).unwrap();
             let base = crate::search::SearchConfig {
                 min_depth: 5,
                 max_depth: 5,

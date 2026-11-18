@@ -45,9 +45,28 @@ pub(super) struct Case {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct PartialBase {
+    facelets: Vec<u8>,
+    center_targets: Option<CenterTargets>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum InputMode {
+    #[default]
+    Setup,
+    Alg,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct Request {
     run_id: String,
+    #[serde(default)]
+    input_mode: InputMode,
     cases: Vec<Case>,
+    #[serde(default)]
+    partial_base: Option<PartialBase>,
     allowed_moves: Vec<String>,
     instance_moves: Vec<String>,
     depths: Option<Vec<u8>>,
@@ -511,6 +530,36 @@ pub(super) async fn start_batch(
     Ok(())
 }
 
+fn case_position(
+    case: &Case,
+    base: Option<&(FtoCubie, Option<PartialMask>)>,
+    last_layer: bool,
+    input_mode: InputMode,
+) -> Result<(FtoCubie, Option<PartialMask>), String> {
+    if let Some(facelets) = &case.facelets {
+        return cubie_and_partial_mask_from_facelets(
+            facelets,
+            case.center_targets.as_ref(),
+            last_layer,
+        );
+    }
+    let (mut cubie, mask) = base.cloned().unwrap_or((FtoCubie::solved(), None));
+    let moves = fto_core::notation::parse_algorithm(&case.setup)?;
+    match input_mode {
+        InputMode::Setup => {
+            for mv in moves {
+                cubie = cubie.apply(mv);
+            }
+        }
+        InputMode::Alg => {
+            for mv in moves.into_iter().rev() {
+                cubie = cubie.apply(mv.inverse());
+            }
+        }
+    }
+    Ok((cubie, mask))
+}
+
 fn run(
     request: &Request,
     cancel: &Arc<AtomicBool>,
@@ -529,18 +578,26 @@ fn run(
     let depths =
         depths::normalize(request.depths.as_deref(), None)?.unwrap_or_else(|| (0..=255).collect());
     let expand = request.find_all && request.depths.is_some();
+    let base = request
+        .partial_base
+        .as_ref()
+        .map(|base| {
+            cubie_and_partial_mask_from_facelets(
+                &base.facelets,
+                base.center_targets.as_ref(),
+                request.last_layer_mode,
+            )
+        })
+        .transpose()?;
     let mut cases = request.cases.clone();
     let mut positions = Vec::with_capacity(cases.len());
     for case in &mut cases {
-        let parsed = if let Some(facelets) = &case.facelets {
-            cubie_and_partial_mask_from_facelets(
-                facelets,
-                case.center_targets.as_ref(),
-                request.last_layer_mode,
-            )
-        } else {
-            apply_sequence(FtoCubie::solved(), &case.setup).map(|c| (c, None))
-        };
+        let parsed = case_position(
+            case,
+            base.as_ref(),
+            request.last_layer_mode,
+            request.input_mode,
+        );
         match parsed {
             Ok(position) => {
                 case.error = None;
@@ -578,9 +635,21 @@ fn run(
     // One shared set of pattern databases regardless of the number of cases.
     let needs_full = positions.iter().flatten().any(|(_, mask)| mask.is_none());
     let mut temporary = batch_tables::TemporaryTables::new(cache);
+    let shared_partial = base
+        .as_ref()
+        .and_then(|(_, mask)| mask.clone())
+        .filter(|_| {
+            cases
+                .iter()
+                .any(|case| case.facelets.is_none() && case.error.is_none())
+        });
+    let persistent_partial = pruning_path.join("partial-goal-v1");
     let mut boosted = request.temporary_tables
-        && needs_full
-        && batch_tables::worthwhile(cases.len(), request.depths.as_deref());
+        && (needs_full || shared_partial.is_some())
+        && batch_tables::worthwhile(
+            cases.iter().filter(|case| case.error.is_none()).count(),
+            request.depths.as_deref(),
+        );
     let max_bloom_depth = request
         .depths
         .as_ref()
@@ -592,7 +661,7 @@ fn run(
             &allowed,
             &instance,
             request.last_layer_mode,
-            boosted,
+            boosted && shared_partial.is_none(),
             request.table_memory_mib,
             max_bloom_depth,
             request.threads,
@@ -605,6 +674,21 @@ fn run(
             ll_pruning: None,
         }
     };
+    if boosted {
+        if let Some(mask) = &shared_partial {
+            temporary.prepare_partial(
+                &tables,
+                &persistent_partial,
+                mask,
+                &allowed,
+                request.table_memory_mib,
+                max_bloom_depth,
+                request.threads,
+                cancel,
+                app,
+            )?;
+        }
+    }
     let mut pruning = prepared.pruning;
     let mut ll_pruning = prepared.ll_pruning;
     while !cancel.load(Ordering::SeqCst) {
@@ -612,25 +696,43 @@ fn run(
             break;
         };
         let depth = wave.depth;
-        if request.temporary_tables && needs_full && !boosted && depth >= batch_tables::DEEP_BATCH {
-            // Release the broad resident tables before allocating restricted replacements.
-            drop(pruning.take());
-            drop(ll_pruning.take());
-            let prepared = temporary.prepare(
-                &tables,
-                &pruning_path,
-                &allowed,
-                &instance,
-                request.last_layer_mode,
-                true,
-                request.table_memory_mib,
-                max_bloom_depth,
-                request.threads,
-                cancel,
-                app,
-            )?;
-            pruning = prepared.pruning;
-            ll_pruning = prepared.ll_pruning;
+        if request.temporary_tables
+            && (needs_full || shared_partial.is_some())
+            && !boosted
+            && depth >= batch_tables::DEEP_BATCH
+        {
+            if let Some(mask) = &shared_partial {
+                temporary.prepare_partial(
+                    &tables,
+                    &persistent_partial,
+                    mask,
+                    &allowed,
+                    request.table_memory_mib,
+                    max_bloom_depth,
+                    request.threads,
+                    cancel,
+                    app,
+                )?;
+            } else {
+                // Release the broad resident tables before allocating restricted replacements.
+                drop(pruning.take());
+                drop(ll_pruning.take());
+                let prepared = temporary.prepare(
+                    &tables,
+                    &pruning_path,
+                    &allowed,
+                    &instance,
+                    request.last_layer_mode,
+                    true,
+                    request.table_memory_mib,
+                    max_bloom_depth,
+                    request.threads,
+                    cancel,
+                    app,
+                )?;
+                pruning = prepared.pruning;
+                ll_pruning = prepared.ll_pruning;
+            }
             boosted = true;
         }
         let indices = wave.indices;
@@ -656,35 +758,24 @@ fn run(
             Some(format!("{phase} · depth {depth}")),
         );
         let bloom = if needs_full {
-            let temporary_bloom = if let Some(root) = &temporary.bloom_root {
-                bloom_cache::load(
-                    cache,
-                    root,
-                    &allowed,
-                    Some(depth),
-                    request.last_layer_mode,
-                    cancel,
-                    app,
-                )?
-            } else {
-                None
-            };
-            if temporary_bloom.is_some() {
-                temporary_bloom
-            } else {
-                bloom_cache::load(
-                    cache,
-                    &pruning_path,
-                    &allowed,
-                    Some(depth),
-                    request.last_layer_mode,
-                    cancel,
-                    app,
-                )?
+            let mut roots = Vec::new();
+            if let Some(root) = &temporary.bloom_root {
+                roots.push(root.as_path());
             }
+            roots.push(pruning_path.as_path());
+            bloom_cache::load_from_roots(
+                cache,
+                &roots,
+                &allowed,
+                Some(depth),
+                request.last_layer_mode,
+                cancel,
+                app,
+            )?
         } else {
             None
         };
+        let shared_partial_cache = temporary.partial_root.as_deref();
         let results = execute_wave(&indices, request.threads, cancel, |index, threads| {
             let case = cases[index].clone();
             let position = positions[index].clone().unwrap();
@@ -747,6 +838,11 @@ fn run(
                         },
                         solution_reporter: Some(reporter),
                     };
+                    let partial_cache = if position.1.is_some() && position.1 == shared_partial {
+                        shared_partial_cache.unwrap_or(&persistent_partial)
+                    } else {
+                        &persistent_partial
+                    };
                     resume_position(
                         position,
                         tables,
@@ -755,7 +851,7 @@ fn run(
                         &config,
                         threads,
                         case.checkpoint.as_ref(),
-                        Some(&pruning_path.join("partial-goal-v1")),
+                        Some(partial_cache),
                     )
                 });
             let mut case = case;
@@ -856,6 +952,173 @@ mod tests {
             error: None,
         }
     }
+    fn partial_base() -> (FtoCubie, Option<PartialMask>) {
+        let mut facelets: Vec<_> = (0..72).map(|slot| (slot / 9) as u8).collect();
+        for &slot in &CORNER_FACELETS[0] {
+            facelets[slot] = 8;
+        }
+        for &slot in &EDGE_FACELETS[0] {
+            facelets[slot] = 8;
+        }
+        facelets[UF_CENTER_FACELETS[1]] = 8;
+        facelets[UF_CENTER_FACELETS[2]] = 8;
+        let targets = CenterTargets {
+            uf: [None; 4],
+            rl: [None; 4],
+            uf_sources: [None; 4],
+            rl_sources: [None; 4],
+            rl_top_sources: empty_center_source_groups(),
+            uf_slots: [vec![0], vec![], vec![], vec![]],
+            rl_slots: empty_center_source_groups(),
+        };
+        cubie_and_partial_mask_from_facelets(&facelets, Some(&targets), false).unwrap()
+    }
+    #[test]
+    fn setups_move_the_shared_partial_pieces_but_not_the_entitled_goal_slots() {
+        let base = partial_base();
+        let mut entry = case("text");
+        entry.setup = "R U".into();
+        let (cube, mask) = case_position(&entry, Some(&base), false, InputMode::Setup).unwrap();
+        assert_eq!(cube, apply_sequence(base.0, "R U").unwrap());
+        assert_eq!(mask, base.1);
+        assert_eq!(mask.as_ref().unwrap().uf_entitled_slots[0], 1);
+        assert!(!mask.as_ref().unwrap().corners[0]);
+        assert!(!mask.as_ref().unwrap().edges[0]);
+        entry.facelets = Some(vec![8; 72]);
+        let (_, override_mask) =
+            case_position(&entry, Some(&base), false, InputMode::Setup).unwrap();
+        assert_eq!(
+            override_mask.unwrap().uf_entitled_slots,
+            [0; 4],
+            "saved case editors override the default goal"
+        );
+        entry.facelets = None;
+        entry.setup = "not a move".into();
+        assert!(case_position(&entry, Some(&base), false, InputMode::Setup).is_err());
+    }
+
+    #[test]
+    fn algorithms_are_inverted_on_full_and_partial_bases_and_visual_cases_override() {
+        let mut entry = case("alg");
+        entry.setup = "R U".into();
+        for base in [None, Some(partial_base())] {
+            let (cube, mask) = case_position(&entry, base.as_ref(), false, InputMode::Alg).unwrap();
+            let initial = base.as_ref().map_or(FtoCubie::solved(), |base| base.0);
+            assert_eq!(cube, apply_sequence(initial, "U' R'").unwrap());
+            assert_eq!(mask, base.as_ref().and_then(|base| base.1.clone()));
+        }
+        entry.facelets = Some(vec![8; 72]);
+        entry.setup = "invalid input ignored for a visual case".into();
+        let visual = case_position(&entry, None, false, InputMode::Alg).unwrap();
+        assert!(visual.1.is_some());
+        assert!(serde_json::from_str::<InputMode>("\"invalid\"").is_err());
+    }
+
+    #[test]
+    #[ignore = "uses the local transition cache for real partial pattern/Bloom searches"]
+    fn shared_partial_goals_reuse_entitled_tables_across_setups_and_overrides() {
+        use fto_core::partial_goal;
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tables = Arc::new(
+            TransitionTables::load(workspace.join("cache/transition-table.tran")).unwrap(),
+        );
+        partial_goal::set_transition_tables(tables.clone());
+        for last_layer in [false, true] {
+            let mut base = partial_base();
+            base.1.as_mut().unwrap().last_layer_centers = last_layer;
+            let mask = base.1.as_ref().unwrap();
+            let moves = vec![Move::R, Move::Rp, Move::U, Move::Up];
+            let plan = partial_goal::plan(mask, &tables, 1024 * 1024, None).unwrap();
+            let out = std::env::temp_dir().join(format!(
+                "fto-partial-batch-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let pattern = partial_goal::metadata(&plan, mask, &moves, None);
+            partial_goal::generate(&plan, &pattern, &tables, &out, 2, None, None, 0).unwrap();
+            let bloom = partial_goal::metadata(&plan, mask, &moves, Some(2));
+            partial_goal::generate(&plan, &bloom, &tables, &out, 2, None, None, 1).unwrap();
+            assert_eq!(partial_goal::discover(&out).len(), 2);
+            for setup in ["R", "U", "R U"] {
+                let mut entry = case("text");
+                entry.setup = setup.into();
+                let position = case_position(&entry, Some(&base), false, InputMode::Setup).unwrap();
+                let config = SearchConfig {
+                    min_depth: 0,
+                    max_depth: 3,
+                    allowed_moves: moves.clone(),
+                    find_all: false,
+                    free_u_ends: last_layer,
+                    ..SearchConfig::default()
+                };
+                let plain = partial::solve_partial(
+                    &PartialProblem {
+                        cubie: position.0,
+                        mask: mask.clone(),
+                    },
+                    &config,
+                );
+                let mut with_tables = None;
+                for depth in 0..=3 {
+                    let config = SearchConfig {
+                        min_depth: depth,
+                        max_depth: depth,
+                        ..config.clone()
+                    };
+                    let result = resume_position(
+                        position.clone(),
+                        &tables,
+                        None,
+                        None,
+                        &config,
+                        2,
+                        None,
+                        Some(&out),
+                    )
+                    .unwrap();
+                    if !result.result.solutions.is_empty() {
+                        with_tables = Some(depth as usize);
+                        break;
+                    }
+                }
+                let expected = plain.solutions.first().map(|solution| {
+                    if last_layer {
+                        let start = solution
+                            .iter()
+                            .position(|mv| !matches!(mv, Move::U | Move::Up))
+                            .unwrap_or(solution.len());
+                        let end = solution
+                            .iter()
+                            .rposition(|mv| !matches!(mv, Move::U | Move::Up))
+                            .map_or(start, |i| i + 1);
+                        end - start
+                    } else {
+                        solution.len()
+                    }
+                });
+                assert_eq!(with_tables, expected);
+            }
+            let loaded = partial_goal::load(&out, mask, &moves, None).unwrap();
+            assert!(loaded.0.len() > 0);
+            assert!(loaded.1.is_some());
+            let mut wrong = mask.clone();
+            wrong.uf_entitled_slots[0] = 2;
+            assert!(
+                partial_goal::load(&out, &wrong, &moves, None)
+                    .unwrap()
+                    .0
+                    .len()
+                    == 0,
+                "incompatible entitled goals must not reuse stronger tables"
+            );
+            partial_goal::clear_cache();
+            fs::remove_dir_all(out).unwrap();
+        }
+    }
+
     #[test]
     fn depth_major_cases_and_resume() {
         let mut cases = vec![case("a"), case("b")];
