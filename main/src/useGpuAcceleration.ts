@@ -39,8 +39,5 @@ export default function useGpuAcceleration() {
     finally { setSwitchPending(false); }
   }
   function resetGpu() { setPreference(null); setProfile(null); setSettingsMessage(""); setProfileRevision(r => r+1); }
-  const explanation = settingsMessage || (!profile ? "Checking CPU and GPU performance…" : !profile.eligible
-    ? profile.message || (profile.adapter ? "CPU generation was faster on this hardware. GPU acceleration is disabled." : "GPU acceleration is unavailable on this hardware.")
-    : profile.message || "GPU passed the startup samples. Each table build checks performance again.");
-  return { useGpu, profile, generationStatus, setGenerationStatus, switchPending, explanation, changeGpu, resetGpu };
+  return { useGpu, profile, generationStatus, setGenerationStatus, switchPending, settingsMessage, changeGpu, resetGpu };
 }

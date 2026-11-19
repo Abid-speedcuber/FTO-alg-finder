@@ -23,8 +23,6 @@ pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
             (8192, 12, 32_768),
             (8192, 24, 65_536),
         ];
-        let mut wins = 0;
-        let mut samples = 0;
         let mut discoveries = 0_usize;
         let mut cpu_total = Duration::ZERO;
         let mut gpu_total = Duration::ZERO;
@@ -70,7 +68,7 @@ pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
                 moves,
             )?
             .ok_or("GPU cannot fit the calibration workspace")?;
-            let mut speedups = Vec::new();
+            let mut measured_samples = 0;
             let measured_at = Instant::now();
             for (round, sample) in input.chunks(frontier).enumerate() {
                 // Alternating order avoids consistently favoring whichever runs
@@ -105,41 +103,28 @@ pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
                     return Err("GPU calibration produced different results from the CPU".into());
                 }
                 if round >= WARMUP && !expected.is_empty() {
-                    speedups.push(cpu_time.as_secs_f64() / gpu_time.as_secs_f64().max(1e-9));
+                    measured_samples += 1;
                     discoveries += expected.len();
-                    samples += 1;
                     cpu_total += cpu_time;
                     gpu_total += gpu_time;
                 }
-                if speedups.len() >= MIN_TRIALS
+                if measured_samples >= MIN_TRIALS
                     && measured_at.elapsed() >= Duration::from_millis(250)
                 {
                     break;
                 }
             }
-            if super::consistent_gpu_speedup(&speedups) {
-                wins += 1;
-            }
         }
         let cpu_rate = discoveries as f64 / cpu_total.as_secs_f64().max(1e-9);
         let gpu_rate = discoveries as f64 / gpu_total.as_secs_f64().max(1e-9);
-        let speedup = gpu_rate / cpu_rate.max(1e-9);
-        let eligible = wins >= 2 && gpu_rate > cpu_rate * super::GPU_STARTUP_MIN_SPEEDUP;
+        let eligible = discoveries > 0 && gpu_rate > cpu_rate;
         Ok(super::GpuBenchmark {
             eligible,
             adapter: gpu.name.clone(),
             cpu_nodes_per_second: cpu_rate,
             gpu_nodes_per_second: gpu_rate,
             cpu_workers: workers,
-            message: if eligible {
-                format!(
-                    "GPU passed {wins}/3 startup workloads ({samples} paired samples, {speedup:.2}× aggregate throughput). Each table build checks again; small tables use CPU."
-                )
-            } else {
-                format!(
-                    "CPU is preferred: GPU did not show a repeatable 25% advantage across startup workloads ({wins}/3 passed, {samples} paired samples)."
-                )
-            },
+            message: String::new(),
         })
     };
     measured().unwrap_or_else(super::GpuBenchmark::unavailable)

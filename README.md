@@ -78,9 +78,8 @@ search results are independent of the generation backend.
 Startup calibration uses three table-size/move-count workloads, two warm-up rounds,
 and 7–11 paired measurements per workload. CPU/GPU order alternates; the CPU
 baseline uses its faster serial or parallel implementation, and GPU timing includes
-upload, bounded dispatch, readback and host-table merging. Eligibility requires a
-repeatable advantage on at least two workloads and over 25% aggregate throughput
-gain. This is a routing hint: actual table builds still compare their own workload.
+upload, bounded dispatch, readback and host-table merging. Eligibility follows the faster end-to-end measured throughput, without a
+fixed percentage margin or a workload pass-count rule. This is a routing hint: actual table builds still compare their own workload.
 Old calibration versions are invalidated automatically.
 
 Size readouts choose B, KiB, MiB or GiB as appropriate, including storage dialogs

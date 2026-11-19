@@ -163,7 +163,6 @@ test('static host without headers establishes isolation through the service work
     }
     await page.getByRole('button', { name: 'Open menu', exact: true }).click();
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    await page.getByText('This browser version uses CPU table generation. GPU acceleration is not available yet.', { exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Use GPU acceleration by default for table generation').isDisabled(), true);
+    assert.equal(await page.getByLabel('Use GPU acceleration for table generation').count(), 0);
   } finally { await browser.close(); await host.close(); }
 });

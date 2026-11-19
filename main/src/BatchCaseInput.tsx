@@ -85,7 +85,7 @@ const BatchCaseInput = forwardRef<BatchCaseInputApi,Props>(function BatchCaseInp
   }
   return <div className="batch-case-editor">
     <textarea ref={input} className="batch-case-text" aria-label={inputMode === "alg" ? "Case algorithms" : "Case setups"} disabled={disabled} value={text}
-      wrap="off" spellCheck={false} autoComplete="off" autoCapitalize="off" placeholder={inputMode === "alg" ? "One algorithm per line · Tab to edit visually" : "One setup per line · Tab to edit visually"}
+      wrap="off" spellCheck={false} autoComplete="off" autoCapitalize="off" placeholder={inputMode === "alg" ? "One algorithm per line; Press Tab to open graphical input." : "One setup per line; Press Tab to open graphical input."}
       onSelect={() => setHighlight(selection())}
       onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={() => { composing.current = false; pending.current = undefined; }}

@@ -11,18 +11,6 @@ mod backend;
 #[cfg(feature = "gpu")]
 pub(crate) use backend::{BloomCompute, Gpu, PruningCompute};
 
-/// Startup eligibility requires a clear margin, not a small timing fluctuation.
-pub const GPU_STARTUP_MIN_SPEEDUP: f64 = 1.25;
-
-#[cfg(any(feature = "gpu", test))]
-pub(crate) fn consistent_gpu_speedup(samples: &[f64]) -> bool {
-    if samples.len() < 7 || samples.iter().any(|r| !r.is_finite() || *r <= 0.) { return false; }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    sorted[sorted.len() / 2] >= GPU_STARTUP_MIN_SPEEDUP
-        && sorted[sorted.len() / 4] >= 1.1
-}
-
 /// Small, bounded calibration using the production pruning compute kernel.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,23 +260,14 @@ pub(crate) fn check_host_allocation(bytes: u64) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn startup_speedup_requires_enough_consistent_paired_samples() {
-        assert!(!consistent_gpu_speedup(&[1.5; 3]));
-        assert!(!consistent_gpu_speedup(&[1.18; 9]));
-        assert!(!consistent_gpu_speedup(&[0.7, 0.9, 1.0, 1.4, 1.5, 1.6, 1.7]));
-        assert!(consistent_gpu_speedup(&[1.12, 1.2, 1.3, 1.4, 1.35, 1.4, 1.5]));
-        assert!(!consistent_gpu_speedup(&[f64::NAN; 9]));
-    }
-    #[test]
     #[ignore = "runs the first-launch hardware probe on this machine"]
     fn startup_benchmark_reports_valid_results_or_disables_gpu() {
         let result = benchmark_gpu();
         println!("startup GPU comparison: {result:?}");
-        assert!(!result.message.is_empty());
         assert!(result.cpu_nodes_per_second.is_finite());
         assert!(result.gpu_nodes_per_second.is_finite());
         if result.eligible {
-            assert!(result.gpu_nodes_per_second > result.cpu_nodes_per_second * GPU_STARTUP_MIN_SPEEDUP);
+            assert!(result.gpu_nodes_per_second > result.cpu_nodes_per_second);
         }
     }
     #[test]

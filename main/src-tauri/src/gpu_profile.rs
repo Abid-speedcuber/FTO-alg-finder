@@ -1,7 +1,7 @@
 //! Startup calibration is shared by startup and UI requests and cached per hardware/driver.
 use super::*;
 use fto_core::acceleration::{self, GpuBenchmark};
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredProfile {
     version: u32,
@@ -21,8 +21,7 @@ fn valid(record: &StoredProfile, fingerprint: &str) -> bool {
         && (!record.benchmark.eligible
             || (record.benchmark.cpu_nodes_per_second > 0.
                 && record.benchmark.gpu_nodes_per_second
-                    > record.benchmark.cpu_nodes_per_second
-                        * acceleration::GPU_STARTUP_MIN_SPEEDUP))
+                    > record.benchmark.cpu_nodes_per_second))
 }
 fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -158,7 +157,7 @@ mod tests {
         assert!(valid(&record, "cpu/gpu/driver"));
         assert!(!valid(&record, "new-driver"));
         record.benchmark.gpu_nodes_per_second = 118.;
-        assert!(!valid(&record, "cpu/gpu/driver"), "a marginal 18% win must not enable GPU");
+        assert!(valid(&record, "cpu/gpu/driver"));
         record.version = 2;
         record.benchmark.gpu_nodes_per_second = 200.;
         assert!(!valid(&record, "cpu/gpu/driver"), "old shallow calibrations must expire");

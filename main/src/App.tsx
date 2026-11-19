@@ -79,7 +79,7 @@ const defaultInstanceMoves = [
 const defaultMoveSet = new Set(defaultInstanceMoves);
 const moreInstanceMoves = moves.filter((move) => !defaultMoveSet.has(move));
 const moveChooserNote =
-  "All the moves here refers to the CIF state. You can use the B layer as U layer, or BR layer as R layer to generate algs, and then translate the outputs to human-readable notation using the execution angle feature. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
+  "All the moves here refers to the CIF state. You can use the B layer as U layer, or BR layer as R layer to generate algs, and then translate the outputs to civilized notation using the execution angle feature. Choose the moves you actually use to generate algs. The more moves you choose, the longer the pruning table generation will take, and the weaker the heuristics will be, making all searches take longer on average. You can create new instances later with different move sets, at the cost of disk space for another dedicated set of pruning tables.";
 
 const INSTANCES_KEY = "fto.instances.v1";
 const FACE_COLORS_KEY = "fto.faceColors.v1";
@@ -688,7 +688,7 @@ function App() {
   const [bloomMoves, setBloomMoves] = useState<string[]>([]);
   const [bloomLastLayer, setBloomLastLayer] = useState(true);
   const [bloomDepth, setBloomDepth] = useState("8");
-  const { useGpu, profile: gpuProfile, generationStatus, setGenerationStatus, switchPending: gpuSwitchPending, explanation: gpuExplanation, changeGpu, resetGpu } = useGpuAcceleration();
+  const { useGpu, profile: gpuProfile, generationStatus, setGenerationStatus, switchPending: gpuSwitchPending, settingsMessage: gpuSettingsMessage, changeGpu, resetGpu } = useGpuAcceleration();
   const [bloomMemory, setBloomMemory] = useState("200");
   const validBloom = bloomMoves.length > 0 && Number.isInteger(Number(bloomDepth)) &&
     Number(bloomDepth) >= 1 && Number(bloomDepth) <= 16 && Number.isInteger(Number(bloomMemory)) &&
@@ -1545,11 +1545,13 @@ function App() {
                 onChange={(event) => setShowDebugInfo(event.target.checked)}
               />
             </label>
-            <label className="settings-toggle modal-toggle">
-              <span>Use GPU acceleration by default for table generation</span>
-              <input type="checkbox" checked={useGpu} disabled={gpuSwitchPending || !gpuProfile?.eligible} onChange={(event) => void changeGpu(event.target.checked)} />
-            </label>
-            <div className="hint">{gpuExplanation}</div>
+            {gpuProfile?.eligible && <>
+              <label className="settings-toggle modal-toggle">
+                <span>Use GPU acceleration for table generation</span>
+                <input type="checkbox" checked={useGpu} disabled={gpuSwitchPending} onChange={(event) => void changeGpu(event.target.checked)} />
+              </label>
+              {gpuSettingsMessage && <div className="hint">{gpuSettingsMessage}</div>}
+            </>}
             <div className="settings-group">
               <div className="settings-group-title">
                 <h3>Face colors</h3>
@@ -1821,7 +1823,7 @@ function App() {
           <InstanceSetupModal
             executionHold={executionHold}
             title="New instance"
-            subtitle="Pick a name and the moves this instance will use. Its base pruning table is built only from these moves."
+            subtitle="Pick the moves this instance will use."
             initialName=""
             initialMoves={[...defaultInstanceMoves]}
             confirmLabel="Create"
@@ -1859,7 +1861,6 @@ function App() {
               </span>
               <input
                 value={setup}
-                title="Accepts r/Rw and slice aliases M, E, S, N. Set an input hold with {U,R}; use {U,F} to reset."
                 onChange={(event) => setSetup(event.target.value)}
                 spellCheck={false}
                 autoComplete="off"

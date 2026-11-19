@@ -12,6 +12,7 @@ fi
 # Rebuild std as well: its pthread implementation needs the same atomic ABI.
 export RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C panic=abort -C link-arg=-pthread -C link-arg=-sMODULARIZE=1 -C link-arg=-sEXPORT_ES6=1 -C link-arg=-sEXPORT_NAME=createFtoModule -C link-arg=-sENVIRONMENT=worker,node -C link-arg=-sALLOW_MEMORY_GROWTH=1 -C link-arg=-sMAXIMUM_MEMORY=4294967296 -C link-arg=-sINITIAL_MEMORY=67108864 -C link-arg=-sSTACK_SIZE=2097152 -C link-arg=-sPTHREAD_POOL_SIZE=4 -C link-arg=-sPTHREAD_POOL_SIZE_STRICT=0 -C link-arg=-sEXIT_RUNTIME=0 -C link-arg=-sFORCE_FILESYSTEM=1 -C link-arg=-sEXPORTED_FUNCTIONS=["_main","_fto_dispatch","_fto_events"] -C link-arg=-sEXPORTED_RUNTIME_METHODS=["ccall","FS"]'
 cargo +nightly build -Z build-std=std,panic_abort --target wasm32-unknown-emscripten --release -p fto-web
+mkdir -p public/wasm
 cp target/wasm32-unknown-emscripten/release/fto-web.js public/wasm/fto-web.js
 cp target/wasm32-unknown-emscripten/release/fto_web.wasm public/wasm/fto_web.wasm
 # Older SDKs emit a separate worker bootstrap; preserve it when present.
