@@ -1,6 +1,8 @@
 #![doc = "Core data structures and search scaffolding for the FTO solver."]
 
 pub mod acceleration;
+mod display;
+pub use display::format_bytes;
 
 pub mod bloom;
 pub mod coord;

@@ -12,7 +12,10 @@
     "test:centers": "node --test tests/centerSlots.test.mjs",
     "test:rotation": "node tests/rotation.test.mjs",
     "test:depths": "node tests/depthSelection.test.mjs",
-    "test:batch": "node --test tests/batchProject.test.mjs tests/batchCaseText.test.mjs"
+    "test:batch": "node --test tests/batchProject.test.mjs tests/batchCaseText.test.mjs",
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:web": "npm run build:wasm && npm run build -- --mode web",
+    "test:web": "node --test tests/webRuntime.test.mjs"
   },
   "dependencies": {
     "@simonwep/pickr": "^1.10.2",
@@ -26,6 +29,7 @@
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "playwright": "^1.65.1",
     "typescript": "^5.7.2"
   }
 }

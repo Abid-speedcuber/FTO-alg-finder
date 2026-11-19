@@ -23,7 +23,7 @@ pub(crate) struct GenerateBloomRequest {
     partial_memory_mib: u32,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(crate) async fn generate_bloom_table(
     request: GenerateBloomRequest,
     solver_state: tauri::State<'_, SolverState>,
@@ -48,7 +48,7 @@ pub(crate) async fn generate_bloom_table(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     let generation = solver_state.generation.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let _job = tauri::async_runtime::spawn_blocking(move || {
         let result = with_gpu_generation(request.use_gpu, &app, &generation, || {
             generate(&request, &cancel, &app, &cache)
         });
@@ -106,7 +106,7 @@ fn generate(
         let plan = fto_core::partial_goal::plan(
             &mask,
             &tables,
-            request.partial_memory_mib as usize * 1024 * 1024,
+            partial_memory_budget(request.partial_memory_mib),
             Some(cancel),
         )?;
         let meta = fto_core::partial_goal::metadata(&plan, &mask, &moves, Some(request.depth));
@@ -116,9 +116,9 @@ fn generate(
             app,
             "info",
             &format!(
-                "generating partial Bloom projection {} ({} MiB workspace)",
+                "generating partial Bloom projection {} ({} workspace)",
                 plan.spec.name(),
-                plan.entries / 1048576
+                format_bytes(plan.entries as u64)
             ),
         );
         fto_core::partial_goal::generate(
@@ -138,7 +138,7 @@ fn generate(
         app,
         "info",
         &format!(
-            "generating {}depth-{} Bloom table for {} (memory cap {} MiB)",
+            "generating {}depth-{} Bloom table for {} (memory cap {})",
             if request.last_layer_mode {
                 "last-layer "
             } else {
@@ -146,7 +146,7 @@ fn generate(
             },
             request.depth,
             format_move_list(&moves),
-            request.max_memory_mib
+            format_bytes(u64::from(request.max_memory_mib) * 1024 * 1024)
         ),
     );
     let progress = |event: &bloom::BloomProgress| {
@@ -198,14 +198,14 @@ fn generate(
         app,
         "done",
         &format!(
-            "generated {}depth-{} Bloom table ({:.2} MiB, estimated false positives {:.3}%)",
+            "generated {}depth-{} Bloom table ({}, estimated false positives {:.3}%)",
             if request.last_layer_mode {
                 "last-layer "
             } else {
                 ""
             },
             info.depth,
-            info.bytes as f64 / (1024. * 1024.),
+            format_bytes(info.bytes),
             info.false_positive_rate * 100.
         ),
     );

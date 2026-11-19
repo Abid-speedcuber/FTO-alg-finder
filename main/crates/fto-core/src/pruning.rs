@@ -600,9 +600,9 @@ fn load_or_build_solver_table(
 ) -> Result<Vec<u8>, String> {
     let path = path.as_ref();
     eprintln!(
-        "loading pruning table {} ({:.1} MiB)",
+        "loading pruning table {} ({})",
         spec.name(),
-        spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+        crate::format_bytes(spec.size().unwrap_or(0) as u64)
     );
     match if path.exists() {
         read_table_reporting(

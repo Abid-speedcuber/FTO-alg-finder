@@ -1,3 +1,10 @@
+#[cfg(all(feature = "desktop", feature = "browser"))]
+compile_error!("desktop and browser backends must be built separately");
+#[cfg(feature = "browser")]
+#[path = "browser_runtime.rs"]
+mod tauri;
+#[cfg(feature = "browser")]
+pub mod browser;
 mod batch;
 mod batch_tables;
 mod bloom_cache;
@@ -13,7 +20,7 @@ use fto_core::{
     pruning::{self, CandidateSpec, Component, PatternDatabase, PatternDatabases, SolverPruning},
     search::{self, MiniPruning, SearchConfig},
     tables::TransitionTables,
-    FtoCubie,
+    FtoCubie, format_bytes,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -129,6 +136,11 @@ struct GeneratePruningRequest {
     #[serde(default = "default_partial_budget")]
     partial_memory_mib: u32,
 }
+// Budgets are upper bounds. Avoid truncating a 4 GiB budget to zero on wasm32.
+fn partial_memory_budget(mib: u32) -> usize {
+    (u64::from(mib) * 1024 * 1024).min(isize::MAX as u64) as usize
+}
+
 fn default_partial_budget() -> u32 {
     512
 }
@@ -221,7 +233,7 @@ struct CachedLlPruning {
     pruning: Arc<PatternDatabases>,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 async fn solve_fto(
     request: SolveRequest,
     solver_state: tauri::State<'_, SolverState>,
@@ -247,7 +259,7 @@ async fn solve_fto(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     let generation = solver_state.generation.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let _job = tauri::async_runtime::spawn_blocking(move || {
         let response = with_gpu_generation(request.use_gpu, &app, &generation, || {
             run_solve_blocking(&request, &cancel, &app, &cancels, &cache)
         });
@@ -257,7 +269,7 @@ async fn solve_fto(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 async fn generate_pruning_table(
     request: GeneratePruningRequest,
     solver_state: tauri::State<'_, SolverState>,
@@ -283,7 +295,7 @@ async fn generate_pruning_table(
     let cancels = solver_state.current_cancel.clone();
     let cache = solver_state.cache.clone();
     let generation = solver_state.generation.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let _job = tauri::async_runtime::spawn_blocking(move || {
         let result = with_gpu_generation(request.use_gpu, &app, &generation, || {
             generate_pruning_blocking(&request, &cancel, &app, &cache)
         });
@@ -309,7 +321,7 @@ async fn generate_pruning_table(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn stop_solve(solver_state: tauri::State<'_, SolverState>) -> Result<(), String> {
     let current = solver_state
         .current_cancel
@@ -321,7 +333,7 @@ fn stop_solve(solver_state: tauri::State<'_, SolverState>) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(), String> {
     let mut cache = solver_state
         .cache
@@ -336,7 +348,7 @@ fn unload_pruning_table(solver_state: tauri::State<'_, SolverState>) -> Result<(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn pruning_cache_status(
     solver_state: tauri::State<'_, SolverState>,
 ) -> Result<PruningCacheStatus, String> {
@@ -351,7 +363,7 @@ fn pruning_cache_status(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn list_pruning_tables(app: AppHandle) -> Result<Vec<PruningTableInfo>, String> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -360,7 +372,7 @@ fn list_pruning_tables(app: AppHandle) -> Result<Vec<PruningTableInfo>, String> 
     discover_pruning_tables(&pruning_dir)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn delete_pruning_table(
     id: String,
     solver_state: tauri::State<'_, SolverState>,
@@ -384,7 +396,7 @@ fn delete_pruning_table(
     unload_pruning_table(solver_state)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn reset_app_data(
     solver_state: tauri::State<'_, SolverState>,
     app: AppHandle,
@@ -401,7 +413,7 @@ fn reset_app_data(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn validate_facelets(facelets: Vec<u8>) -> validation::ValidationReport {
     validation::validate(&facelets)
 }
@@ -469,7 +481,7 @@ struct SolverStatus {
 }
 
 /// Reattach a reloaded webview to the worker that still owns the solver.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 fn get_solver_status(
     state: tauri::State<'_, SolverState>,
     batch: tauri::State<'_, batch::BatchState>,
@@ -559,6 +571,7 @@ fn solve_fto_inner(
     )
 }
 
+#[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
         .manage(SolverState::default())
@@ -647,16 +660,16 @@ fn generate_pruning_blocking(
         let plan = fto_core::partial_goal::plan(
             &mask,
             &tables,
-            request.partial_memory_mib as usize * 1024 * 1024,
+            partial_memory_budget(request.partial_memory_mib),
             Some(cancel),
         )?;
         emit_line(
             app,
             "info",
             &format!(
-                "generating dedicated partial {} table: {:.1} MiB, {} goal projections",
+                "generating dedicated partial {} table: {}, {} goal projections",
                 plan.spec.name(),
-                plan.entries as f64 / 1048576.,
+                format_bytes(plan.entries as u64),
                 plan.roots
             ),
         );
@@ -675,8 +688,8 @@ fn generate_pruning_blocking(
             app,
             "done",
             &format!(
-                "generated dedicated partial pruning table ({:.1} MiB)",
-                plan.entries as f64 / 1048576.
+                "generated dedicated partial pruning table ({})",
+                format_bytes(plan.entries as u64)
             ),
         );
         return Ok(());
@@ -703,9 +716,9 @@ fn generate_pruning_blocking(
             app,
             "done",
             &format!(
-                "generated last-layer pruning tables for moves: {} ({:.1} MiB)",
+                "generated last-layer pruning tables for moves: {} ({})",
                 format_move_list(&target_moves),
-                pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+                format_bytes(pruning.total_bytes() as u64)
             ),
         );
         return Ok(());
@@ -724,9 +737,9 @@ fn generate_pruning_blocking(
         app,
         "done",
         &format!(
-            "generated pruning tables for moves: {} ({:.1} MiB)",
+            "generated pruning tables for moves: {} ({})",
             format_move_list(&target_moves),
-            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+            format_bytes(pruning.total_bytes() as u64)
         ),
     );
     Ok(())
@@ -862,9 +875,9 @@ fn run_in_process_solve(
             app,
             "info",
             &format!(
-                "using {} restricted mini pruning tables ({:.1} MiB, built in {:.3}s)",
+                "using {} restricted mini pruning tables ({}, built in {:.3}s)",
                 mini.len(),
-                mini.bytes() as f64 / (1024.0 * 1024.0),
+                format_bytes(mini.bytes() as u64),
                 start.elapsed().as_secs_f64()
             ),
         );
@@ -1025,6 +1038,7 @@ fn pruning_progress_interval(move_count: usize) -> usize {
 }
 
 fn table_root(app: &AppHandle, workspace_root: &Path) -> PathBuf {
+    if cfg!(feature = "browser") { return PathBuf::from("/fto/tables"); }
     if cfg!(debug_assertions) {
         return workspace_root.join("cache");
     }
@@ -1062,7 +1076,7 @@ fn is_writable_dir(path: &Path) -> bool {
 }
 
 fn pruning_dir(app: &AppHandle, workspace_root: &Path) -> PathBuf {
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) && !cfg!(feature = "browser") {
         workspace_root.join("cache/pruning-v4")
     } else {
         table_root(app, workspace_root).join("pruning")
@@ -1070,7 +1084,7 @@ fn pruning_dir(app: &AppHandle, workspace_root: &Path) -> PathBuf {
 }
 
 fn transition_dir(app: &AppHandle, workspace_root: &Path) -> PathBuf {
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) && !cfg!(feature = "browser") {
         workspace_root.join("cache")
     } else {
         table_root(app, workspace_root).join("transition")
@@ -1130,9 +1144,9 @@ fn load_solver_pruning(
         app,
         "info",
         &format!(
-            "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({:.1} MiB)",
+            "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({})",
             format_move_list(&target),
-            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+            format_bytes(pruning.total_bytes() as u64)
         ),
     );
     let mut cache = cache
@@ -1216,10 +1230,10 @@ fn load_ll_solver_pruning(
         app,
         "info",
         &format!(
-            "using LL pruning tables: {} built with moves: {} ({:.1} MiB)",
+            "using LL pruning tables: {} built with moves: {} ({})",
             pruning.names().join(" / "),
             format_move_list(&target),
-            pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+            format_bytes(pruning.total_bytes() as u64)
         ),
     );
     let mut cache = cache

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/fto-cli",
+    "crates/fto-web",
     "crates/fto-core",
     "src-tauri",
 ]

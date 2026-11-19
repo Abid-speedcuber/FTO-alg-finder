@@ -1,7 +1,6 @@
 import { rotateAlgorithm, normalizeMoveSelection, type ExecutionHold } from "./rotation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, isTauri, listen } from "./platform";
 import FtoViewer, { type CenterTargets, type FtoViewerApi, type IgnoredStickerState } from "./FtoViewer";
 import LlSetupSection from "./LlSetupSection";
 import DepthHelp from "./DepthHelp";
@@ -450,7 +449,7 @@ export default function BatchSolver({ operationBusy = false, operationMessage, o
           <div className="section-heading"><h2>Search</h2></div>
           <fieldset disabled={running || !ready}>
             <div className="search-grid"><div className="depth-field"><div className="depth-label-row"><label htmlFor="batch-depth">Depth</label><DepthHelp /></div><input id="batch-depth" placeholder="auto" value={project.settings.depth} aria-invalid={Boolean(selection.error)} onChange={e => changeSettings({ depth: e.target.value })} /></div>
-              <label>Threads<input type="number" min="1" max="1024" value={project.settings.threads} onChange={e => changeSettings({ threads: Math.max(1, Math.min(1024, Number(e.target.value) || 1)) })} /></label></div>
+              <label>Threads<input type="number" min="1" value={project.settings.threads} onChange={e => changeSettings({ threads: Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(Number(e.target.value)) || 1)) })} /></label></div>
             <label className="check"><input type="checkbox" checked={project.settings.all} onChange={e => changeSettings({ all: e.target.checked })} />All solutions</label>
             <label className="check"><input type="checkbox" checked={project.settings.lastLayer} onChange={e => changeSettings({ lastLayer: e.target.checked })} />Last layer mode</label>
             <details className="batch-advanced"><summary>Performance &amp; limits <span aria-hidden="true">⌄</span></summary><div>

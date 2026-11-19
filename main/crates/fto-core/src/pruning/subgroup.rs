@@ -4,6 +4,17 @@ use super::*;
 use std::io::{Seek, SeekFrom};
 
 const OUTSIDE: u16 = u16::MAX;
+const COMPACT_STORAGE: &str = "compact-v1";
+const MAX_METADATA_BYTES: usize = 64 * 1024;
+
+struct LoadedTable {
+    table: Vec<u8>,
+    legacy: bool,
+}
+
+fn invalid_cache(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
 
 #[derive(Clone, Debug)]
 struct Orbit {
@@ -660,7 +671,20 @@ impl CompactIndexing {
         report: Option<&PruningReporter<'_>>,
     ) -> Result<Vec<u8>, String> {
         match self.load(kind, path, report, cancel) {
-            Ok(table) => return Ok(table),
+            Ok(loaded) => {
+                if loaded.legacy {
+                    if let Err(error) = self.save(kind, path, &loaded.table, report, cancel) {
+                        if error.kind() == io::ErrorKind::Interrupted {
+                            return Err(error.to_string());
+                        }
+                        // A read-only or full cache directory must not prevent solving.
+                        crate::acceleration::log(&format!(
+                            "compact cache migration failed: {error}; existing cache retained"
+                        ));
+                    }
+                }
+                return Ok(loaded.table);
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 return Err(error.to_string());
             }
@@ -672,13 +696,24 @@ impl CompactIndexing {
         Ok(table)
     }
 
+    fn compact_metadata(&self, kind: Kind) -> String {
+        format!(
+            "spec={}\nmoves={}\nstorage={COMPACT_STORAGE}\nrows={}\nuf={}\nstride={}\n",
+            kind.spec().name(),
+            move_set_suffix(&self.moves),
+            self.row(kind).original.len(),
+            self.uf.original.len(),
+            1_usize << self.uf_bits,
+        )
+    }
+
     fn load(
         &self,
         kind: Kind,
         path: &Path,
         report: Option<&PruningReporter<'_>>,
         cancel: Option<&AtomicBool>,
-    ) -> io::Result<Vec<u8>> {
+    ) -> io::Result<LoadedTable> {
         check_table_cancel(cancel)?;
         let mut file = File::open(path)?;
         let len = file.metadata()?.len();
@@ -687,16 +722,35 @@ impl CompactIndexing {
         let start = if &magic == PRUN_MAGIC {
             let mut bytes = [0; 4];
             file.read_exact(&mut bytes)?;
-            20 + u64::from(u32::from_le_bytes(bytes))
+            let metadata_len = u32::from_le_bytes(bytes) as usize;
+            if metadata_len > MAX_METADATA_BYTES {
+                return Err(invalid_cache("pruning table metadata is too large"));
+            }
+            let mut metadata = vec![0; metadata_len];
+            file.read_exact(&mut metadata)?;
+            let metadata = String::from_utf8(metadata)
+                .map_err(|_| invalid_cache("pruning table metadata is not UTF-8"))?;
+            if metadata.lines().any(|line| line.starts_with("storage=")) {
+                if metadata != self.compact_metadata(kind) {
+                    return Err(invalid_cache(
+                        "compact pruning table format or dimensions mismatch",
+                    ));
+                }
+                let mapping_bytes = (self.row(kind).original.len() + self.uf.original.len()) * 2;
+                let expected =
+                    20 + metadata_len as u64 + mapping_bytes as u64 + self.table_len(kind) as u64;
+                if len != expected {
+                    return Err(invalid_cache("compact pruning table length mismatch"));
+                }
+                return self.load_compact(kind, &mut file, report, cancel);
+            }
+            20 + metadata_len as u64
         } else {
             0
         };
         let expected = kind.spec().size().unwrap() as u64;
         if start > len || len - start != expected {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "pruning table length mismatch",
-            ));
+            return Err(invalid_cache("pruning table length mismatch"));
         }
         let rows = self.row(kind);
         let total = rows.original.len() * CENTER3_COUNT;
@@ -718,7 +772,85 @@ impl CompactIndexing {
                 report_table_io(report, &name, (rank + 1) * CENTER3_COUNT, total);
             }
         }
-        Ok(table)
+        Ok(LoadedTable {
+            table,
+            legacy: true,
+        })
+    }
+
+    fn load_compact(
+        &self,
+        kind: Kind,
+        file: &mut File,
+        report: Option<&PruningReporter<'_>>,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<LoadedTable> {
+        fn read_mapping(file: &mut impl Read, expected: &Orbit) -> io::Result<Vec<u16>> {
+            let mut mapping = Vec::with_capacity(expected.original.len());
+            let mut seen = vec![false; expected.original.len()];
+            for _ in 0..expected.original.len() {
+                let mut bytes = [0; 2];
+                file.read_exact(&mut bytes)?;
+                let value = u16::from_le_bytes(bytes);
+                let rank = expected
+                    .rank
+                    .get(usize::from(value))
+                    .copied()
+                    .unwrap_or(OUTSIDE);
+                if rank == OUTSIDE || std::mem::replace(&mut seen[usize::from(rank)], true) {
+                    return Err(invalid_cache(
+                        "compact pruning table coordinate mapping mismatch",
+                    ));
+                }
+                mapping.push(value);
+            }
+            Ok(mapping)
+        }
+        let mut reader = std::io::BufReader::new(file);
+        let rows = self.row(kind);
+        let saved_rows = read_mapping(&mut reader, rows)?;
+        let saved_uf = read_mapping(&mut reader, &self.uf)?;
+        let total = self.table_len(kind);
+        let name = format!("loading {}", kind.spec().name());
+        report_table_io(report, &name, 0, total);
+        check_table_cancel(cancel)?;
+        let mut table = Vec::new();
+        table.try_reserve_exact(total).map_err(io::Error::other)?;
+        table.resize(total, UNVISITED);
+        if saved_rows.as_slice() == &*rows.original && saved_uf.as_slice() == &*self.uf.original {
+            // Normal load: read the exact in-RAM representation, without expanding
+            // a dense table or copying its entries into compact indices again.
+            let chunk_size = (total / 100).clamp(64 * 1024, 1024 * 1024);
+            let mut done = 0;
+            for chunk in table.chunks_mut(chunk_size) {
+                check_table_cancel(cancel)?;
+                reader.read_exact(chunk)?;
+                done += chunk.len();
+                report_table_io(report, &name, done, total);
+            }
+        } else {
+            // Equivalent move sets can enumerate their orbits in different orders.
+            // Remap one compact row at a time, never allocating the dense space.
+            let stride = 1_usize << self.uf_bits;
+            let mut buffer = vec![UNVISITED; stride];
+            for (saved_rank, &original) in saved_rows.iter().enumerate() {
+                check_table_cancel(cancel)?;
+                reader.read_exact(&mut buffer)?;
+                let row = usize::from(rows.rank[usize::from(original)]) << self.uf_bits;
+                for (saved_column, &uf) in saved_uf.iter().enumerate() {
+                    table[row | usize::from(self.uf.rank[usize::from(uf)])] = buffer[saved_column];
+                }
+                report_table_io(report, &name, (saved_rank + 1) * stride, total);
+            }
+            check_table_cancel(cancel)?;
+            reader.read_exact(&mut buffer)?; // saved missing-row sentinel
+            report_table_io(report, &name, total, total);
+        }
+        check_table_cancel(cancel)?;
+        Ok(LoadedTable {
+            table,
+            legacy: false,
+        })
     }
 
     fn save(
@@ -734,34 +866,31 @@ impl CompactIndexing {
         }
         let pending = crate::cache_file::CacheWrite::new(path)?;
         let mut writer = BufWriter::new(File::create(pending.path())?);
-        let metadata = format!(
-            "spec={}\nmoves={}\n",
-            kind.spec().name(),
-            move_set_suffix(&self.moves)
-        );
+        if table.len() != self.table_len(kind) {
+            return Err(invalid_cache("compact pruning table length mismatch"));
+        }
+        let metadata = self.compact_metadata(kind);
         writer.write_all(PRUN_MAGIC)?;
         writer.write_all(&(metadata.len() as u32).to_le_bytes())?;
         writer.write_all(metadata.as_bytes())?;
-        let rows = self.row(kind);
-        let empty = vec![UNVISITED; CENTER3_COUNT];
-        let mut buffer = empty.clone();
-        let total = kind.spec().size().unwrap();
+        for &value in self
+            .row(kind)
+            .original
+            .iter()
+            .chain(self.uf.original.iter())
+        {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        let total = table.len();
         let name = format!("saving {}", kind.spec().name());
         report_table_io(report, &name, 0, total);
-        let interval = (rows.rank.len() / 100).max(1);
-        for (original, &rank) in rows.rank.iter().enumerate() {
+        let chunk_size = (total / 100).clamp(64 * 1024, 1024 * 1024);
+        let mut done = 0;
+        for chunk in table.chunks(chunk_size) {
             check_table_cancel(cancel)?;
-            if rank == OUTSIDE {
-                writer.write_all(&empty)?;
-            } else {
-                for (uf, &value) in self.uf.original.iter().enumerate() {
-                    buffer[usize::from(value)] = table[(usize::from(rank) << self.uf_bits) | uf];
-                }
-                writer.write_all(&buffer)?;
-            }
-            if original % interval == 0 || original + 1 == rows.rank.len() {
-                report_table_io(report, &name, (original + 1) * CENTER3_COUNT, total);
-            }
+            writer.write_all(chunk)?;
+            done += chunk.len();
+            report_table_io(report, &name, done, total);
         }
         writer.flush()?;
         check_table_cancel(cancel)?;
@@ -993,11 +1122,183 @@ mod tests {
             }
             drop(file);
             assert_eq!(
-                indexing.load(Kind::Corner, &path, None, None).unwrap(),
+                indexing
+                    .load(Kind::Corner, &path, None, None)
+                    .unwrap()
+                    .table,
                 expected
             );
+            let reports = std::sync::Mutex::new(Vec::new());
+            let report = |event: PruningProgress| reports.lock().unwrap().push(event.name);
+            assert_eq!(
+                indexing
+                    .load_or_build(Kind::Corner, &path, 1, None, Some(&report))
+                    .unwrap(),
+                expected,
+            );
+            assert!(path.metadata().unwrap().len() < 4096);
+            assert!(
+                reports
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|name| name.starts_with("loading ") || name.starts_with("saving ")),
+                "migration must not regenerate the table"
+            );
+            let loaded = indexing.load(Kind::Corner, &path, None, None).unwrap();
+            assert!(!loaded.legacy);
+            assert_eq!(loaded.table, expected);
         }
         File::create(&path).unwrap().set_len(7).unwrap();
         assert!(indexing.load(Kind::Corner, &path, None, None).is_err());
+    }
+    struct TestCache(std::path::PathBuf);
+    impl TestCache {
+        fn new(label: &str) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!("fto-compact-{label}-{nonce}.prun")))
+        }
+    }
+    impl Drop for TestCache {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn compact_cache_round_trip_stores_only_compact_payload_and_mapping() {
+        for fixed_uf in [false, true] {
+            let indexing = fixture(fixed_uf);
+            for kind in [Kind::Edge, Kind::Corner] {
+                let path = TestCache::new("round-trip");
+                let expected = indexing.build_table(kind, 0, None, None).unwrap();
+                indexing.save(kind, &path.0, &expected, None, None).unwrap();
+                let metadata = read_table_metadata(&path.0).unwrap();
+                assert!(metadata.contains("storage=compact-v1\n"));
+                let expected_bytes = 20
+                    + metadata.len()
+                    + 2 * (indexing.row(kind).original.len() + indexing.uf.original.len())
+                    + expected.len();
+                assert_eq!(path.0.metadata().unwrap().len(), expected_bytes as u64);
+                assert!(expected_bytes < 4096);
+                let reports = std::sync::Mutex::new(Vec::new());
+                let report = |event: PruningProgress| {
+                    reports.lock().unwrap().push((event.reached, event.total))
+                };
+                let loaded = indexing.load(kind, &path.0, Some(&report), None).unwrap();
+                assert!(!loaded.legacy);
+                assert_eq!(loaded.table, expected);
+                assert_eq!(
+                    reports.lock().unwrap().last(),
+                    Some(&(expected.len(), expected.len()))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_cache_remaps_equivalent_coordinate_orders() {
+        let indexing = fixture(false);
+        let expected = indexing.build_table(Kind::Corner, 0, None, None).unwrap();
+        let path = TestCache::new("reordered");
+        indexing
+            .save(Kind::Corner, &path.0, &expected, None, None)
+            .unwrap();
+        let mut reordered = fixture(false);
+        reordered.corner = orbit(CORNER_COUNT, &[0, 37, 7]);
+        reordered.uf = orbit(CENTER3_COUNT, &[0, 37, 7]);
+        reordered.moves.reverse();
+        let loaded = reordered.load(Kind::Corner, &path.0, None, None).unwrap();
+        for row in [0, 7, 37, 3] {
+            for uf in [0, 7, 37, 3] {
+                let index = row * CENTER3_COUNT + uf;
+                assert_eq!(
+                    indexing.value(Kind::Corner, &expected, index),
+                    reordered.value(Kind::Corner, &loaded.table, index),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_cache_rejects_truncation_duplicate_mappings_and_unknown_versions() {
+        let indexing = fixture(false);
+        let expected = indexing.build_table(Kind::Corner, 0, None, None).unwrap();
+        let path = TestCache::new("invalid");
+        indexing
+            .save(Kind::Corner, &path.0, &expected, None, None)
+            .unwrap();
+        let original = std::fs::read(&path.0).unwrap();
+        let assert_invalid = |bytes: &[u8]| {
+            std::fs::write(&path.0, bytes).unwrap();
+            assert_eq!(
+                indexing
+                    .load(Kind::Corner, &path.0, None, None)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        };
+        assert_invalid(&original[..original.len() - 1]);
+        let mut bytes = original.clone();
+        let metadata_len = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+        let mapping = 20 + metadata_len;
+        bytes[mapping..mapping + 2].copy_from_slice(&7_u16.to_le_bytes());
+        assert_invalid(&bytes);
+        let mut bytes = original.clone();
+        let version = bytes
+            .windows(COMPACT_STORAGE.len())
+            .position(|w| w == COMPACT_STORAGE.as_bytes())
+            .unwrap();
+        bytes[version + COMPACT_STORAGE.len() - 1] = b'2';
+        assert_invalid(&bytes);
+        let mut bytes = original.clone();
+        bytes.extend_from_slice(&[0]);
+        assert_invalid(&bytes);
+    }
+
+    #[test]
+    fn cancelling_compact_cache_io_preserves_the_previous_file() {
+        let indexing = fixture(false);
+        let expected = indexing.build_table(Kind::Corner, 0, None, None).unwrap();
+        let path = TestCache::new("cancel");
+        indexing
+            .save(Kind::Corner, &path.0, &expected, None, None)
+            .unwrap();
+        let original = std::fs::read(&path.0).unwrap();
+        let cancel = AtomicBool::new(false);
+        let report = |event: PruningProgress| {
+            if event.reached > 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        };
+        assert_eq!(
+            indexing
+                .save(
+                    Kind::Corner,
+                    &path.0,
+                    &expected,
+                    Some(&report),
+                    Some(&cancel)
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(std::fs::read(&path.0).unwrap(), original);
+        cancel.store(false, Ordering::Relaxed);
+        assert_eq!(
+            indexing
+                .load(Kind::Corner, &path.0, Some(&report), Some(&cancel))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(std::fs::read(&path.0).unwrap(), original);
     }
 }

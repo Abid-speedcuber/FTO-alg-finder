@@ -951,6 +951,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fto-web"
+version = "0.1.0"
+dependencies = [
+ "fto-core",
+ "futures-executor",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

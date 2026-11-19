@@ -79,10 +79,22 @@ Options:
   --rpm           Build .rpm
   --pkg           Build .pkg.tar.zst (Arch)
   --appimage      Build AppImage
-  --all           Build all
+  --web           Build browser app into public/web (requires Emscripten + Rust nightly)
+  --all           Build all desktop packages
   --install-deps  Install deps
   --help          Show help
 HELP
+}
+
+build_web() {
+    log_info "Building browser app..."
+    cd "$MAIN_DIR"
+    npm run build:wasm
+    npm run check
+    # Vite owns this output directory; desktop dist/ remains a separate build.
+    npx vite build --mode web --outDir "$SCRIPT_DIR/public/web" --emptyOutDir
+    log_success "Browser app: $SCRIPT_DIR/public/web"
+    log_info "Serve over HTTPS with COOP/COEP headers; see main/WEB.md."
 }
 
 build_windows() {
@@ -169,9 +181,10 @@ PYRELEASE
 }
 
 main() {
-    local bw=false bl=false bdeb=false brpm=false bpkg=false bapp=false ideps=false
+    local bweb=false bw=false bl=false bdeb=false brpm=false bpkg=false bapp=false ideps=false
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --web) bweb=true ;;
             --windows) bw=true ;;
             --linux) bl=true ;;
             --deb) bdeb=true ;;
@@ -185,10 +198,11 @@ main() {
         esac
         shift
     done
-    if ! $bw && ! $bl && ! $bdeb && ! $brpm && ! $bpkg && ! $bapp && ! $ideps; then
+    if ! $bweb && ! $bw && ! $bl && ! $bdeb && ! $brpm && ! $bpkg && ! $bapp && ! $ideps; then
         show_help; exit 0
     fi
     mkdir -p "$OUTPUT_DIR"
+    if $bweb; then build_web; fi
     if $bw; then build_windows; fi
     if $bl || $bdeb || $brpm || $bpkg || $bapp; then build_linux_all; fi
     if $bw || $bl || $bdeb || $brpm || $bpkg || $bapp; then prepare_release_assets; fi

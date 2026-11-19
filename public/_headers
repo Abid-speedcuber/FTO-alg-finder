@@ -1,0 +1,13 @@
+/web/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+/web/wasm/*
+  Cache-Control: no-cache
+/web/solver-worker.js
+  Cache-Control: no-cache
+/web/coi-serviceworker.js
+  Cache-Control: no-cache
+/web/solver-storage.js
+  Cache-Control: no-cache
+/web/solver-storage-reader.js
+  Cache-Control: no-cache

@@ -11,3 +11,7 @@ builds/*
 
 # Local solver experiments, generated measurements and benchmark reports.
 /benchmarks/
+
+# Generated Emscripten runtime
+main/public/wasm/*
+public/web/

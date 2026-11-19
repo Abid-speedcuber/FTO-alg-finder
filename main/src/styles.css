@@ -2084,3 +2084,11 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
   .piece-dialog-footer { padding: 12px 16px; flex-wrap: wrap; }
   .piece-dialog-footer .modal-footer { margin-left: auto; }
 }
+
+/* Instance menus must escape the scrolling sidebar, including at app zoom. */
+.instance-menu-panel.floating-instance-menu {
+  position: fixed;
+  right: auto;
+  min-width: 0;
+  overflow-y: auto;
+}

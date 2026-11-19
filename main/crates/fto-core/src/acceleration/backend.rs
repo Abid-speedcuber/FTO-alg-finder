@@ -8,123 +8,123 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
-/// Compare the real bounded GPU expansion/readback path with parallel CPU expansion.
-/// No puzzle tables, disk caches, or application searches are needed.
+/// Paired production-kernel trials over several table sizes and move counts.
+/// Shader warm-up is discarded; timing includes upload, bounded dispatches,
+/// readback, and merging GPU discoveries into the host byte table.
 pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
     let measured = || -> Result<super::GpuBenchmark, String> {
         let gpu = Arc::new(Gpu::new()?);
-        let side = 4096_usize;
-        let moves = 12;
-        let total = side * side;
-        let workers = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .min(16);
-        let mut transitions = Vec::with_capacity(side * moves * 2);
-        for component in 0..2 {
-            for value in 0..side {
-                for mv in 0..moves {
-                    transitions
-                        .push(((value * (2 * mv + 1) + mv * 197 + component * 37) % side) as u32);
-                }
-            }
-        }
-        let input: Vec<_> = (0..65_536_u32).map(|i| (i * 997) % total as u32).collect();
-        let mut visited = vec![0_u32; total.div_ceil(32)];
-        for &index in &input {
-            visited[index as usize / 32] |= 1 << (index % 32);
-        }
-        super::check_host_allocation((total * 2 + 4 * 1024 * 1024) as u64)?;
-        // Match the CPU table representation, not the GPU's compact visited bitset.
-        let cpu: Vec<_> = (0..total)
-            .map(|_| std::sync::atomic::AtomicU8::new(255))
-            .collect();
-        let mut sequential = vec![255_u8; total];
-        for &index in &input {
-            cpu[index as usize].store(0, Ordering::Relaxed);
-            sequential[index as usize] = 0;
-        }
-        let mut engine = PruningCompute::new(
-            gpu.clone(),
-            &[side as u32, side as u32],
-            &transitions,
-            &visited,
-            moves,
-        )?
-        .ok_or("GPU cannot fit the calibration workspace")?;
-        let mut cpu_rates = Vec::new();
-        let mut gpu_rates = Vec::new();
-        // First batch warms shader/driver and CPU caches; three batches determine the result.
-        for (round, sample) in input.chunks(16_384).enumerate() {
-            let started = Instant::now();
-            let mut expected = std::thread::scope(|scope| {
-                let handles: Vec<_> = sample
-                    .chunks(sample.len().div_ceil(workers))
-                    .map(|chunk| {
-                        let cpu = &cpu;
-                        let transitions = &transitions;
-                        scope.spawn(move || {
-                            let mut discoveries = Vec::new();
-                            for &index in chunk {
-                                let a = index as usize / side;
-                                let b = index as usize % side;
-                                for mv in 0..moves {
-                                    let child = transitions[a * moves + mv] as usize * side
-                                        + transitions[(side + b) * moves + mv] as usize;
-                                    if cpu[child]
-                                        .compare_exchange(
-                                            255,
-                                            0,
-                                            Ordering::Relaxed,
-                                            Ordering::Relaxed,
-                                        )
-                                        .is_ok()
-                                    {
-                                        discoveries.push(child as u32);
-                                    }
-                                }
-                            }
-                            discoveries
-                        })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap())
-                    .collect::<Vec<_>>()
-            });
-            let parallel_time = started.elapsed();
-            let started = Instant::now();
-            let mut serial_expected = Vec::new();
-            for &index in sample {
-                let a = index as usize / side;
-                let b = index as usize % side;
-                for mv in 0..moves {
-                    let child = transitions[a * moves + mv] as usize * side
-                        + transitions[(side + b) * moves + mv] as usize;
-                    if sequential[child] == 255 {
-                        sequential[child] = 0;
-                        serial_expected.push(child as u32);
+        let workers = std::thread::available_parallelism().map_or(1, usize::from);
+        const WARMUP: usize = 2;
+        const MIN_TRIALS: usize = 7;
+        const MAX_TRIALS: usize = 11;
+        let workloads = [
+            (4096_usize, 6_usize, 16_384_usize),
+            (8192, 12, 32_768),
+            (8192, 24, 65_536),
+        ];
+        let mut wins = 0;
+        let mut samples = 0;
+        let mut discoveries = 0_usize;
+        let mut cpu_total = Duration::ZERO;
+        let mut gpu_total = Duration::ZERO;
+        for (workload, (side, moves, frontier)) in workloads.into_iter().enumerate() {
+            let total = side * side;
+            super::check_host_allocation((total * 3 + 32 * 1024 * 1024) as u64)?;
+            let mut transitions = Vec::with_capacity(side * moves * 2);
+            for component in 0..2 {
+                for value in 0..side {
+                    for mv in 0..moves {
+                        transitions.push(
+                            ((value * (2 * mv + 1) + mv * 197 + component * 37) % side) as u32,
+                        );
                     }
                 }
             }
-            let cpu_time = parallel_time.min(started.elapsed());
-            let (mut actual, gpu_time) = engine.expand(sample, None)?;
-            expected.sort_unstable();
-            actual.sort_unstable();
-            serial_expected.sort_unstable();
-            if actual != expected || actual != serial_expected {
-                return Err("GPU calibration produced different results from the CPU".into());
+            let mut seed = 0x7192_3871_u32;
+            let input: Vec<_> = (0..frontier * (WARMUP + MAX_TRIALS))
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed % total as u32
+                })
+                .collect();
+            let mut visited = vec![0_u32; total.div_ceil(32)];
+            let cpu: Vec<_> = (0..total)
+                .map(|_| std::sync::atomic::AtomicU8::new(255))
+                .collect();
+            let mut sequential = vec![255_u8; total];
+            let mut gpu_host = vec![255_u8; total];
+            for &index in &input {
+                visited[index as usize / 32] |= 1 << (index % 32);
+                cpu[index as usize].store(0, Ordering::Relaxed);
+                sequential[index as usize] = 0;
+                gpu_host[index as usize] = 0;
             }
-            if round > 0 {
-                cpu_rates.push(expected.len() as f64 / cpu_time.as_secs_f64().max(1e-9));
-                gpu_rates.push(actual.len() as f64 / gpu_time.as_secs_f64().max(1e-9));
+            let mut engine = PruningCompute::new(
+                gpu.clone(),
+                &[side as u32, side as u32],
+                &transitions,
+                &visited,
+                moves,
+            )?
+            .ok_or("GPU cannot fit the calibration workspace")?;
+            let mut speedups = Vec::new();
+            let measured_at = Instant::now();
+            for (round, sample) in input.chunks(frontier).enumerate() {
+                // Alternating order avoids consistently favoring whichever runs
+                // second, or running every CPU sample before every GPU sample.
+                let (expected, cpu_time, mut actual, gpu_time) = if (round + workload) % 2 == 0 {
+                    let cpu_result = calibration_cpu(
+                        sample,
+                        side,
+                        moves,
+                        workers,
+                        &transitions,
+                        &cpu,
+                        &mut sequential,
+                    )?;
+                    let gpu_result = calibration_gpu(&mut engine, sample, &mut gpu_host)?;
+                    (cpu_result.0, cpu_result.1, gpu_result.0, gpu_result.1)
+                } else {
+                    let gpu_result = calibration_gpu(&mut engine, sample, &mut gpu_host)?;
+                    let cpu_result = calibration_cpu(
+                        sample,
+                        side,
+                        moves,
+                        workers,
+                        &transitions,
+                        &cpu,
+                        &mut sequential,
+                    )?;
+                    (cpu_result.0, cpu_result.1, gpu_result.0, gpu_result.1)
+                };
+                actual.sort_unstable();
+                if expected != actual {
+                    return Err("GPU calibration produced different results from the CPU".into());
+                }
+                if round >= WARMUP && !expected.is_empty() {
+                    speedups.push(cpu_time.as_secs_f64() / gpu_time.as_secs_f64().max(1e-9));
+                    discoveries += expected.len();
+                    samples += 1;
+                    cpu_total += cpu_time;
+                    gpu_total += gpu_time;
+                }
+                if speedups.len() >= MIN_TRIALS
+                    && measured_at.elapsed() >= Duration::from_millis(250)
+                {
+                    break;
+                }
+            }
+            if super::consistent_gpu_speedup(&speedups) {
+                wins += 1;
             }
         }
-        cpu_rates.sort_by(f64::total_cmp);
-        gpu_rates.sort_by(f64::total_cmp);
-        let cpu_rate = cpu_rates[1];
-        let gpu_rate = gpu_rates[1];
-        let eligible = gpu_rate > cpu_rate * 1.1;
+        let cpu_rate = discoveries as f64 / cpu_total.as_secs_f64().max(1e-9);
+        let gpu_rate = discoveries as f64 / gpu_total.as_secs_f64().max(1e-9);
+        let speedup = gpu_rate / cpu_rate.max(1e-9);
+        let eligible = wins >= 2 && gpu_rate > cpu_rate * super::GPU_STARTUP_MIN_SPEEDUP;
         Ok(super::GpuBenchmark {
             eligible,
             adapter: gpu.name.clone(),
@@ -132,14 +132,107 @@ pub(super) fn benchmark_pruning() -> super::GpuBenchmark {
             gpu_nodes_per_second: gpu_rate,
             cpu_workers: workers,
             message: if eligible {
-                "GPU acceleration was faster in the startup comparison."
+                format!(
+                    "GPU passed {wins}/3 startup workloads ({samples} paired samples, {speedup:.2}× aggregate throughput). Each table build checks again; small tables use CPU."
+                )
             } else {
-                "CPU generation was faster in the startup comparison. GPU acceleration is disabled."
-            }
-            .into(),
+                format!(
+                    "CPU is preferred: GPU did not show a repeatable 25% advantage across startup workloads ({wins}/3 passed, {samples} paired samples)."
+                )
+            },
         })
     };
     measured().unwrap_or_else(super::GpuBenchmark::unavailable)
+}
+
+fn calibration_cpu(
+    sample: &[u32],
+    side: usize,
+    moves: usize,
+    workers: usize,
+    transitions: &[u32],
+    cpu: &[std::sync::atomic::AtomicU8],
+    sequential: &mut [u8],
+) -> Result<(Vec<u32>, Duration), String> {
+    let started = Instant::now();
+    let mut expected = std::thread::scope(|scope| {
+        let handles: Vec<_> = sample
+            .chunks(sample.len().div_ceil(workers))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut discoveries = Vec::new();
+                    for &index in chunk {
+                        let a = index as usize / side;
+                        let b = index as usize % side;
+                        for mv in 0..moves {
+                            let child = transitions[a * moves + mv] as usize * side
+                                + transitions[(side + b) * moves + mv] as usize;
+                            if cpu[child]
+                                .compare_exchange(255, 0, Ordering::Relaxed, Ordering::Relaxed)
+                                .is_ok()
+                            {
+                                discoveries.push(child as u32);
+                            }
+                        }
+                    }
+                    discoveries
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let parallel_time = started.elapsed();
+    let started = Instant::now();
+    let mut serial_expected = Vec::new();
+    for &index in sample {
+        let a = index as usize / side;
+        let b = index as usize % side;
+        for mv in 0..moves {
+            let child = transitions[a * moves + mv] as usize * side
+                + transitions[(side + b) * moves + mv] as usize;
+            if sequential[child] == 255 {
+                sequential[child] = 0;
+                serial_expected.push(child as u32);
+            }
+        }
+    }
+    // Compare against the faster CPU implementation, including its allocations.
+    let elapsed = parallel_time.min(started.elapsed());
+    expected.sort_unstable();
+    serial_expected.sort_unstable();
+    if expected != serial_expected {
+        return Err("CPU calibration implementations disagree".into());
+    }
+    Ok((expected, elapsed))
+}
+
+fn calibration_gpu(
+    engine: &mut PruningCompute,
+    sample: &[u32],
+    host: &mut [u8],
+) -> Result<(Vec<u32>, Duration), String> {
+    let started = Instant::now();
+    let mut actual = Vec::new();
+    let mut offset = 0;
+    while offset < sample.len() {
+        let end = (offset + engine.capacity()).min(sample.len());
+        let (found, _) = engine.expand(&sample[offset..end], None)?;
+        for &index in &found {
+            let value = host
+                .get_mut(index as usize)
+                .ok_or("GPU calibration returned an invalid index")?;
+            if *value != 255 {
+                return Err("GPU calibration returned a duplicate discovery".into());
+            }
+            *value = 0;
+        }
+        actual.extend(found);
+        offset = end;
+    }
+    Ok((actual, started.elapsed()))
 }
 
 pub(crate) struct Gpu {
@@ -560,9 +653,9 @@ impl Gpu {
         let mut frontier_count = 1;
         let mut calibrated = super::forced();
         super::log(&format!(
-            "generating {name} on {} (GPU BFS working set {:.1} MiB)",
+            "generating {name} on {} (GPU BFS working set {})",
             self.name,
-            (bit_bytes * 3 + transition_bytes + 4 * 1024 * 1024) as f64 / 1048576.
+            crate::format_bytes(bit_bytes * 3 + transition_bytes + 4 * 1024 * 1024)
         ));
         for depth in 0..254_u8 {
             active(cancel)?;
@@ -783,9 +876,9 @@ impl PruningCompute {
         let mut batch = BatchSize::new(&gpu, capacity);
         batch.items = 4096.min(capacity);
         super::log(&format!(
-            "generation backend: GPU; {} (GPU BFS working set {:.1} MiB)",
+            "generation backend: GPU; {} (GPU BFS working set {})",
             gpu.name,
-            (bit_bytes + output_bytes * 2 + transition_bytes) as f64 / 1048576.
+            crate::format_bytes(bit_bytes + output_bytes * 2 + transition_bytes)
         ));
         Ok(Some(Self {
             gpu,
@@ -976,14 +1069,11 @@ impl BloomCompute {
             gpu.name,
             tail_depth,
             if resident {
-                format!(
-                    "GPU-resident {:.1} MiB filter",
-                    filter_bytes as f64 / 1048576.
-                )
+                format!("GPU-resident {} filter", crate::format_bytes(filter_bytes))
             } else {
                 format!(
-                    "system-RAM filter, bounded {:.1} MiB transfer buffers",
-                    output_bytes as f64 / 1048576.
+                    "system-RAM filter, bounded {} transfer buffers",
+                    crate::format_bytes(output_bytes)
                 )
             }
         ));

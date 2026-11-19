@@ -127,8 +127,9 @@ impl<'a> TemporaryTables<'a> {
                 app,
                 "info",
                 &format!(
-                    "building temporary pruning for {} (table budget {budget} MiB)",
-                    format_move_list(allowed)
+                    "building temporary pruning for {} (table budget {})",
+                    format_move_list(allowed),
+                    format_bytes(u64::from(budget) * MIB)
                 ),
             );
             &self.root
@@ -362,7 +363,7 @@ fn prepare_partial_tables(
     fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     // Bring compatible saved tables into the owned namespace without altering them.
     // Hard links avoid copying large files when both locations share a filesystem.
-    let plan = match partial_goal::plan(mask, tables, workspace as usize, Some(cancel)) {
+    let plan = match partial_goal::plan(mask, tables, workspace.min(isize::MAX as u64) as usize, Some(cancel)) {
         Ok(plan) => plan,
         Err(error) if cancel.load(Ordering::Relaxed) => return Err(error),
         Err(error) => {
@@ -466,9 +467,9 @@ fn prepare_partial_tables(
         log(
             "info",
             &format!(
-                "preparing shared partial pruning: {} ({:.1} MiB)",
+                "preparing shared partial pruning: {} ({})",
                 plan.spec.name(),
-                plan.entries as f64 / MIB as f64
+                format_bytes(plan.entries as u64)
             ),
         );
         match partial_goal::generate(
@@ -505,7 +506,7 @@ fn prepare_partial_tables(
         let meta = partial_goal::metadata(&plan, mask, moves, Some(depth));
         log(
             "info",
-            &format!("trying temporary partial Bloom depth {depth} ({cap} MiB filter cap)"),
+            &format!("trying temporary partial Bloom depth {depth} ({} filter cap)", format_bytes(u64::from(cap) * MIB)),
         );
         match partial_goal::generate_with_reached_depth(
             &plan,
@@ -572,7 +573,7 @@ fn grow_bloom(
         }
         log(
             "info",
-            &format!("trying temporary Bloom depth {depth}, {cap} MiB filter cap"),
+            &format!("trying temporary Bloom depth {depth}, {} filter cap", format_bytes(u64::from(cap) * MIB)),
         );
         let progress = |p: &fto_core::bloom::BloomProgress| {
             log(

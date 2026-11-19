@@ -9,7 +9,7 @@ use std::{
 };
 
 use fto_core::{
-    FtoCubie,
+    FtoCubie, format_bytes,
     moves::Move,
     partial::{self, PartialMask, PartialProblem},
     pruning::{
@@ -272,9 +272,9 @@ fn run() -> Result<(), String> {
         };
         for candidate in candidates {
             eprintln!(
-                "evaluating {} ({:.1} MiB table)",
+                "evaluating {} ({} table)",
                 candidate.name(),
-                candidate.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+                format_bytes(candidate.size().unwrap_or(0) as u64)
             );
             match pruning::evaluate_candidate_with_progress(
                 &candidate,
@@ -297,11 +297,11 @@ fn run() -> Result<(), String> {
         eprintln!("best by average depth:");
         for stat in stats.iter().take(10) {
             eprintln!(
-                "{}: avg {:.3}, max {}, {:.1} MiB, reached {}",
+                "{}: avg {:.3}, max {}, {}, reached {}",
                 stat.name,
                 f64::from(stat.average_depth_milli) / 1000.0,
                 stat.max_depth,
-                stat.table_bytes as f64 / (1024.0 * 1024.0),
+                format_bytes(stat.table_bytes as u64),
                 stat.reached
             );
         }
@@ -313,12 +313,12 @@ fn run() -> Result<(), String> {
         eprintln!("best by average-depth per MiB:");
         for stat in stats.iter().take(10) {
             eprintln!(
-                "{}: roi {:.3}, avg {:.3}, max {}, {:.1} MiB",
+                "{}: roi {:.3}, avg {:.3}, max {}, {}",
                 stat.name,
                 roi_milli(stat) as f64 / 1000.0,
                 f64::from(stat.average_depth_milli) / 1000.0,
                 stat.max_depth,
-                stat.table_bytes as f64 / (1024.0 * 1024.0),
+                format_bytes(stat.table_bytes as u64),
             );
         }
         return Ok(());
@@ -412,9 +412,9 @@ fn run() -> Result<(), String> {
         let start = Instant::now();
         let mini = MiniPruning::build_restricted(&tables, &allowed_moves);
         eprintln!(
-            "using {} restricted mini pruning tables ({:.1} MiB, built in {:.3}s)",
+            "using {} restricted mini pruning tables ({}, built in {:.3}s)",
             mini.len(),
-            mini.bytes() as f64 / (1024.0 * 1024.0),
+            format_bytes(mini.bytes() as u64),
             start.elapsed().as_secs_f64()
         );
         Some(mini)
@@ -1075,9 +1075,9 @@ fn load_ll_pattern_pruning(
     for spec in specs {
         let path = ll_dir.join(format!("{}_{move_code}.prun", file_safe_name(&spec.name())));
         eprintln!(
-            "loading/building LL pruning table {} ({:.1} MiB)",
+            "loading/building LL pruning table {} ({})",
             spec.name(),
-            spec.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+            format_bytes(spec.size().unwrap_or(0) as u64)
         );
         databases.push(PatternDatabase::load_or_build_with_moves_reporting(
             spec,
@@ -1091,13 +1091,13 @@ fn load_ll_pattern_pruning(
         )?);
     }
     eprintln!(
-        "using LL pruning tables: {} ({:.1} MiB)",
+        "using LL pruning tables: {} ({})",
         databases
             .iter()
             .map(PatternDatabase::name)
             .collect::<Vec<_>>()
             .join(" / "),
-        databases.iter().map(PatternDatabase::bytes).sum::<usize>() as f64 / (1024.0 * 1024.0)
+        format_bytes(databases.iter().map(PatternDatabase::bytes).sum::<usize>() as u64)
     );
     Ok(PatternDatabases::new(databases))
 }
@@ -1357,13 +1357,13 @@ fn load_solver_pruning(
         threads,
     )?;
     eprintln!(
-        "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({:.1} MiB)",
+        "using 2 pruning tables: edge3+uf3 / corner+uf3 built with moves: {} ({})",
         target
             .iter()
             .map(|mv| format!("{mv:?}"))
             .collect::<Vec<_>>()
             .join(" "),
-        pruning.total_bytes() as f64 / (1024.0 * 1024.0)
+        format_bytes(pruning.total_bytes() as u64)
     );
     Ok(pruning)
 }
@@ -1596,9 +1596,9 @@ fn run_auto_pruning(
 
     let candidates = pruning::generated_candidates(max_components, max_entries);
     eprintln!(
-        "auto pruning: {} candidates, cap {:.1} MiB, output {}",
+        "auto pruning: {} candidates, cap {}, output {}",
         candidates.len(),
-        max_entries as f64 / (1024.0 * 1024.0),
+        format_bytes(max_entries as u64),
         out_dir.display()
     );
 
@@ -1607,9 +1607,9 @@ fn run_auto_pruning(
         let name = candidate.name();
         let path = out_dir.join(format!("{}.pdb", file_safe_name(&name)));
         eprintln!(
-            "building {} ({:.1} MiB)",
+            "building {} ({})",
             name,
-            candidate.size().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+            format_bytes(candidate.size().unwrap_or(0) as u64)
         );
         let stats = pruning::build_and_save_candidate(
             &candidate,
@@ -1694,11 +1694,11 @@ fn run_auto_pruning(
     eprintln!("best sampled combinations:");
     for summary in summaries.iter().take(20) {
         eprintln!(
-            "{}: avg max {:.3}, max {}, {:.1} MiB",
+            "{}: avg max {:.3}, max {}, {}",
             summary.names.join(" / "),
             summary.avg_max_milli as f64 / 1000.0,
             summary.max_seen,
-            summary.total_bytes as f64 / (1024.0 * 1024.0)
+            format_bytes(summary.total_bytes as u64)
         );
     }
     if keep_all_pdbs {

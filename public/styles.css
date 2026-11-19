@@ -823,3 +823,6 @@ body.preview-open {
     scroll-behavior: auto;
   }
 }
+
+.web-alternative { margin-top: 2rem; text-align: center; }
+.web-alternative small { display: inline-block; margin-top: .75rem; opacity: .7; }

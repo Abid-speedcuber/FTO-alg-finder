@@ -264,3 +264,13 @@ test('algorithm input mode persists and resets text progress while preserving vi
   assert.equal(rows[1][14], 'alg'); assert.equal(rows[2][14], 'Visual');
   assert.throws(() => parseProject(JSON.stringify({...p, settings:{...p.settings,inputMode:'bad'}})));
 });
+
+test('thread counts above 1024 survive project saves; non-integers are rejected', () => {
+  const project = createProject(['U'], ['U']);
+  project.settings.threads = 2048;
+  assert.equal(parseProject(JSON.stringify(project)).settings.threads, 2048);
+  for (const threads of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    project.settings.threads = threads;
+    assert.throws(() => parseProject(JSON.stringify(project)), /Invalid batch project/);
+  }
+});

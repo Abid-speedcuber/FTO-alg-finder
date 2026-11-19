@@ -199,15 +199,15 @@ impl<'a> PreparedPartialSearch<'a> {
         pruning.build_transitions(MAX_DYNAMIC_TRANSITION_BYTES);
         if coordinate_pruning.len() > 0 {
             eprintln!(
-                "using {} dedicated partial pattern tables ({:.1} MiB)",
+                "using {} dedicated partial pattern tables ({})",
                 coordinate_pruning.len(),
-                coordinate_pruning.total_bytes() as f64 / 1048576.
+                crate::format_bytes(coordinate_pruning.total_bytes() as u64)
             );
         }
         eprintln!(
-            "partial pruning: {} piece tables, {:.1} MiB",
+            "partial pruning: {} piece tables, {}",
             pruning.tables.len(),
-            pruning.bytes() as f64 / 1048576.
+            crate::format_bytes(pruning.bytes() as u64)
         );
         for table in &pruning.tables {
             eprintln!("  {}", table.name());
@@ -994,8 +994,8 @@ impl DynamicPruning {
             used += bytes;
         }
         eprintln!(
-            "built dynamic partial transition tables ({:.1} MiB)",
-            used as f64 / (1024.0 * 1024.0)
+            "built dynamic partial transition tables ({})",
+            crate::format_bytes(used as u64)
         );
     }
 }
@@ -1261,14 +1261,14 @@ impl DynamicTable {
             DynamicKind::Edge => "partial-edge",
         };
         format!(
-            "{}({}) {:.1} MiB",
+            "{}({}) {}",
             prefix,
             self.pieces
                 .iter()
                 .map(u8::to_string)
                 .collect::<Vec<_>>()
                 .join(","),
-            self.table.len() as f64 / (1024.0 * 1024.0)
+            crate::format_bytes(self.table.len() as u64)
         )
     }
 

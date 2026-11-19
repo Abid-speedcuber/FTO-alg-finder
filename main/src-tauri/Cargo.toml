@@ -1,5 +1,6 @@
 [package]
 name = "optimal-fto-solver-app"
+default-run = "optimal-fto-solver-app"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
@@ -8,11 +9,24 @@ license = "GPL-3.0-or-later"
 name = "optimal_fto_solver_app"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "optimal-fto-solver-app"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop", "gpu"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+gpu = ["fto-core/gpu"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-fto-core = { path = "../crates/fto-core" }
+fto-core = { path = "../crates/fto-core", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = [], optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("browser"))'] }

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen } from "./platform";
 
 export const GPU_KEY = "fto.gpuAcceleration.v1";
 export type GpuProfile = { eligible: boolean; adapter: string; cpuNodesPerSecond: number; gpuNodesPerSecond: number; cpuWorkers: number; message: string };
@@ -41,7 +40,7 @@ export default function useGpuAcceleration() {
   }
   function resetGpu() { setPreference(null); setProfile(null); setSettingsMessage(""); setProfileRevision(r => r+1); }
   const explanation = settingsMessage || (!profile ? "Checking CPU and GPU performance…" : !profile.eligible
-    ? profile.adapter ? "CPU generation was faster on this hardware. GPU acceleration is disabled." : "GPU acceleration is unavailable on this hardware."
-    : "GPU generation was faster in the startup comparison. You can turn it off here.");
+    ? profile.message || (profile.adapter ? "CPU generation was faster on this hardware. GPU acceleration is disabled." : "GPU acceleration is unavailable on this hardware.")
+    : profile.message || "GPU passed the startup samples. Each table build checks performance again.");
   return { useGpu, profile, generationStatus, setGenerationStatus, switchPending, explanation, changeGpu, resetGpu };
 }

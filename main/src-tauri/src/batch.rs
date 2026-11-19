@@ -337,7 +337,7 @@ fn execute_wave<T: Send>(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) async fn export_batch_file(
     app: AppHandle,
     name: String,
@@ -408,12 +408,12 @@ fn write_export(
     Err("Too many exports with this name. Rename the project and try again.".into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) fn batch_status(state: tauri::State<'_, BatchState>) -> bool {
     state.active.load(Ordering::SeqCst)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) async fn pause_batch(
     state: tauri::State<'_, BatchState>,
     solver: tauri::State<'_, SolverState>,
@@ -431,7 +431,7 @@ pub(super) async fn pause_batch(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) async fn start_batch(
     request: Request,
     solver: tauri::State<'_, SolverState>,
@@ -441,8 +441,8 @@ pub(super) async fn start_batch(
     if request.cases.is_empty() {
         return Err("Add at least one case.".into());
     }
-    if request.threads == 0 || request.threads > 1024 {
-        return Err("Threads must be between 1 and 1024.".into());
+    if request.threads == 0 {
+        return Err("Threads must be at least 1.".into());
     }
     if parse_move_names(&request.allowed_moves)?.is_empty() {
         return Err("Select at least one move.".into());

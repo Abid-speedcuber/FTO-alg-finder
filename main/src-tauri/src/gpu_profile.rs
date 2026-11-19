@@ -1,7 +1,7 @@
 //! Startup calibration is shared by startup and UI requests and cached per hardware/driver.
 use super::*;
 use fto_core::acceleration::{self, GpuBenchmark};
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredProfile {
     version: u32,
@@ -21,7 +21,8 @@ fn valid(record: &StoredProfile, fingerprint: &str) -> bool {
         && (!record.benchmark.eligible
             || (record.benchmark.cpu_nodes_per_second > 0.
                 && record.benchmark.gpu_nodes_per_second
-                    > record.benchmark.cpu_nodes_per_second * 1.1))
+                    > record.benchmark.cpu_nodes_per_second
+                        * acceleration::GPU_STARTUP_MIN_SPEEDUP))
 }
 fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -84,7 +85,7 @@ fn calibrate(app: &AppHandle) -> Result<GpuBenchmark, String> {
         .map_err(|_| "GPU profile lock poisoned")? = Some(record);
     Ok(result)
 }
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) async fn get_gpu_profile(app: AppHandle) -> Result<GpuBenchmark, String> {
     tauri::async_runtime::spawn_blocking(move || calibrate(&app))
         .await
@@ -156,6 +157,12 @@ mod tests {
         };
         assert!(valid(&record, "cpu/gpu/driver"));
         assert!(!valid(&record, "new-driver"));
+        record.benchmark.gpu_nodes_per_second = 118.;
+        assert!(!valid(&record, "cpu/gpu/driver"), "a marginal 18% win must not enable GPU");
+        record.version = 2;
+        record.benchmark.gpu_nodes_per_second = 200.;
+        assert!(!valid(&record, "cpu/gpu/driver"), "old shallow calibrations must expire");
+        record.version = VERSION;
         record.benchmark.gpu_nodes_per_second = 50.;
         assert!(!valid(&record, "cpu/gpu/driver"));
         record.benchmark = GpuBenchmark::unavailable("No adapter");

@@ -1,6 +1,9 @@
+import { formatBytes } from "./formatBytes";
+import { progressKey, progressPercent as pruningProgressPercent } from "./solverProgress";
+import FloatingMenu from "./FloatingMenu";
+import BrowserStorage from "./BrowserStorage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen } from "./platform";
 import Pickr from "@simonwep/pickr";
 import "@simonwep/pickr/dist/themes/nano.min.css";
 import wcaLogo from "./assets/wca.svg";
@@ -265,14 +268,6 @@ function nextInstanceName(instances: Instance[]): string {
     index += 1;
   }
   return `Instance ${index}`;
-}
-
-function pruningProgressPercent(text: string): number {
-  const match = text.match(/\((\d+(?:\.\d+)?)%\)/);
-  if (!match) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, Number(match[1])));
 }
 
 function pruningProgressName(text: string): string {
@@ -680,6 +675,7 @@ function App() {
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [howToOpen, setHowToOpen] = useState(false);
   const appMenuButton = useRef<HTMLButtonElement>(null);
+  const instanceMenuButton = useRef<HTMLButtonElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pruningOpen, setPruningOpen] = useState(false);
   const [pruningKind, setPruningKind] = useState<"pattern" | "bloom">("pattern");
@@ -941,6 +937,11 @@ function App() {
     }
     const id = ++lineId.current;
     setTerminal((lines) => {
+      const previous = lines[lines.length - 1];
+      if (kind === "progress" && isProgressLine(text) && previous?.kind === "progress"
+          && progressKey(previous.text) === progressKey(text)) {
+        return [...lines.slice(0, -1), { ...previous, text, createdAt }];
+      }
       const next = [...lines, { id, kind, text, createdAt }];
       return next.length > 500 ? next.slice(next.length - 500) : next;
     });
@@ -1286,7 +1287,7 @@ function App() {
     setResult(null);
     resetPruningTimer();
     clearTerminal();
-    appendLine("info", `generate ${bloomLastLayer ? "last-layer " : ""}Bloom table (depth=${bloomDepth} moves=${bloomMoves.join(" ")} cap=${bloomMemory} MiB)`);
+    appendLine("info", `generate ${bloomLastLayer ? "last-layer " : ""}Bloom table (depth=${bloomDepth} moves=${bloomMoves.join(" ")} cap=${formatBytes(Number(bloomMemory) * 1024 * 1024)})`);
     try {
       await invoke("generate_bloom_table", {
         request: { useGpu, moves: bloomMoves, depth: Number(bloomDepth), maxMemoryMib: Number(bloomMemory), lastLayerMode: bloomLastLayer, facelets: bloomGoal?.facelets ?? null, centerTargets: bloomGoal?.centerTargets ?? null, partialMemoryMib: Number(partialMemory) },
@@ -1577,6 +1578,7 @@ function App() {
             >
               Manage storage
             </button>
+            <BrowserStorage />
             <button className="danger" onClick={() => setResetConfirmOpen(true)}>
               Reset all app data
             </button>
@@ -1655,7 +1657,7 @@ function App() {
                     <div>
                       <div className="storage-title">{table.codename}</div>
                       <div className="storage-sub">
-                        {rotateAlgorithm(table.moves.join(" "), executionHold)} · {(table.bytes / (1024 * 1024)).toFixed(1)} MiB
+                        {rotateAlgorithm(table.moves.join(" "), executionHold)} · {formatBytes(table.bytes)}
                       </div>
                     </div>
                     <button className="secondary" onClick={() => setDeleteTableConfirm(table)}>
@@ -1682,7 +1684,7 @@ function App() {
               <div>
                 <div className="storage-title">{deleteTableConfirm.codename}</div>
                 <div className="storage-sub">
-                  {rotateAlgorithm(deleteTableConfirm.moves.join(" "), executionHold)} · {(deleteTableConfirm.bytes / (1024 * 1024)).toFixed(1)} MiB
+                  {rotateAlgorithm(deleteTableConfirm.moves.join(" "), executionHold)} · {formatBytes(deleteTableConfirm.bytes)}
                 </div>
               </div>
             </div>
@@ -1916,7 +1918,7 @@ function App() {
                     <div className="terminal-placeholder">solutions and solver logs will appear here</div>
                   ) : (
                     displayTerminal.map((line) => (
-                      <div key={line.id} className={`terminal-line terminal-${line.kind}`}>
+                      <div key={line.kind === "progress" && !showDebugInfo ? progressKey(line.text) : line.id} className={`terminal-line terminal-${line.kind}`}>
                         {line.kind === "solution" ? rotateAlgorithm(line.text, executionHold) : line.text}
                         {line.kind === "progress" ? (
                           <div className="terminal-progress-track">
@@ -1939,14 +1941,12 @@ function App() {
           <section className="tool-section">
             <div className="section-heading">
               <div className="instance-menu panel-instance-menu">
-                <button className="instance-trigger" onClick={() => setMenuOpen((open) => !open)}>
+                <button ref={instanceMenuButton} className="instance-trigger" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
                   <span className="instance-trigger-name">{activeInstance.name}</span>
                   <span className="instance-caret">▾</span>
                 </button>
                 {menuOpen ? (
-                  <>
-                    <div className="menu-backdrop" onClick={closeOverlays} />
-                    <div className="instance-menu-panel">
+                  <FloatingMenu anchor={instanceMenuButton} onClose={closeOverlays}>
                       <div className="instance-menu-label">Instances</div>
                       {instances.map((instance) => (
                         <button
@@ -1974,8 +1974,7 @@ function App() {
                       >
                         + New instance
                       </button>
-                    </div>
-                  </>
+                  </FloatingMenu>
                 ) : null}
               </div>
               <div className="mini-actions">

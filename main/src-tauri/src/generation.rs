@@ -118,7 +118,7 @@ pub(super) fn with_gpu_generation<T>(
     )
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub(super) fn set_generation_gpu(
     enabled: bool,
     state: tauri::State<'_, SolverState>,

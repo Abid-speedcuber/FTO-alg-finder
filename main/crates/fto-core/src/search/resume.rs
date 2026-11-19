@@ -276,7 +276,7 @@ pub(crate) fn run<K: Kernel>(
     if config.min_depth != config.max_depth || config.allowed_moves.len() > MOVE_COUNT {
         return Err("Resumable searches require one exact depth and unique allowed moves.".into());
     }
-    let threads = threads.clamp(1, 1024);
+    let threads = threads.max(1);
     let mut moves = HashSet::new();
     if config.allowed_moves.iter().any(|m| !moves.insert(*m)) {
         return Err("Allowed moves must be unique.".into());
@@ -293,7 +293,7 @@ pub(crate) fn run<K: Kernel>(
     let stop = AtomicBool::new(false);
     let mut nodes = 0_u64;
     // Partition only until there are enough jobs, without materializing a tree.
-    let target = threads.clamp(1, 1024).saturating_mul(4);
+    let target = threads.saturating_mul(4);
     while threads > 1
         && !jobs.is_empty()
         && jobs.len() < target

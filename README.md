@@ -75,6 +75,17 @@ so a multi-GiB filter does not require matching VRAM. This is a scheduling targe
 limit. The option can be disabled to force CPU generation. Cache contents and
 search results are independent of the generation backend.
 
+Startup calibration uses three table-size/move-count workloads, two warm-up rounds,
+and 7–11 paired measurements per workload. CPU/GPU order alternates; the CPU
+baseline uses its faster serial or parallel implementation, and GPU timing includes
+upload, bounded dispatch, readback and host-table merging. Eligibility requires a
+repeatable advantage on at least two workloads and over 25% aggregate throughput
+gain. This is a routing hint: actual table builds still compare their own workload.
+Old calibration versions are invalidated automatically.
+
+Size readouts choose B, KiB, MiB or GiB as appropriate, including storage dialogs
+and solver logs. Memory-budget inputs explicitly labelled MiB keep that unit.
+
 Hardware parity tests (require the existing transition cache and a GPU):
 
 ```sh
@@ -198,7 +209,7 @@ Alg combiner:
 - Search cost rises quickly as the allowed move set grows.
 - Search cost also rises quickly as the requested depth increases.
 - The pruning table is large. Searches can require substantial memory and disk cache.
-- Restricted solver tables use compact coordinate orbits when they substantially reduce RAM. Move tables precompute compact pruning indices, keeping heuristic reads direct; generation uses the reduced spaces too. Existing cache files remain compatible. Large coordinate orbits retain dense storage.
+- Restricted solver tables use compact coordinate orbits when they substantially reduce RAM. Move tables precompute compact pruning indices, keeping heuristic reads direct; generation uses the reduced spaces too. Eligible caches store the compact representation on disk and load it directly. Older dense caches convert atomically on their first successful compact load, without regenerating distances. Large coordinate orbits retain dense storage.
 - Full-state searches also reuse those tables after a half turn that exchanges the UF and RL center orbits. A small corner mapping and two additional coordinates let the unused orbit strengthen pruning without another large table. This is enabled only when the table's move set preserves the rotation (including the standard faces plus f/r); last-layer goals and arbitrary start-centered tables keep their existing bounds.
 - Because the app is divided into solver instances, different instance move sets may need different pruning-table data. In practice, that can mean more than one set of pruning tables on disk.
 - The GUI links the Rust solver core directly, so desktop builds produce a single app binary.
@@ -281,7 +292,19 @@ Run the desktop app in development mode:
 npm run tauri dev
 ```
 
-Build the web frontend only:
+Build the browser app (Emscripten 4.0.20 and Rust nightly with `rust-src` required):
+
+```sh
+# From the repository root, with emsdk_env.sh sourced:
+./build.sh --web
+```
+
+This writes the app to `public/web/`; the landing page links to it below the
+downloads. The browser preview uses the shared Rust backend with pthreads and
+IndexedDB table persistence. GPU acceleration and active solver data above 4 GiB still require architectural
+work. Saved tables stay in IndexedDB and load on demand. See [browser setup and parity report](main/WEB.md).
+
+Build just the frontend assets without compiling WASM:
 
 ```sh
 npm run build

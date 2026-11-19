@@ -207,7 +207,7 @@ export function parseProject(text: string): BatchProject {
       !Array.isArray(p.settings.instanceMoves) || !p.settings.instanceMoves.every(m => typeof m === "string") ||
       (p.settings.instanceId !== undefined && typeof p.settings.instanceId !== "string") ||
       (p.settings.inputMode !== undefined && !["setup", "alg"].includes(p.settings.inputMode)) ||
-      typeof p.settings.depth !== "string" || !Number.isInteger(p.settings.threads) || p.settings.threads < 1 || p.settings.threads > 1024 ||
+      typeof p.settings.depth !== "string" || !Number.isSafeInteger(p.settings.threads) || p.settings.threads < 1 ||
       (!Number.isFinite(p.settings.slowCaseSeconds) || p.settings.slowCaseSeconds < 0 || p.settings.slowCaseSeconds > 86400) ||
       (p.settings.temporaryTables !== undefined && typeof p.settings.temporaryTables !== "boolean") ||
       (p.settings.tableMemoryMiB !== undefined && (!Number.isInteger(p.settings.tableMemoryMiB) || p.settings.tableMemoryMiB < 0 || p.settings.tableMemoryMiB > 131072)) ||
